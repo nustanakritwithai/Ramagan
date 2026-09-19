@@ -4,10 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Ramagan · ร้านกัญชา POS</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=mobile1" />
+  <link rel="stylesheet" href="styles.css?v=charts1" />
 </head>
 <body>
   <header class="app-header">
@@ -389,6 +389,34 @@
           <div class="kpi"><span class="kpi-label">|ส่วนต่าง| รวม</span><strong id="admin-shift-var">0 g</strong></div>
         </div>
 
+
+        <div class="admin-charts" id="admin-charts">
+          <div class="admin-chart-card">
+            <h3>ยอดขายรายวัน (บาท)</h3>
+            <canvas id="chart-sales-daily" height="160"></canvas>
+          </div>
+          <div class="admin-chart-card">
+            <h3>กรัมจ่าย vs กรัมตัด (โปร)</h3>
+            <canvas id="chart-grams-daily" height="160"></canvas>
+          </div>
+          <div class="admin-chart-card">
+            <h3>เงินสด / โอน</h3>
+            <canvas id="chart-payment" height="160"></canvas>
+          </div>
+          <div class="admin-chart-card">
+            <h3>Top สินค้า (บาท)</h3>
+            <canvas id="chart-top-products" height="160"></canvas>
+          </div>
+          <div class="admin-chart-card">
+            <h3>Top หมวด (บาท)</h3>
+            <canvas id="chart-top-cats" height="160"></canvas>
+          </div>
+          <div class="admin-chart-card">
+            <h3>ADJUST กะ |ส่วนต่าง| รายวัน</h3>
+            <canvas id="chart-shift-daily" height="160"></canvas>
+          </div>
+        </div>
+
         <div class="admin-grid">
           <div class="admin-block">
             <h3>Top สินค้า</h3>
@@ -470,10 +498,11 @@
 
   <!-- No type=module — works under file:// -->
   <script>window.RAMAGAN_GOOGLE_CLIENT_ID=window.RAMAGAN_GOOGLE_CLIENT_ID||"";</script>
-  <script src="js/drive.js?v=mobile1"></script>
-  <script src="js/store.js?v=mobile1"></script>
-  <script src="js/ledger.js?v=mobile1"></script>
-  <script src="js/admin-analytics.js?v=mobile1"></script>
-  <script src="js/app.js?v=mobile1"></script>
+  <script src="js/drive.js?v=charts1"></script>
+  <script src="js/store.js?v=charts1"></script>
+  <script src="js/ledger.js?v=charts1"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="js/admin-analytics.js?v=charts1"></script>
+  <script src="js/app.js?v=charts1"></script>
 </body>
 </html>

@@ -1037,6 +1037,112 @@
       .replace(/"/g, '&quot;');
   }
 
+
+  var adminCharts = {};
+
+  function destroyAdminChart(key) {
+    if (adminCharts[key]) {
+      try { adminCharts[key].destroy(); } catch (e) {}
+      adminCharts[key] = null;
+    }
+  }
+
+  function chartDefaults() {
+    return {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#c5d0dc', boxWidth: 12 } },
+        tooltip: { enabled: true }
+      },
+      scales: {
+        x: { ticks: { color: '#8fa0b3', maxRotation: 0 }, grid: { color: 'rgba(255,255,255,0.04)' } },
+        y: { ticks: { color: '#8fa0b3' }, grid: { color: 'rgba(255,255,255,0.06)' }, beginAtZero: true }
+      }
+    };
+  }
+
+  function renderAdminCharts(series) {
+    if (!window.Chart || !series) return;
+    var empty = !series.labels || !series.labels.length;
+    function lineOrBar(id, key, type, datasets) {
+      var canvas = $(id);
+      if (!canvas) return;
+      destroyAdminChart(key);
+      if (empty) return;
+      adminCharts[key] = new Chart(canvas.getContext('2d'), {
+        type: type,
+        data: { labels: series.labels, datasets: datasets },
+        options: chartDefaults()
+      });
+    }
+    lineOrBar('chart-sales-daily', 'sales', 'line', [
+      {
+        label: 'บาท',
+        data: series.salesBahtDaily,
+        borderColor: '#2fe39a',
+        backgroundColor: 'rgba(47,227,154,0.15)',
+        tension: 0.25,
+        fill: true
+      }
+    ]);
+    lineOrBar('chart-grams-daily', 'grams', 'bar', [
+      { label: 'จ่าย g', data: series.paidGDaily, backgroundColor: 'rgba(56,189,248,0.7)' },
+      { label: 'ตัด g', data: series.stockGDaily, backgroundColor: 'rgba(251,191,36,0.7)' }
+    ]);
+    lineOrBar('chart-shift-daily', 'shift', 'bar', [
+      {
+        label: '|ส่วนต่าง| g',
+        data: series.shiftVarAbsDaily,
+        backgroundColor: 'rgba(251,113,133,0.75)'
+      }
+    ]);
+
+    // payment doughnut
+    var payCanvas = $('chart-payment');
+    if (payCanvas) {
+      destroyAdminChart('payment');
+      adminCharts.payment = new Chart(payCanvas.getContext('2d'), {
+        type: 'doughnut',
+        data: {
+          labels: ['เงินสด', 'โอน'],
+          datasets: [{
+            data: [series.payment.cash, series.payment.transfer],
+            backgroundColor: ['#2fe39a', '#38bdf8']
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'bottom', labels: { color: '#c5d0dc' } },
+            tooltip: { enabled: true }
+          }
+        }
+      });
+    }
+
+    function topBar(id, key, rows, labelKey) {
+      var canvas = $(id);
+      if (!canvas) return;
+      destroyAdminChart(key);
+      var labels = (rows || []).map(function (r) { return r[labelKey]; });
+      var data = (rows || []).map(function (r) { return r.baht; });
+      if (!labels.length) return;
+      adminCharts[key] = new Chart(canvas.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [{ label: 'บาท', data: data, backgroundColor: 'rgba(167,139,250,0.8)' }]
+        },
+        options: chartDefaults()
+      });
+    }
+    topBar('chart-top-products', 'topProducts', series.topProducts, 'name');
+    topBar('chart-top-cats', 'topCats', series.topCategories, 'id');
+  }
+
   function renderAdminDashboard() {
     if (!window.AdminAnalytics) return;
     var fromEl = $('admin-from');

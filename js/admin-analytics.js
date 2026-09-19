@@ -156,10 +156,115 @@
     };
   }
 
+
+  function eachDayKeys(fromKey, toKey) {
+    var out = [];
+    if (!fromKey || !toKey || fromKey > toKey) return out;
+    // Walk calendar days via UTC noon + Bangkok key to avoid DST issues
+    var d = new Date(fromKey + 'T12:00:00+07:00');
+    var end = new Date(toKey + 'T12:00:00+07:00');
+    var guard = 0;
+    while (d.getTime() <= end.getTime() && guard < 400) {
+      out.push(bangkokDateKey(d.toISOString()));
+      d.setDate(d.getDate() + 1);
+      guard++;
+    }
+    return out;
+  }
+
+  /**
+   * Interactive chart series from events only (same filters as KPIs).
+   */
+  function toNum(n){var v=Number(n);return isFinite(v)?v:0;}
+  // alias
+  var toNum = toNum;
+  function buildChartSeries(events, lots, range) {
+    events = events || [];
+    lots = lots || [];
+    range = range || {};
+    var fromKey = range.fromKey || '';
+    var toKey = range.toKey || '';
+    var days = eachDayKeys(fromKey, toKey);
+    var byDay = {};
+    for (var i = 0; i < days.length; i++) {
+      byDay[days[i]] = {
+        baht: 0,
+        paid_g: 0,
+        stock_g: 0,
+        shift_var_abs: 0,
+        shift_count: 0
+      };
+    }
+    var lotMap = {};
+    for (var li = 0; li < lots.length; li++) lotMap[lots[li].lot_id] = lots[li];
+    var byProduct = {};
+    var byCategory = {};
+    var cashBaht = 0;
+    var transferBaht = 0;
+
+    for (var e = 0; e < events.length; e++) {
+      var ev = events[e];
+      if (!inRange(ev.occurred_at, fromKey, toKey)) continue;
+      var day = bangkokDateKey(ev.occurred_at);
+      if (!byDay[day]) {
+        byDay[day] = { baht: 0, paid_g: 0, stock_g: 0, shift_var_abs: 0, shift_count: 0 };
+        days.push(day);
+      }
+      var meta = ev.meta || {};
+      var lot = lotMap[ev.lot_id] || {};
+      if (ev.type === 'SALE') {
+        var paid = toNum(meta.qty_paid != null ? meta.qty_paid : ev.qty);
+        var stock = toNum(
+          meta.qty_stock != null ? meta.qty_stock : Math.abs(toNum(ev.qty_delta))
+        );
+        var line = toNum(meta.line_total);
+        if (!(line > 0) && meta.unit_price != null) line = paid * toNum(meta.unit_price);
+        byDay[day].baht += line;
+        byDay[day].paid_g += paid;
+        byDay[day].stock_g += stock;
+        if (meta.payment === 'transfer') transferBaht += line;
+        else cashBaht += line;
+        var pname = meta.product_name || lot.product_name || ev.lot_id;
+        if (!byProduct[pname]) byProduct[pname] = { name: pname, baht: 0 };
+        byProduct[pname].baht += line;
+        var cat = lot.category_id || 'other';
+        if (!byCategory[cat]) byCategory[cat] = { id: cat, baht: 0 };
+        byCategory[cat].baht += line;
+      }
+      if (ev.type === 'ADJUST' && meta.source === 'shift_count') {
+        byDay[day].shift_count += 1;
+        byDay[day].shift_var_abs += Math.abs(
+          toNum(meta.variance != null ? meta.variance : ev.qty)
+        );
+      }
+    }
+    days.sort();
+    var salesDaily = days.map(function (d) { return Math.round(byDay[d].baht * 100) / 100; });
+    var paidDaily = days.map(function (d) { return Math.round(byDay[d].paid_g * 1000) / 1000; });
+    var stockDaily = days.map(function (d) { return Math.round(byDay[d].stock_g * 1000) / 1000; });
+    var shiftDaily = days.map(function (d) { return Math.round(byDay[d].shift_var_abs * 1000) / 1000; });
+    var topProducts = topN(byProduct, 8);
+    var topCategories = topN(byCategory, 8);
+    return {
+      labels: days,
+      salesBahtDaily: salesDaily,
+      paidGDaily: paidDaily,
+      stockGDaily: stockDaily,
+      shiftVarAbsDaily: shiftDaily,
+      payment: {
+        cash: Math.round(cashBaht * 100) / 100,
+        transfer: Math.round(transferBaht * 100) / 100
+      },
+      topProducts: topProducts,
+      topCategories: topCategories
+    };
+  }
+
   var api = {
     bangkokDateKey: bangkokDateKey,
     inRange: inRange,
-    computeAdminStats: computeAdminStats
+    computeAdminStats: computeAdminStats,
+    buildChartSeries: buildChartSeries
   };
   global.AdminAnalytics = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

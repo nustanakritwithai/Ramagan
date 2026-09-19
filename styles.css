@@ -731,3 +731,21 @@ button.btn-sell, button.btn-sell {
   .btn-nav, .nav-drawer-head, .nav-backdrop{display:none !important}
   body.nav-open{overflow:auto}
 }
+
+.admin-charts{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:12px;
+  margin:14px 0 16px;
+}
+.admin-chart-card{
+  background:#0d151e;
+  border:1px solid var(--border-soft,#243244);
+  border-radius:14px;
+  padding:12px;
+}
+.admin-chart-card h3{margin:0 0 8px;font-size:0.92rem}
+.admin-chart-card canvas{width:100% !important;max-height:220px}
+@media (max-width:860px){
+  .admin-charts{grid-template-columns:1fr}
+}
