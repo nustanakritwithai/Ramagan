@@ -45,6 +45,8 @@ Local-only prototype for Thai cannabis **retail stock ledger** with retrospectiv
 | `js/store.js` | localStorage load/save |
 | `js/ledger.js` | `createLot`, `appendEvent`, `balanceAt`, `balanceAllAt`, `validateSale` |
 | `js/app.js` | Forms + **sales cashier** + as-of report + event log |
+| `js/drive.js` | Google Drive OAuth + append-only auto-sync / conflict UI |
+| `docs/DRIVE_SYNC.md` | How to set OAuth Client ID (Thai + EN) |
 | `README.md` | This file |
 
 ---

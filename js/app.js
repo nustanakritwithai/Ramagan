@@ -827,7 +827,18 @@
   }
 
 
-  /* —— Google Drive connect UI (OAuth hook; sync rules by Ai CPU WEB) —— */
+  /* —— Google Drive connect + auto-sync status (Ai CPU WEB) —— */
+  function formatSyncAt(iso) {
+    if (!iso) return '';
+    try {
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) return String(iso);
+      return d.toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' });
+    } catch (e) {
+      return String(iso);
+    }
+  }
+
   function refreshDriveStatus() {
     var badge = $('badge-drive-status');
     var btnConnect = $('btn-drive-connect');
@@ -836,17 +847,30 @@
     var st =
       window.RamaganDrive && typeof RamaganDrive.status === 'function'
         ? RamaganDrive.status()
-        : { configured: false, connected: false, label: 'OFFLINE · local' };
+        : { configured: false, connected: false, label: 'OFFLINE · local', phase: 'offline' };
     if (badge) {
-      badge.textContent = st.connected
-        ? 'DRIVE · เชื่อมแล้ว'
-        : st.configured
-          ? 'DRIVE · พร้อมเชื่อม'
-          : 'OFFLINE · local';
-      badge.className =
-        'badge-live' +
-        (st.connected ? ' connected' : st.configured ? '' : ' warn');
-      badge.title = st.label || '';
+      if (st.conflict) {
+        badge.textContent = 'DRIVE · ขัดแย้ง';
+        badge.className = 'badge-live warn conflict';
+      } else if (st.syncing) {
+        badge.textContent = 'DRIVE · กำลังซิงค์';
+        badge.className = 'badge-live syncing';
+      } else if (st.connected) {
+        badge.textContent = st.lastSyncAt
+          ? 'DRIVE · ซิงค์แล้ว'
+          : 'DRIVE · เชื่อมแล้ว';
+        badge.className = 'badge-live connected';
+      } else if (st.configured) {
+        badge.textContent = 'DRIVE · พร้อมเชื่อม';
+        badge.className = 'badge-live';
+      } else {
+        badge.textContent = 'OFFLINE · local';
+        badge.className = 'badge-live warn';
+      }
+      var tip = st.label || '';
+      if (st.lastSyncAt) tip += ' · last ' + formatSyncAt(st.lastSyncAt) + ' (Bangkok)';
+      if (st.lastError) tip += ' · ' + st.lastError;
+      badge.title = tip;
     }
     if (btnConnect) {
       btnConnect.classList.toggle('hidden', !!st.connected);
@@ -856,7 +880,10 @@
       btnDisconnect.classList.toggle('hidden', !st.connected);
     }
     if (btnPush) {
-      btnPush.disabled = !st.connected;
+      btnPush.disabled = !st.connected || !!st.conflict;
+      btnPush.title = st.conflict
+        ? 'แก้ conflict ก่อนอัป'
+        : 'ซิงค์/อัป JSON ขึ้น Drive ตอนนี้';
     }
   }
 
@@ -868,7 +895,13 @@
     RamaganDrive.connect()
       .then(function () {
         refreshDriveStatus();
-        showMsg($('sale-msg'), 'เชื่อม Google Drive แล้ว', false);
+        refreshAll();
+        var st = RamaganDrive.status();
+        if (st.conflict) {
+          showMsg($('sale-msg'), 'เชื่อมแล้ว แต่พบ conflict — เลือกในหน้าต่าง', true);
+        } else {
+          showMsg($('sale-msg'), 'เชื่อม Google Drive แล้ว (auto-sync เปิด)', false);
+        }
       })
       .catch(function (err) {
         refreshDriveStatus();
@@ -885,29 +918,25 @@
 
   function onDrivePush() {
     if (!window.RamaganDrive) return;
-    try {
-      var state = StockStore.load();
-      var payload = JSON.stringify(
-        {
-          version: state.version || 1,
-          exported_at: new Date().toISOString(),
-          lots: state.lots || [],
-          events: state.events || []
-        },
-        null,
-        2
-      );
-      RamaganDrive.uploadJson('ramagan-ledger.json', payload)
-        .then(function () {
-          showMsg($('sale-msg'), 'อัปขึ้น Google Drive แล้ว', false);
-          refreshDriveStatus();
-        })
-        .catch(function (err) {
-          alert('อัป Drive ไม่สำเร็จ: ' + String(err.message || err));
-        });
-    } catch (err) {
-      alert(String(err.message || err));
+    if (RamaganDrive.status().conflict) {
+      alert('มี conflict ค้าง — เลือกรูปแบบรวมในหน้าต่างก่อน');
+      return;
     }
+    RamaganDrive.syncNow({ reason: 'manual', forceUpload: true })
+      .then(function (res) {
+        refreshDriveStatus();
+        if (res && res.conflict) {
+          showMsg($('sale-msg'), 'พบ conflict — เลือกในหน้าต่าง', true);
+        } else if (res && res.error) {
+          showMsg($('sale-msg'), 'ซิงค์ไม่สำเร็จ (offline?): ' + res.error, true);
+        } else {
+          showMsg($('sale-msg'), 'ซิงค์ Google Drive แล้ว', false);
+          refreshAll();
+        }
+      })
+      .catch(function (err) {
+        alert('ซิงค์ Drive ไม่สำเร็จ: ' + String(err.message || err));
+      });
   }
 
   function bindDriveUi() {
@@ -946,6 +975,10 @@
     if (window.RamaganDrive && RamaganDrive.onChange) {
       RamaganDrive.onChange(refreshDriveStatus);
     }
+    window.addEventListener('ramagan-drive-applied', function () {
+      refreshAll();
+      refreshDriveStatus();
+    });
     refreshDriveStatus();
   }
 

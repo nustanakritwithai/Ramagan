@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=ui2" />
+  <link rel="stylesheet" href="styles.css?v=drive2" />
 </head>
 <body>
   <header class="app-header">
@@ -308,11 +308,28 @@
     </footer>
   </main>
 
+  <!-- Drive conflict modal (also ensured by js/drive.js) -->
+  <div id="drive-conflict-modal" class="drive-conflict-modal hidden" role="dialog" aria-modal="true" aria-labelledby="drive-conflict-title">
+    <div class="drive-conflict-backdrop"></div>
+    <div class="drive-conflict-card">
+      <h2 id="drive-conflict-title">ขัดแย้งข้อมูล Drive / Drive conflict</h2>
+      <p class="hint" id="drive-conflict-reason"></p>
+      <div class="drive-conflict-list" id="drive-conflict-list"></div>
+      <div class="drive-conflict-actions">
+        <button type="button" class="btn btn-ghost" data-resolve="keep_local">เก็บฝั่งเครื่อง (Keep local)</button>
+        <button type="button" class="btn btn-ghost" data-resolve="keep_remote">เก็บฝั่ง Drive (Keep remote)</button>
+        <button type="button" class="btn btn-drive" data-resolve="merge_keep_local">รวม + คงค่าเครื่องเมื่อชน</button>
+        <button type="button" class="btn btn-drive" data-resolve="merge_keep_remote">รวม + คงค่า Drive เมื่อชน</button>
+      </div>
+      <p class="hint">ไม่เดาอัตโนมัติ — เลือกเอง / No auto-guess · append-only events</p>
+    </div>
+  </div>
+
   <!-- No type=module — works under file:// -->
   <script>window.RAMAGAN_GOOGLE_CLIENT_ID=window.RAMAGAN_GOOGLE_CLIENT_ID||"";</script>
-  <script src="js/drive.js?v=ui2"></script>
-  <script src="js/store.js?v=ui2"></script>
-  <script src="js/ledger.js?v=ui2"></script>
-  <script src="js/app.js?v=ui2"></script>
+  <script src="js/drive.js?v=drive2"></script>
+  <script src="js/store.js?v=drive2"></script>
+  <script src="js/ledger.js?v=drive2"></script>
+  <script src="js/app.js?v=drive2"></script>
 </body>
 </html>

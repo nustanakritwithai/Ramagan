@@ -9,9 +9,10 @@
   var STORAGE_KEY = 'cannabis-pos-v0';
   var VERSION = 1;
   var memoryRaw = null;
+  var listeners = [];
 
   function emptyState() {
-    return { version: VERSION, lots: [], events: [] };
+    return { version: VERSION, lots: [], events: [], products: [], meta: {} };
   }
 
   function hasLocalStorage() {
@@ -20,6 +21,16 @@
     } catch (e) {
       return false;
     }
+  }
+
+  function normalize(data) {
+    if (!data || typeof data !== 'object') return emptyState();
+    if (!Array.isArray(data.lots)) data.lots = [];
+    if (!Array.isArray(data.events)) data.events = [];
+    if (!Array.isArray(data.products)) data.products = data.products || [];
+    if (!data.meta || typeof data.meta !== 'object') data.meta = data.meta || {};
+    data.version = data.version || VERSION;
+    return data;
   }
 
   function load() {
@@ -31,16 +42,27 @@
         raw = memoryRaw;
       }
       if (!raw) return emptyState();
-      var data = JSON.parse(raw);
-      if (!data || typeof data !== 'object') return emptyState();
-      if (!Array.isArray(data.lots)) data.lots = [];
-      if (!Array.isArray(data.events)) data.events = [];
-      data.version = data.version || VERSION;
-      return data;
+      return normalize(JSON.parse(raw));
     } catch (e) {
       console.warn('[store] load failed, using empty state', e);
       return emptyState();
     }
+  }
+
+  function emit(payload) {
+    for (var i = 0; i < listeners.length; i++) {
+      try {
+        listeners[i](payload);
+      } catch (e) {}
+    }
+  }
+
+  function onChange(fn) {
+    if (typeof fn === 'function') listeners.push(fn);
+    return function off() {
+      var i = listeners.indexOf(fn);
+      if (i >= 0) listeners.splice(i, 1);
+    };
   }
 
   function save(state) {
@@ -48,9 +70,11 @@
       throw new Error('store.save: invalid state');
     }
     var payload = {
-      version: VERSION,
+      version: state.version || VERSION,
       lots: state.lots || [],
-      events: state.events || []
+      events: state.events || [],
+      products: state.products || [],
+      meta: state.meta && typeof state.meta === 'object' ? state.meta : {}
     };
     var serialized = JSON.stringify(payload);
     if (hasLocalStorage()) {
@@ -58,6 +82,7 @@
     } else {
       memoryRaw = serialized;
     }
+    emit(payload);
     return payload;
   }
 
@@ -66,6 +91,7 @@
       localStorage.removeItem(STORAGE_KEY);
     }
     memoryRaw = null;
+    emit(emptyState());
   }
 
   function hasData() {
@@ -79,7 +105,8 @@
     save: save,
     clear: clear,
     hasData: hasData,
-    emptyState: emptyState
+    emptyState: emptyState,
+    onChange: onChange
   };
 
   if (typeof module !== 'undefined' && module.exports) {
