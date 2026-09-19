@@ -9,15 +9,18 @@ const L = require(path.join(root, 'js/ledger.js')) || globalThis.StockLedger;
 L.resetDev();
 assert.equal(L.seedIfEmpty(), true);
 const lots = L.listLots();
-assert.ok(lots.length > 50);
+assert.equal(lots.length, 25, 'exactly 5 products × 5 categories');
 const by = {};
 for (const lot of lots) {
   assert.ok(lot.category_id, 'category_id required');
   assert.ok(lot.unit_price > 0, 'unit_price on product');
+  assert.ok(lot.unit_cost != null && lot.unit_cost > 0, 'unit_cost on product');
+  assert.equal(lot.unit_cost, lot.unit_price * 0.5, 'cost = 50% of price for ' + lot.sku);
+  assert.equal(L.balanceAt(lot.lot_id), 30, 'RECEIVE opening 30g for ' + lot.lot_id);
   by[lot.category_id] = (by[lot.category_id] || 0) + 1;
 }
 for (const id of ['leaf-trim', 'under-machine', 'mini', 'pop', 'top']) {
-  assert.ok(by[id] > 10, id + ' must have >10, got ' + by[id]);
+  assert.equal(by[id], 5, id + ' must have exactly 5, got ' + by[id]);
 }
 const miniPrices = new Set(lots.filter((l) => l.category_id === 'mini').map((l) => l.unit_price));
 assert.ok(miniPrices.has(40) && miniPrices.has(50));

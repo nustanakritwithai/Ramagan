@@ -1790,22 +1790,28 @@
     var lots = StockLedger.listLots() || [];
     if (!lots.length) return false;
     var hasCategory = false;
+    var missingCost = false;
     for (var i = 0; i < lots.length; i++) {
-      if (lots[i].category_id) {
-        hasCategory = true;
-        break;
-      }
+      if (lots[i].category_id) hasCategory = true;
+      if (lots[i].unit_cost == null && lots[i].cost == null) missingCost = true;
     }
     // Old V0 seed was 3 flower/oil/gummy lots without category_id
-    if (hasCategory && lots.length > 10) return false;
-    var looksOld =
+    var looksOldV0 =
       lots.length <= 5 ||
       !hasCategory ||
       lots.some(function (L) {
         var n = String(L.product_name || '');
         return /OG Kush|CBD 10%|กัมมี่|เจลลี่/.test(n);
       });
-    if (!looksOld) return false;
+    // Pre–go-live large catalog without unit_cost → replace with 5/category test seed
+    var looksPreGoLive =
+      hasCategory &&
+      missingCost &&
+      lots.length !== 25 &&
+      lots.every(function (L) {
+        return !!L.category_id;
+      });
+    if (!looksOldV0 && !looksPreGoLive) return false;
     StockStore.clear();
     StockLedger.seedIfEmpty();
     return true;
