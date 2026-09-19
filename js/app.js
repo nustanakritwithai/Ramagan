@@ -164,6 +164,7 @@
   }
 
   function refreshAll() {
+    renderAdminDashboard();
     renderLots();
     renderEvents();
     refreshSelects();
@@ -827,7 +828,158 @@
   }
 
 
-  /* —— Google Drive connect + auto-sync status (Ai CPU WEB) —— */
+
+  /* —— Admin dashboard (events-only analytics) —— */
+  function bangkokTodayKey() {
+    if (window.AdminAnalytics && AdminAnalytics.bangkokDateKey) {
+      return AdminAnalytics.bangkokDateKey(new Date().toISOString());
+    }
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  function fmtBahtAdmin(n) {
+    var v = Number(n) || 0;
+    return '฿' + v.toLocaleString('th-TH', { maximumFractionDigits: 2 });
+  }
+
+  function fmtG(n) {
+    var v = Number(n) || 0;
+    var s = v % 1 === 0 ? String(v) : String(Math.round(v * 1000) / 1000);
+    return s + ' g';
+  }
+
+  function escapeHtmlAdmin(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function renderAdminDashboard() {
+    if (!window.AdminAnalytics) return;
+    var fromEl = $('admin-from');
+    var toEl = $('admin-to');
+    var lowEl = $('admin-low');
+    if (!fromEl || !toEl) return;
+    if (!fromEl.value) fromEl.value = bangkokTodayKey();
+    if (!toEl.value) toEl.value = bangkokTodayKey();
+    var lowAt = lowEl && lowEl.value !== '' ? Number(lowEl.value) : 10;
+    var events = StockLedger.listEvents() || [];
+    var lots = StockLedger.listLots() || [];
+    var stats = AdminAnalytics.computeAdminStats(
+      events,
+      lots,
+      { fromKey: fromEl.value, toKey: toEl.value, lowStockAt: lowAt },
+      function (lotId) {
+        return StockLedger.balanceAt(lotId);
+      }
+    );
+    function setText(id, text) {
+      var el = $(id);
+      if (el) el.textContent = text;
+    }
+    setText('admin-sales-baht', fmtBahtAdmin(stats.salesBaht));
+    setText('admin-sales-paid-g', fmtG(stats.salesPaidG));
+    setText('admin-sales-stock-g', fmtG(stats.salesStockG));
+    setText('admin-cash', fmtBahtAdmin(stats.cashBaht));
+    setText('admin-transfer', fmtBahtAdmin(stats.transferBaht));
+    setText(
+      'admin-promo',
+      fmtG(stats.promoPaidG).replace(' g', '') +
+        ' / ' +
+        fmtG(stats.promoStockG) +
+        ' (แถม ' +
+        fmtG(stats.promoFreeG) +
+        ')'
+    );
+    setText('admin-shift', stats.shiftAdjustCount + ' รายการ');
+    setText('admin-shift-var', fmtG(stats.shiftVarAbs));
+    setText(
+      'admin-range-label',
+      'ช่วง ' + stats.fromKey + ' → ' + stats.toKey + ' (Asia/Bangkok) · จาก events จริงเท่านั้น'
+    );
+
+    var tp = $('admin-top-products');
+    if (tp) {
+      if (!stats.topProducts.length) {
+        tp.innerHTML = '<tr><td colspan="4" class="muted">ยังไม่มียอดขายในช่วงนี้</td></tr>';
+      } else {
+        tp.innerHTML = stats.topProducts
+          .map(function (r) {
+            return (
+              '<tr><td>' +
+              escapeHtmlAdmin(r.name) +
+              '</td><td class="num">' +
+              fmtBahtAdmin(r.baht) +
+              '</td><td class="num">' +
+              fmtG(r.paid_g) +
+              '</td><td class="num">' +
+              fmtG(r.stock_g) +
+              '</td></tr>'
+            );
+          })
+          .join('');
+      }
+    }
+    var tc = $('admin-top-cats');
+    if (tc) {
+      if (!stats.topCategories.length) {
+        tc.innerHTML = '<tr><td colspan="4" class="muted">—</td></tr>';
+      } else {
+        tc.innerHTML = stats.topCategories
+          .map(function (r) {
+            return (
+              '<tr><td>' +
+              escapeHtmlAdmin(r.id) +
+              '</td><td class="num">' +
+              fmtBahtAdmin(r.baht) +
+              '</td><td class="num">' +
+              fmtG(r.paid_g) +
+              '</td><td class="num">' +
+              fmtG(r.stock_g) +
+              '</td></tr>'
+            );
+          })
+          .join('');
+      }
+    }
+    var ls = $('admin-low-stock');
+    if (ls) {
+      if (!stats.lowStock.length) {
+        ls.innerHTML = '<tr><td colspan="4" class="muted">ไม่มีรายการต่ำกว่าเกณฑ์</td></tr>';
+      } else {
+        ls.innerHTML = stats.lowStock
+          .map(function (r) {
+            return (
+              '<tr><td>' +
+              escapeHtmlAdmin(r.product_name) +
+              '</td><td><code>' +
+              escapeHtmlAdmin(r.lot_id) +
+              '</code></td><td>' +
+              escapeHtmlAdmin(r.category_id || '') +
+              '</td><td class="num">' +
+              fmtG(r.balance) +
+              '</td></tr>'
+            );
+          })
+          .join('');
+      }
+    }
+  }
+
+  function bindAdminUi() {
+    var form = $('form-admin-range');
+    if (form) {
+      form.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        renderAdminDashboard();
+      });
+    }
+  }
+
+
+    /* —— Google Drive connect + auto-sync status (Ai CPU WEB) —— */
   function formatSyncAt(iso) {
     if (!iso) return '';
     try {
@@ -1222,6 +1374,7 @@
         e.currentTarget.classList.add('active');
         var panel = document.getElementById('panel-' + id);
         if (panel) panel.classList.add('active');
+        if (id === 'admin') renderAdminDashboard();
       });
     }
   }
@@ -1235,6 +1388,7 @@
     bindPosUi();
     bindShiftUi();
     bindDriveUi();
+    bindAdminUi();
     window.__ramaganShiftVar = updateShiftVariances;
     document.addEventListener('input', function (e) {
       if (e.target && e.target.classList && e.target.classList.contains('shift-count')) {

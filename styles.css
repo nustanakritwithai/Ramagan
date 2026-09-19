@@ -618,3 +618,16 @@ button.btn-sell, button.btn-sell {
 }
 .btn-primary:hover{filter:brightness(1.05)}
 .drive-setup summary{color:var(--muted,#8fa0b3)}
+
+.admin-head{display:flex;flex-wrap:wrap;gap:14px;justify-content:space-between;align-items:flex-end;margin-bottom:14px}
+.admin-range{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
+.admin-range label{font-size:12px;color:var(--muted)}
+.admin-kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:16px}
+.kpi{background:#0d151e;border:1px solid var(--border-soft,#243244);border-radius:14px;padding:12px}
+.kpi-label{display:block;font-size:11px;color:var(--muted);margin-bottom:4px;font-weight:700}
+.kpi strong{font-size:1.15rem}
+.admin-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.admin-block{background:#0d151e;border:1px solid var(--border-soft,#243244);border-radius:14px;padding:12px}
+.admin-block h3{margin:0 0 8px;font-size:0.95rem}
+.admin-block-wide{grid-column:1/-1}
+@media(max-width:900px){.admin-grid{grid-template-columns:1fr}}

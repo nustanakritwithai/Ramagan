@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=autosync1" />
+  <link rel="stylesheet" href="styles.css?v=admin1" />
 </head>
 <body>
   <header class="app-header">
@@ -63,6 +63,7 @@
       <button type="button" data-tab="shift">ก่อนเข้ากะ / Shift count</button>
       <button type="button" data-tab="adjust">ปรับ / ทำลาย</button>
       <button type="button" data-tab="asof">รายงาน ณ เวลา / As-of</button>
+      <button type="button" data-tab="admin">Admin / Dashboard</button>
       <button type="button" data-tab="events">บันทึกเหตุการณ์ / Log</button>
     </nav>
 
@@ -283,6 +284,73 @@
     </section>
 
     <!-- Event log -->
+    
+    <!-- Admin dashboard -->
+    <section id="panel-admin" class="panel">
+      <div class="card admin-card">
+        <div class="admin-head">
+          <div>
+            <h2>Dashboard Admin</h2>
+            <p class="hint">ตัวเลขจาก events ในเครื่องเท่านั้น (+ Drive หลัง sync) · ไม่ invent · ไม่แตะ balanceAt</p>
+          </div>
+          <form id="form-admin-range" class="admin-range">
+            <label>จาก
+              <input type="date" id="admin-from" required />
+            </label>
+            <label>ถึง
+              <input type="date" id="admin-to" required />
+            </label>
+            <label>สต็อกต่ำ ≤
+              <input type="number" id="admin-low" min="0" step="any" value="10" />
+            </label>
+            <button type="submit" class="btn btn-secondary">อัปเดต</button>
+          </form>
+        </div>
+
+        <div class="admin-kpis" id="admin-kpis">
+          <div class="kpi"><span class="kpi-label">ยอดขาย (บาท)</span><strong id="admin-sales-baht">฿0</strong></div>
+          <div class="kpi"><span class="kpi-label">ขาย (กรัมจ่าย)</span><strong id="admin-sales-paid-g">0 g</strong></div>
+          <div class="kpi"><span class="kpi-label">ตัดสต็อก (กรัม)</span><strong id="admin-sales-stock-g">0 g</strong></div>
+          <div class="kpi"><span class="kpi-label">เงินสด</span><strong id="admin-cash">฿0</strong></div>
+          <div class="kpi"><span class="kpi-label">โอน</span><strong id="admin-transfer">฿0</strong></div>
+          <div class="kpi"><span class="kpi-label">โปร 5+2 จ่าย/ตัด</span><strong id="admin-promo">0 / 0 g</strong></div>
+          <div class="kpi"><span class="kpi-label">ADJUST กะ</span><strong id="admin-shift">0 รายการ</strong></div>
+          <div class="kpi"><span class="kpi-label">|ส่วนต่าง| รวม</span><strong id="admin-shift-var">0 g</strong></div>
+        </div>
+
+        <div class="admin-grid">
+          <div class="admin-block">
+            <h3>Top สินค้า</h3>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>สินค้า</th><th class="num">บาท</th><th class="num">จ่าย g</th><th class="num">ตัด g</th></tr></thead>
+                <tbody id="admin-top-products"><tr><td colspan="4" class="muted">—</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="admin-block">
+            <h3>Top หมวด</h3>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>หมวด</th><th class="num">บาท</th><th class="num">จ่าย g</th><th class="num">ตัด g</th></tr></thead>
+                <tbody id="admin-top-cats"><tr><td colspan="4" class="muted">—</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="admin-block admin-block-wide">
+            <h3>สต็อกต่ำ</h3>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>สินค้า</th><th>Lot</th><th>หมวด</th><th class="num">คงเหลือ</th></tr></thead>
+                <tbody id="admin-low-stock"><tr><td colspan="4" class="muted">—</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <p class="hint" id="admin-range-label"></p>
+      </div>
+    </section>
+
     <section id="panel-events" class="panel">
       <div class="card">
         <h2>บันทึกเหตุการณ์ (append-only)</h2>
@@ -331,9 +399,10 @@
 
   <!-- No type=module — works under file:// -->
   <script>window.RAMAGAN_GOOGLE_CLIENT_ID=window.RAMAGAN_GOOGLE_CLIENT_ID||"";</script>
-  <script src="js/drive.js?v=autosync1"></script>
-  <script src="js/store.js?v=autosync1"></script>
-  <script src="js/ledger.js?v=autosync1"></script>
-  <script src="js/app.js?v=autosync1"></script>
+  <script src="js/drive.js?v=admin1"></script>
+  <script src="js/store.js?v=admin1"></script>
+  <script src="js/ledger.js?v=admin1"></script>
+  <script src="js/admin-analytics.js?v=admin1"></script>
+  <script src="js/app.js?v=admin1"></script>
 </body>
 </html>
