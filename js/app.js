@@ -172,29 +172,39 @@
     updateSalePreview();
   }
 
+  var BKK_OFFSET = '+07:00';
+
+  /** datetime-local wall clock interpreted as Asia/Bangkok → ISO with +07:00 */
   function datetimeLocalToIso(localVal) {
     if (!localVal) return new Date().toISOString();
-    // datetime-local is wall time without TZ; treat as Bangkok local for demo
-    var d = new Date(localVal);
-    if (isNaN(d.getTime())) return new Date().toISOString();
-    return d.toISOString();
+    var m = String(localVal).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/);
+    if (!m) {
+      var fallback = new Date(localVal);
+      if (isNaN(fallback.getTime())) return new Date().toISOString();
+      return fallback.toISOString();
+    }
+    var sec = m[6] || '00';
+    return m[1] + '-' + m[2] + '-' + m[3] + 'T' + m[4] + ':' + m[5] + ':' + sec + BKK_OFFSET;
   }
 
-  function toDatetimeLocalValue(d) {
-    var pad = function (n) {
-      return n < 10 ? '0' + n : '' + n;
-    };
-    return (
-      d.getFullYear() +
-      '-' +
-      pad(d.getMonth() + 1) +
-      '-' +
-      pad(d.getDate()) +
-      'T' +
-      pad(d.getHours()) +
-      ':' +
-      pad(d.getMinutes())
-    );
+  /** Format Date/ISO into datetime-local value using Asia/Bangkok wall time */
+  function toDatetimeLocalValue(input) {
+    var d = input instanceof Date ? input : new Date(input);
+    if (isNaN(d.getTime())) d = new Date();
+    var parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Bangkok',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23'
+    }).formatToParts(d);
+    var map = {};
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i].type !== 'literal') map[parts[i].type] = parts[i].value;
+    }
+    return map.year + '-' + map.month + '-' + map.day + 'T' + map.hour + ':' + map.minute;
   }
 
   /* —— forms —— */
@@ -444,12 +454,69 @@
         : '<tr><td colspan="4" class="muted">ไม่มี Lot</td></tr>';
       showMsg(
         msg,
-        'ยอด ณ เวลา (Bangkok view): ' + fmtTime(iso) + ' · ISO ' + iso,
+        'ยอด Asia/Bangkok: ' + localVal.replace('T', ' ') + ' · stored ' + iso,
         false
       );
     } catch (err) {
       showMsg(msg, String(err.message || err), true);
     }
+  }
+
+
+  function onExportJson() {
+    try {
+      var state = StockStore.load();
+      var payload = {
+        version: state.version || 1,
+        exported_at: new Date().toISOString(),
+        timezone_note: 'UI as-of uses Asia/Bangkok wall time; event occurred_at is ISO-8601',
+        lots: state.lots || [],
+        events: state.events || []
+      };
+      var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      var a = document.createElement('a');
+      var stamp = toDatetimeLocalValue(new Date()).replace(/[:T]/g, '-');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'cannabis-pos-v0-' + stamp + '.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 0);
+      showMsg($('asof-msg'), 'ส่งออก JSON แล้ว — อัปขึ้น Google Drive ด้วยมือได้', false);
+    } catch (err) {
+      alert(String(err.message || err));
+    }
+  }
+
+  function onImportJsonPick() {
+    var input = $('import-file');
+    if (input) input.click();
+  }
+
+  function onImportJsonFile(ev) {
+    var file = ev.target.files && ev.target.files[0];
+    ev.target.value = '';
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      try {
+        var data = JSON.parse(String(reader.result || ''));
+        if (!data || typeof data !== 'object') throw new Error('ไฟล์ไม่ใช่ object JSON');
+        if (!Array.isArray(data.lots) || !Array.isArray(data.events)) {
+          throw new Error('ต้องมี lots[] และ events[]');
+        }
+        if (!confirm('นำเข้า JSON จะทับ localStorage ปัจจุบัน\nlots=' + data.lots.length + ' events=' + data.events.length + '\nดำเนินการ?')) {
+          return;
+        }
+        StockStore.save({ version: data.version || 1, lots: data.lots, events: data.events });
+        refreshAll();
+        onAsOf();
+        showMsg($('asof-msg'), 'นำเข้า JSON สำเร็จ', false);
+      } catch (err) {
+        alert('นำเข้าไม่สำเร็จ: ' + String(err.message || err));
+      }
+    };
+    reader.readAsText(file);
   }
 
   function onResetSeed() {
@@ -500,6 +567,9 @@
     $('form-destroy').addEventListener('submit', onDestroy);
     $('form-asof').addEventListener('submit', onAsOf);
     $('btn-reset').addEventListener('click', onResetSeed);
+    $('btn-export').addEventListener('click', onExportJson);
+    $('btn-import').addEventListener('click', onImportJsonPick);
+    $('import-file').addEventListener('change', onImportJsonFile);
 
     // Default as-of: mid demo timeline so historical qty differs from now
     var demo = new Date('2026-09-13T12:00:00+07:00');

@@ -12,7 +12,7 @@
   --danger: #f31260;
   --info: #0070f3;
   --radius: 10px;
-  --font: "Segoe UI", "Sarabun", "Noto Sans Thai", system-ui, sans-serif;
+  --font: "Sarabun", "Noto Sans Thai", "Segoe UI", Tahoma, system-ui, sans-serif;
   --mono: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
 }
 
@@ -26,6 +26,7 @@ html, body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
+  font-synthesis: none;
   font-size: 14px;
   line-height: 1.45;
   min-height: 100%;

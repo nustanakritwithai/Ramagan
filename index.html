@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Cannabis Stock Ledger V0 · สมุดสต็อก</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -13,7 +16,10 @@
       <p class="subtitle">Stock ledger (immutable events) · Ai CPU WEB rules · localStorage only · no server</p>
     </div>
     <div class="header-actions">
-      <span class="badge-live">OFFLINE · file://</span>
+      <span class="badge-live">OFFLINE · localStorage</span>
+      <button type="button" class="btn btn-ghost" id="btn-export" title="Export JSON for Google Drive backup">ส่งออก JSON</button>
+      <button type="button" class="btn btn-ghost" id="btn-import" title="Import JSON from Drive/manual file">นำเข้า JSON</button>
+      <input type="file" id="import-file" accept="application/json,.json" hidden />
       <button type="button" class="btn btn-ghost" id="btn-reset">รีเซ็ต / Re-seed</button>
     </div>
   </header>
@@ -208,7 +214,7 @@
         </p>
         <form id="form-asof">
           <div class="form-grid">
-            <label>วัน-เวลา (local)
+            <label>วัน-เวลา (Asia/Bangkok)
               <input id="asof-time" type="datetime-local" required />
             </label>
             <div class="form-actions">
