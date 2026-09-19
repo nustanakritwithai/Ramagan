@@ -631,3 +631,9 @@ button.btn-sell, button.btn-sell {
 .admin-block h3{margin:0 0 8px;font-size:0.95rem}
 .admin-block-wide{grid-column:1/-1}
 @media(max-width:900px){.admin-grid{grid-template-columns:1fr}}
+
+.shop-inline{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.shop-inline input,.shop-inline select{min-width:0;max-width:110px;padding:6px 8px;font-size:12px}
+.shop-inline .btn{padding:6px 10px;font-size:12px}
+.badge-off{color:#fbbf24;font-weight:700;font-size:12px}
+.badge-on{color:var(--accent);font-weight:700;font-size:12px}

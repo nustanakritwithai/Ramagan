@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=admin1" />
+  <link rel="stylesheet" href="styles.css?v=shop1" />
 </head>
 <body>
   <header class="app-header">
@@ -58,6 +58,7 @@
 
     <nav class="tabs" aria-label="Sections">
       <button type="button" data-tab="lots">สินค้า / Lots</button>
+      <button type="button" data-tab="shop">ตั้งค่าร้าน / Catalog</button>
       <button type="button" data-tab="receive">รับเข้า / Receive</button>
       <button type="button" class="active" data-tab="sale">หน้าพนักงานขาย / Sales</button>
       <button type="button" data-tab="shift">ก่อนเข้ากะ / Shift count</button>
@@ -91,6 +92,64 @@
       </div>
     </section>
 
+
+    <!-- Shop catalog settings (owner) -->
+    <section id="panel-shop" class="panel">
+      <div class="card">
+        <h2>ตั้งค่าสินค้า / Catalog</h2>
+        <p class="hint">เพิ่มสายพันธุ์ใหม่ · แก้ราคา/หมวด · เปิด-ปิดขาย (ของเก่าปิดได้ ไม่ลบถาวร) · รับของเข้าเป็น RECEIVE</p>
+
+        <h3>เพิ่มสินค้าใหม่</h3>
+        <form id="form-shop-add" class="form-grid">
+          <label>SKU *
+            <input id="shop-sku" required placeholder="STRAIN-001" />
+          </label>
+          <label>ชื่อสายพันธุ์ *
+            <input id="shop-name" required placeholder="ชื่อที่โชว์บนกริด" />
+          </label>
+          <label>หมวด *
+            <select id="shop-category" required></select>
+          </label>
+          <label>ราคา ฿/g *
+            <input id="shop-price" type="number" min="0" step="any" required />
+          </label>
+          <label>รับเข้าเริ่มต้น (g)
+            <input id="shop-qty" type="number" min="0" step="any" placeholder="0 = ยังไม่รับเข้า" />
+          </label>
+          <label>ผู้ทำรายการ *
+            <input id="shop-actor" required value="เจ้าของร้าน" />
+          </label>
+          <label>เหตุผลรับเข้า
+            <input id="shop-reason" value="รับของยกมา / ของใหม่" />
+          </label>
+          <div class="form-actions" style="grid-column:1/-1">
+            <button type="submit" class="btn">เพิ่มสินค้า</button>
+          </div>
+          <div id="shop-add-msg" class="msg" style="grid-column:1/-1"></div>
+        </form>
+
+        <h3 style="margin-top:18px">รายการในร้าน</h3>
+        <p class="hint">กริดขายโชว์เฉพาะที่ <strong>เปิดขาย</strong> และคงเหลือ &gt; 0</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ชื่อ</th>
+                <th>SKU</th>
+                <th>หมวด</th>
+                <th class="num">฿/g</th>
+                <th class="num">คงเหลือ</th>
+                <th>ขาย</th>
+                <th>แก้ไข / รับเข้า</th>
+              </tr>
+            </thead>
+            <tbody id="shop-catalog-body"></tbody>
+          </table>
+        </div>
+        <div id="shop-edit-msg" class="msg"></div>
+      </div>
+    </section>
+
     <!-- Receive -->
     <section id="panel-receive" class="panel">
       <div class="card">
@@ -104,9 +163,15 @@
             <label>ชื่อสินค้า *
               <input id="recv-name" required placeholder="ดอก OG Kush" />
             </label>
+            <label>หมวด
+              <select id="recv-category"></select>
+            </label>
+            <label>ราคา ฿/g
+              <input id="recv-price" type="number" min="0" step="any" placeholder="ถ้าสร้าง Lot ใหม่" />
+            </label>
             <label>หน่วย
               <select id="recv-unit">
-                <option value="g">g (กรัม)</option>
+                <option value="g" selected>g (กรัม)</option>
                 <option value="pcs">pcs (ชิ้น)</option>
               </select>
             </label>
@@ -399,10 +464,10 @@
 
   <!-- No type=module — works under file:// -->
   <script>window.RAMAGAN_GOOGLE_CLIENT_ID=window.RAMAGAN_GOOGLE_CLIENT_ID||"";</script>
-  <script src="js/drive.js?v=admin1"></script>
-  <script src="js/store.js?v=admin1"></script>
-  <script src="js/ledger.js?v=admin1"></script>
-  <script src="js/admin-analytics.js?v=admin1"></script>
-  <script src="js/app.js?v=admin1"></script>
+  <script src="js/drive.js?v=shop1"></script>
+  <script src="js/store.js?v=shop1"></script>
+  <script src="js/ledger.js?v=shop1"></script>
+  <script src="js/admin-analytics.js?v=shop1"></script>
+  <script src="js/app.js?v=shop1"></script>
 </body>
 </html>

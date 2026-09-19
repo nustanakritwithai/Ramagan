@@ -143,7 +143,8 @@
       unit: unit,
       expires_at: fields.expires_at || null,
       received_at: fields.received_at || new Date().toISOString(),
-      unit_price: fields.unit_price != null ? Number(fields.unit_price) : null
+      unit_price: fields.unit_price != null ? Number(fields.unit_price) : null,
+      for_sale: fields.for_sale === false || fields.for_sale === 0 || fields.for_sale === '0' ? false : true
     };
     if (!lot.sku || !lot.product_name) {
       throw new Error('sku and product_name are required');
@@ -249,9 +250,11 @@
     var state = getState();
     var now = new Date().toISOString();
     return state.lots.map(function (lot) {
-      return Object.assign({}, lot, {
+      var copy = Object.assign({}, lot, {
         qty_remaining: balanceAt(lot.lot_id, now)
       });
+      if (copy.for_sale === undefined) copy.for_sale = true;
+      return copy;
     });
   }
 
@@ -268,9 +271,54 @@
     var state = getState();
     var lot = findLot(state, lotId);
     if (!lot) return null;
-    return Object.assign({}, lot, {
+    var copy = Object.assign({}, lot, {
       qty_remaining: balanceAt(lotId, new Date().toISOString())
     });
+    if (copy.for_sale === undefined) copy.for_sale = true;
+    return copy;
+  }
+
+
+  /**
+   * Update mutable product fields on a lot. Never deletes lots/events.
+   * patch: { product_name?, sku?, category_id?, unit_price?, for_sale?, expires_at? }
+   */
+  function updateLot(lotId, patch) {
+    var state = getState();
+    var lot = findLot(state, lotId);
+    if (!lot) throw new Error('Unknown lot: ' + lotId);
+    patch = patch || {};
+    if (patch.product_name != null) {
+      var name = String(patch.product_name).trim();
+      if (!name) throw new Error('product_name required');
+      lot.product_name = name;
+    }
+    if (patch.sku != null) {
+      var sku = String(patch.sku).trim();
+      if (!sku) throw new Error('sku required');
+      lot.sku = sku;
+    }
+    if (patch.category_id !== undefined) {
+      lot.category_id = String(patch.category_id || '').trim() || null;
+    }
+    if (patch.unit_price !== undefined) {
+      if (patch.unit_price === null || patch.unit_price === '') lot.unit_price = null;
+      else {
+        var p = Number(patch.unit_price);
+        if (!isFinite(p) || p < 0) throw new Error('unit_price invalid');
+        lot.unit_price = p;
+      }
+    }
+    if (patch.for_sale !== undefined) {
+      lot.for_sale = !(patch.for_sale === false || patch.for_sale === 0 || patch.for_sale === '0');
+    }
+    if (patch.expires_at !== undefined) {
+      lot.expires_at = patch.expires_at || null;
+    }
+    // migrate older lots missing for_sale
+    if (lot.for_sale === undefined) lot.for_sale = true;
+    persist(state);
+    return Object.assign({}, lot);
   }
 
   function seedIfEmpty() {
@@ -1260,6 +1308,7 @@
     UNITS: UNITS,
     CATEGORIES: CATEGORIES,
     createLot: createLot,
+    updateLot: updateLot,
     appendEvent: appendEvent,
     balanceAt: balanceAt,
     balanceAllAt: balanceAllAt,

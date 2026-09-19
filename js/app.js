@@ -164,6 +164,7 @@
   }
 
   function refreshAll() {
+    renderShopCatalog();
     renderAdminDashboard();
     renderLots();
     renderEvents();
@@ -234,6 +235,9 @@
         var lot = StockLedger.createLot({
           sku: sku,
           product_name: name,
+          category_id: ($('recv-category') && $('recv-category').value) || null,
+          unit_price: $('recv-price') && $('recv-price').value !== '' ? Number($('recv-price').value) : null,
+          for_sale: true,
           unit: unit,
           expires_at: expires,
           received_at: new Date().toISOString()
@@ -356,6 +360,7 @@
     for (var i = 0; i < lots.length; i++) {
       var lot = lots[i];
       var rem = StockLedger.balanceAt(lot.lot_id);
+      if (lot.for_sale === false) continue;
       if (!(rem > 0)) continue;
       var cid = lot.category_id || 'other';
       if (posCategoryFilter !== 'all' && cid !== posCategoryFilter) continue;
@@ -827,6 +832,182 @@
     }
   }
 
+
+
+
+  /* —— Shop catalog (owner settings) —— */
+  function fillCategorySelect(sel, selected) {
+    if (!sel) return;
+    var cats = StockLedger.CATEGORIES || [];
+    var html = '';
+    for (var i = 0; i < cats.length; i++) {
+      var c = cats[i];
+      html +=
+        '<option value="' +
+        escapeHtml(c.id) +
+        '"' +
+        (selected && selected === c.id ? ' selected' : '') +
+        '>' +
+        escapeHtml(c.name) +
+        (c.unit_price != null ? ' · ฿' + c.unit_price : '') +
+        '</option>';
+    }
+    sel.innerHTML = html;
+  }
+
+  function renderShopCatalog() {
+    var body = $('shop-catalog-body');
+    if (!body) return;
+    fillCategorySelect($('shop-category'));
+    fillCategorySelect($('recv-category'));
+    var lots = StockLedger.listLots() || [];
+    if (!lots.length) {
+      body.innerHTML = '<tr><td colspan="7" class="muted">ยังไม่มีสินค้า — เพิ่มด้านบน</td></tr>';
+      return;
+    }
+    lots = lots.slice().sort(function (a, b) {
+      return String(a.product_name || '').localeCompare(String(b.product_name || ''), 'th');
+    });
+    var html = '';
+    for (var i = 0; i < lots.length; i++) {
+      var L = lots[i];
+      var rem = StockLedger.balanceAt(L.lot_id);
+      var on = L.for_sale !== false;
+      var cats = StockLedger.CATEGORIES || [];
+      var catOpts = '';
+      for (var c = 0; c < cats.length; c++) {
+        catOpts +=
+          '<option value="' +
+          escapeHtml(cats[c].id) +
+          '"' +
+          (L.category_id === cats[c].id ? ' selected' : '') +
+          '>' +
+          escapeHtml(cats[c].name) +
+          '</option>';
+      }
+      html +=
+        '<tr data-lot-id="' +
+        escapeHtml(L.lot_id) +
+        '">' +
+        '<td><input class="shop-name" value="' +
+        escapeHtml(L.product_name) +
+        '" /></td>' +
+        '<td><input class="shop-sku" value="' +
+        escapeHtml(L.sku) +
+        '" /></td>' +
+        '<td><select class="shop-cat">' +
+        catOpts +
+        '</select></td>' +
+        '<td class="num"><input class="shop-price" type="number" min="0" step="any" value="' +
+        (L.unit_price != null ? L.unit_price : '') +
+        '" /></td>' +
+        '<td class="num">' +
+        fmtQty(rem, L.unit || 'g') +
+        '</td>' +
+        '<td>' +
+        (on
+          ? '<span class="badge-on">เปิด</span>'
+          : '<span class="badge-off">ปิด</span>') +
+        '</td>' +
+        '<td><div class="shop-inline">' +
+        '<button type="button" class="btn btn-secondary" data-shop-act="save">บันทึก</button>' +
+        '<button type="button" class="btn btn-ghost" data-shop-act="toggle">' +
+        (on ? 'ปิดขาย' : 'เปิดขาย') +
+        '</button>' +
+        '<input class="shop-recv-qty" type="number" min="0.001" step="any" placeholder="g รับเข้า" />' +
+        '<button type="button" class="btn btn-ghost" data-shop-act="recv">RECEIVE</button>' +
+        '</div></td></tr>';
+    }
+    body.innerHTML = html;
+  }
+
+  function onShopAdd(ev) {
+    ev.preventDefault();
+    var msg = $('shop-add-msg');
+    try {
+      var sku = $('shop-sku').value.trim();
+      var name = $('shop-name').value.trim();
+      var cat = $('shop-category').value;
+      var price = Number($('shop-price').value);
+      var qty = Number($('shop-qty').value || 0);
+      var actor = $('shop-actor').value.trim() || 'owner';
+      var reason = ($('shop-reason') && $('shop-reason').value.trim()) || 'รับของใหม่';
+      var lot = StockLedger.createLot({
+        sku: sku,
+        product_name: name,
+        category_id: cat,
+        unit: 'g',
+        unit_price: price,
+        for_sale: true
+      });
+      if (qty > 0) {
+        StockLedger.appendEvent({
+          lot_id: lot.lot_id,
+          type: 'RECEIVE',
+          qty: qty,
+          actor_user_id: actor,
+          reason: reason
+        });
+      }
+      showMsg(msg, 'เพิ่ม ' + name + ' · lot ' + lot.lot_id + (qty > 0 ? ' · RECEIVE ' + qty + 'g' : ''), false);
+      $('form-shop-add').reset();
+      $('shop-actor').value = actor;
+      refreshAll();
+    } catch (err) {
+      showMsg(msg, String(err.message || err), true);
+    }
+  }
+
+  function onShopCatalogClick(ev) {
+    var btn = ev.target.closest('[data-shop-act]');
+    if (!btn) return;
+    var row = btn.closest('tr[data-lot-id]');
+    if (!row) return;
+    var lotId = row.getAttribute('data-lot-id');
+    var act = btn.getAttribute('data-shop-act');
+    var msg = $('shop-edit-msg');
+    try {
+      if (act === 'save') {
+        StockLedger.updateLot(lotId, {
+          product_name: row.querySelector('.shop-name').value,
+          sku: row.querySelector('.shop-sku').value,
+          category_id: row.querySelector('.shop-cat').value,
+          unit_price: row.querySelector('.shop-price').value
+        });
+        showMsg(msg, 'บันทึก ' + lotId + ' แล้ว', false);
+        refreshAll();
+      } else if (act === 'toggle') {
+        var lot = StockLedger.getLot(lotId);
+        var next = !(lot && lot.for_sale !== false);
+        StockLedger.updateLot(lotId, { for_sale: next });
+        showMsg(msg, (next ? 'เปิดขาย' : 'ปิดขาย') + ' ' + lotId, false);
+        refreshAll();
+      } else if (act === 'recv') {
+        var q = Number(row.querySelector('.shop-recv-qty').value);
+        if (!(q > 0)) throw new Error('ใส่จำนวนกรัมที่รับเข้า');
+        StockLedger.appendEvent({
+          lot_id: lotId,
+          type: 'RECEIVE',
+          qty: q,
+          actor_user_id: ($('shop-actor') && $('shop-actor').value.trim()) || 'owner',
+          reason: 'รับของเข้า lot'
+        });
+        showMsg(msg, 'RECEIVE ' + q + 'g → ' + lotId, false);
+        refreshAll();
+      }
+    } catch (err) {
+      showMsg(msg, String(err.message || err), true);
+    }
+  }
+
+  function bindShopUi() {
+    var form = $('form-shop-add');
+    if (form) form.addEventListener('submit', onShopAdd);
+    var body = $('shop-catalog-body');
+    if (body) body.addEventListener('click', onShopCatalogClick);
+    fillCategorySelect($('shop-category'));
+    fillCategorySelect($('recv-category'));
+  }
 
 
   /* —— Admin dashboard (events-only analytics) —— */
@@ -1375,6 +1556,7 @@
         var panel = document.getElementById('panel-' + id);
         if (panel) panel.classList.add('active');
         if (id === 'admin') renderAdminDashboard();
+        if (id === 'shop') renderShopCatalog();
       });
     }
   }
@@ -1389,6 +1571,7 @@
     bindShiftUi();
     bindDriveUi();
     bindAdminUi();
+    bindShopUi();
     window.__ramaganShiftVar = updateShiftVariances;
     document.addEventListener('input', function (e) {
       if (e.target && e.target.classList && e.target.classList.contains('shift-count')) {
