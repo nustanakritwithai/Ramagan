@@ -159,18 +159,18 @@
   }
 
   function refreshSelects() {
-    // Sales cashier: only lots with remaining > 0
-    lotOptions($('sale-lot'), true, true);
-    lotOptions($('adjust-lot'), true, false);
-    lotOptions($('destroy-lot'), true, false);
+    if ($('adjust-lot')) lotOptions($('adjust-lot'), true, false);
+    if ($('destroy-lot')) lotOptions($('destroy-lot'), true, false);
   }
 
   function refreshAll() {
     renderLots();
     renderEvents();
     refreshSelects();
-    updateSalePreview();
+    renderPosGrid();
+    renderPosCart();
   }
+
 
   var BKK_OFFSET = '+07:00';
 
@@ -257,111 +257,258 @@
   }
 
 
-  function updateSalePreview() {
-    var remEl = $('sale-remaining');
-    var afterEl = $('sale-after');
-    var checkEl = $('sale-check');
-    var btn = $('btn-sell');
-    if (!remEl || !StockLedger) return;
-    var lotId = $('sale-lot') && $('sale-lot').value;
-    var qty = Number($('sale-qty') && $('sale-qty').value);
-    if (!lotId) {
-      remEl.textContent = '—';
-      afterEl.textContent = '—';
-      checkEl.textContent = 'เลือก Lot และจำนวนเพื่อตรวจ';
-      checkEl.className = 'cashier-check muted';
-      if (btn) btn.disabled = true;
-      return;
-    }
-    var remaining = StockLedger.balanceAt(lotId);
-    var lot = null;
-    var lotsNow = StockLedger.listLots() || [];
-    for (var li = 0; li < lotsNow.length; li++) {
-      if (lotsNow[li].lot_id === lotId) {
-        lot = lotsNow[li];
-        break;
-      }
-    }
-    var unit = lot && lot.unit ? lot.unit : '';
-    remEl.textContent = remaining + (unit ? ' ' + unit : '');
-    if (!(qty > 0)) {
-      afterEl.textContent = '—';
-      checkEl.textContent = 'ใส่จำนวนที่จะขาย';
-      checkEl.className = 'cashier-check muted';
-      if (btn) btn.disabled = true;
-      return;
-    }
-    var check = StockLedger.validateSale(lotId, qty);
-    afterEl.textContent = check.ok
-      ? (check.remaining - qty) + (unit ? ' ' + unit : '')
-      : '—';
-    checkEl.textContent = check.message;
-    checkEl.className = 'cashier-check ' + (check.ok ? 'ok' : 'bad');
-    if (btn) btn.disabled = !check.ok;
+
+  /* —— Loyverse-style POS cart (hides lot from cashier) —— */
+  var posCart = []; // { lot_id, product_name, unit, unit_price, qty }
+  var posPayment = 'cash'; // cash | transfer
+
+  function fmtBaht(n) {
+    var v = Number(n) || 0;
+    return '฿' + v.toLocaleString('th-TH', { maximumFractionDigits: 2 });
   }
 
-  function onSale(ev) {
-    ev.preventDefault();
-    var msg = $('sale-msg');
-    try {
-      var lotId = $('sale-lot').value;
-      var qty = Number($('sale-qty').value);
-      var actor = $('sale-actor').value.trim() || 'cashier';
-      var reason = $('sale-reason').value.trim() || 'ขายหน้าร้าน';
+  function posLineTotal(line) {
+    var price = Number(line.unit_price);
+    if (!isFinite(price)) price = 0;
+    return price * Number(line.qty);
+  }
 
-      if (!lotId) {
-        showMsg(msg, 'กรุณาเลือก Lot ที่จะขาย / please pick a lot', true);
+  function posCartTotal() {
+    var sum = 0;
+    for (var i = 0; i < posCart.length; i++) sum += posLineTotal(posCart[i]);
+    return sum;
+  }
+
+  function findCartLine(lotId) {
+    for (var i = 0; i < posCart.length; i++) {
+      if (posCart[i].lot_id === lotId) return posCart[i];
+    }
+    return null;
+  }
+
+  function renderPosGrid() {
+    var grid = $('pos-product-grid');
+    if (!grid) return;
+    var lots = StockLedger.listLots() || [];
+    var html = '';
+    var any = false;
+    for (var i = 0; i < lots.length; i++) {
+      var lot = lots[i];
+      var rem = StockLedger.balanceAt(lot.lot_id);
+      if (!(rem > 0)) continue;
+      any = true;
+      var price = lot.unit_price != null ? Number(lot.unit_price) : 0;
+      html +=
+        '<button type="button" class="pos-tile" data-lot-id="' +
+        escapeHtml(lot.lot_id) +
+        '"' +
+        (rem > 0 ? '' : ' disabled') +
+        '>' +
+        '<span class="pos-tile-name">' +
+        escapeHtml(lot.product_name) +
+        '</span>' +
+        '<span class="pos-tile-price">' +
+        fmtBaht(price) +
+        '</span>' +
+        '<span class="pos-tile-stock">คงเหลือ ' +
+        fmtQty(rem, lot.unit) +
+        '</span>' +
+        '</button>';
+    }
+    grid.innerHTML = any
+      ? html
+      : '<p class="muted">ไม่มีสินค้าคงเหลือ — รับเข้าก่อน</p>';
+  }
+
+  function renderPosCart() {
+    var box = $('pos-cart-lines');
+    var totalEl = $('pos-cart-total');
+    var btn = $('btn-pos-checkout');
+    if (!box) return;
+    if (!posCart.length) {
+      box.innerHTML =
+        '<p class="muted pos-cart-empty">ยังไม่มีสินค้า — กดกล่องด้านซ้าย</p>';
+      if (totalEl) totalEl.textContent = fmtBaht(0);
+      if (btn) btn.disabled = true;
+      return;
+    }
+    var html = '';
+    for (var i = 0; i < posCart.length; i++) {
+      var line = posCart[i];
+      html +=
+        '<div class="pos-line" data-lot-id="' +
+        escapeHtml(line.lot_id) +
+        '">' +
+        '<div class="pos-line-name">' +
+        escapeHtml(line.product_name) +
+        '</div>' +
+        '<div class="pos-line-meta">' +
+        fmtBaht(line.unit_price || 0) +
+        ' / ' +
+        escapeHtml(line.unit || '') +
+        ' · รวม ' +
+        fmtBaht(posLineTotal(line)) +
+        '</div>' +
+        '<div class="pos-line-qty">' +
+        '<button type="button" data-act="dec" aria-label="ลด">−</button>' +
+        '<input type="number" min="0.001" step="any" value="' +
+        line.qty +
+        '" data-act="qty" />' +
+        '<button type="button" data-act="inc" aria-label="เพิ่ม">+</button>' +
+        '</div>' +
+        '<button type="button" class="pos-line-remove" data-act="rm">ลบ</button>' +
+        '</div>';
+    }
+    box.innerHTML = html;
+    if (totalEl) totalEl.textContent = fmtBaht(posCartTotal());
+    if (btn) btn.disabled = false;
+  }
+
+  function addToPosCart(lotId) {
+    var lot = StockLedger.getLot(lotId);
+    if (!lot) return;
+    var rem = StockLedger.balanceAt(lotId);
+    if (!(rem > 0)) {
+      showMsg($('sale-msg'), 'สินค้านี้หมดแล้ว', true);
+      return;
+    }
+    var line = findCartLine(lotId);
+    if (line) {
+      if (line.qty + 1 > rem) {
+        showMsg($('sale-msg'), 'เกินคงเหลือ (' + rem + ')', true);
         return;
       }
-      if (!actor) {
-        showMsg(msg, 'ต้องระบุผู้ทำรายการ (actor_user_id)', true);
-        return;
-      }
-
-      var check = StockLedger.validateSale(lotId, qty);
-      if (!check.ok) {
-        // Clear Thai oversell / qty error from validateSale
-        showMsg(msg, check.message, true);
-        return;
-      }
-
-      var remainingAfter = Math.round((check.remaining - qty) * 1000) / 1000;
-      StockLedger.appendEvent({
-        lot_id: lotId,
-        type: 'SALE',
-        qty: qty,
-        actor_user_id: actor,
-        reason: reason
+      line.qty = Math.round((line.qty + 1) * 1000) / 1000;
+    } else {
+      posCart.push({
+        lot_id: lot.lot_id,
+        product_name: lot.product_name,
+        unit: lot.unit,
+        unit_price: lot.unit_price != null ? Number(lot.unit_price) : 0,
+        qty: 1
       });
-      showMsg(
-        msg,
-        'ขายสำเร็จ · Lot ' +
-          lotId +
-          ' · ขาย ' +
-          qty +
-          ' (คงเหลือก่อน ' +
-          check.remaining +
-          ' → หลัง ' +
-          remainingAfter +
-          ')',
-        false
-      );
-      $('form-sale').reset();
-      $('sale-actor').value = actor;
-      refreshAll();
-      onAsOf(); // keep as-of audit view in sync
-    } catch (err) {
-      var raw = String(err.message || err);
-      if (/Insufficient stock|oversell/i.test(raw)) {
+    }
+    showMsg($('sale-msg'), '', false);
+    renderPosCart();
+  }
+
+  function setCartQty(lotId, qty) {
+    var rem = StockLedger.balanceAt(lotId);
+    var q = Number(qty);
+    var line = findCartLine(lotId);
+    if (!line) return;
+    if (!(q > 0) || !isFinite(q)) {
+      posCart = posCart.filter(function (L) {
+        return L.lot_id !== lotId;
+      });
+    } else {
+      if (q > rem) q = rem;
+      line.qty = Math.round(q * 1000) / 1000;
+    }
+    renderPosCart();
+  }
+
+  function onPosCheckout() {
+    var msg = $('sale-msg');
+    if (!posCart.length) {
+      showMsg(msg, 'ตะกร้าว่าง', true);
+      return;
+    }
+    var payment = posPayment === 'transfer' ? 'transfer' : 'cash';
+    var actor = 'cashier';
+    // Validate all lines first (no partial write)
+    for (var i = 0; i < posCart.length; i++) {
+      var line = posCart[i];
+      var check = StockLedger.validateSale(line.lot_id, line.qty);
+      if (!check.ok) {
         showMsg(
           msg,
-          'ขายเกินคงเหลือ / ไม่สามารถขายได้: ' + raw,
+          (line.product_name || line.lot_id) + ': ' + check.message,
           true
         );
-      } else {
-        showMsg(msg, raw, true);
+        return;
       }
     }
+    try {
+      var sold = 0;
+      for (var j = 0; j < posCart.length; j++) {
+        var L = posCart[j];
+        var lineTotal = posLineTotal(L);
+        StockLedger.appendEvent({
+          lot_id: L.lot_id,
+          type: 'SALE',
+          qty: L.qty,
+          actor_user_id: actor,
+          reason: 'ขายหน้าร้าน',
+          meta: {
+            payment: payment,
+            unit_price: L.unit_price || 0,
+            line_total: lineTotal,
+            product_name: L.product_name
+          }
+        });
+        sold++;
+      }
+      var payLabel = payment === 'transfer' ? 'โอน' : 'เงินสด';
+      showMsg(
+        msg,
+        'ขายสำเร็จ ' +
+          sold +
+          ' รายการ · รวม ' +
+          fmtBaht(posCartTotal()) +
+          ' · ' +
+          payLabel,
+        false
+      );
+      posCart = [];
+      renderPosCart();
+      refreshAll();
+    } catch (err) {
+      showMsg(msg, String(err.message || err), true);
+      refreshAll();
+    }
+  }
+
+  function bindPosUi() {
+    var grid = $('pos-product-grid');
+    if (grid) {
+      grid.addEventListener('click', function (e) {
+        var btn = e.target.closest('[data-lot-id].pos-tile');
+        if (!btn || btn.disabled) return;
+        addToPosCart(btn.getAttribute('data-lot-id'));
+      });
+    }
+    var lines = $('pos-cart-lines');
+    if (lines) {
+      lines.addEventListener('click', function (e) {
+        var row = e.target.closest('.pos-line');
+        if (!row) return;
+        var lotId = row.getAttribute('data-lot-id');
+        var act = e.target.getAttribute('data-act');
+        var line = findCartLine(lotId);
+        if (!line) return;
+        if (act === 'inc') setCartQty(lotId, line.qty + 1);
+        else if (act === 'dec') setCartQty(lotId, line.qty - 1);
+        else if (act === 'rm') setCartQty(lotId, 0);
+      });
+      lines.addEventListener('change', function (e) {
+        if (e.target.getAttribute('data-act') !== 'qty') return;
+        var row = e.target.closest('.pos-line');
+        if (!row) return;
+        setCartQty(row.getAttribute('data-lot-id'), e.target.value);
+      });
+    }
+    var payCash = $('pay-cash');
+    var payTransfer = $('pay-transfer');
+    function setPay(p) {
+      posPayment = p;
+      if (payCash) payCash.classList.toggle('active', p === 'cash');
+      if (payTransfer) payTransfer.classList.toggle('active', p === 'transfer');
+    }
+    if (payCash) payCash.addEventListener('click', function () { setPay('cash'); });
+    if (payTransfer) payTransfer.addEventListener('click', function () { setPay('transfer'); });
+    var checkout = $('btn-pos-checkout');
+    if (checkout) checkout.addEventListener('click', onPosCheckout);
   }
 
   function onAdjust(ev) {
@@ -559,10 +706,7 @@
     bindTabs();
 
     $('form-receive').addEventListener('submit', onReceive);
-    $('form-sale').addEventListener('submit', onSale);
-    $('sale-lot').addEventListener('change', updateSalePreview);
-    $('sale-qty').addEventListener('input', updateSalePreview);
-    updateSalePreview();
+    bindPosUi();
     $('form-adjust').addEventListener('submit', onAdjust);
     $('form-destroy').addEventListener('submit', onDestroy);
     $('form-asof').addEventListener('submit', onAsOf);

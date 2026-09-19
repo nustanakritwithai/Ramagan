@@ -33,16 +33,16 @@
     </div>
 
     <nav class="tabs" aria-label="Sections">
-      <button type="button" class="active" data-tab="lots">สินค้า / Lots</button>
+      <button type="button" data-tab="lots">สินค้า / Lots</button>
       <button type="button" data-tab="receive">รับเข้า / Receive</button>
-      <button type="button" data-tab="sale">หน้าพนักงานขาย / Sales</button>
+      <button type="button" class="active" data-tab="sale">หน้าพนักงานขาย / Sales</button>
       <button type="button" data-tab="adjust">ปรับ / ทำลาย</button>
       <button type="button" data-tab="asof">รายงาน ณ เวลา / As-of</button>
       <button type="button" data-tab="events">บันทึกเหตุการณ์ / Log</button>
     </nav>
 
     <!-- Lots -->
-    <section id="panel-lots" class="panel active">
+    <section id="panel-lots" class="panel">
       <div class="card">
         <h2>รายการ Lot / Product lots</h2>
         <p class="hint">qty_remaining คำนวณจากเหตุการณ์ (derived) — ไม่ใช่ค่าที่แก้ใน UI</p>
@@ -108,39 +108,33 @@
       </div>
     </section>
 
-    <!-- Sales cashier (หน้าพนักงานขาย) — thin storefront wrapping ledger SALE -->
-    <section id="panel-sale" class="panel">
-      <div class="card card-cashier">
-        <h2>หน้าพนักงานขาย / Sales cashier</h2>
-        <p class="hint">
-          บางๆ ตามล็อก: เลือก Lot → จำนวน → <code>validateSale</code> → <code>SALE</code> ·
-          กัน oversell · ยังไม่บัญชี/CRM · ไม่แตะหน้า as-of
-        </p>
-        <div id="sale-stock-preview" class="cashier-preview" aria-live="polite">
-          <div><span class="muted">คงเหลือตอนนี้</span><strong id="sale-remaining">—</strong></div>
-          <div><span class="muted">หลังขาย</span><strong id="sale-after">—</strong></div>
-          <div id="sale-check" class="cashier-check muted">เลือก Lot และจำนวนเพื่อตรวจ</div>
-        </div>
-        <form id="form-sale" class="cashier-form">
-          <div class="cashier-grid">
-            <label class="cashier-lot">Lot ที่ขายได้ * <span class="muted">(เฉพาะคงเหลือ &gt; 0)</span>
-              <select id="sale-lot" required></select>
-            </label>
-            <label>จำนวน *
-              <input id="sale-qty" type="number" min="0.001" step="any" required placeholder="เช่น 1 หรือ 3.5" />
-            </label>
-            <label>ผู้ทำรายการ (actor_user_id) *
-              <input id="sale-actor" required value="cashier" />
-            </label>
-            <label>หมายเหตุ / เหตุผล <span class="muted">(ไม่บังคับ)</span>
-              <input id="sale-reason" placeholder="ขายหน้าร้าน" />
-            </label>
+    <!-- Sales cashier (Loyverse-style grid) — wraps ledger SALE, hides lot from cashier -->
+    <section id="panel-sale" class="panel active">
+      <div class="pos-shell">
+        <div class="pos-main">
+          <div class="pos-head">
+            <h2>ขายหน้าร้าน</h2>
+            <p class="hint">กดชื่อสินค้า → ใส่จำนวนในตะกร้า → เลือกเงินสด/โอน → ตกลง</p>
           </div>
-          <div class="cashier-actions">
-            <button type="submit" class="btn btn-sell" id="btn-sell">ขาย / Sell</button>
-          </div>
+          <div id="pos-product-grid" class="pos-grid" aria-label="รายการสินค้า"></div>
           <div id="sale-msg" class="msg" role="status" aria-live="polite"></div>
-        </form>
+        </div>
+        <aside class="pos-cart" aria-label="ตะกร้า">
+          <h3>ตะกร้า</h3>
+          <div id="pos-cart-lines" class="pos-cart-lines">
+            <p class="muted pos-cart-empty">ยังไม่มีสินค้า — กดกล่องด้านซ้าย</p>
+          </div>
+          <div class="pos-cart-total">
+            <span>รวมยอด</span>
+            <strong id="pos-cart-total">฿0</strong>
+          </div>
+          <div class="pos-pay" role="group" aria-label="ช่องทางชำระ">
+            <button type="button" class="pos-pay-btn active" data-pay="cash" id="pay-cash">เงินสด</button>
+            <button type="button" class="pos-pay-btn" data-pay="transfer" id="pay-transfer">โอน</button>
+          </div>
+          <button type="button" class="btn btn-sell" id="btn-pos-checkout" disabled>ตกลง / ขาย</button>
+          <p class="hint pos-cart-note">ระบบตัดสต็อกอัตโนมัติ · ไม่ต้องเลือก Lot</p>
+        </aside>
       </div>
     </section>
 

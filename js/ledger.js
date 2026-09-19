@@ -131,7 +131,8 @@
       product_name: String(fields.product_name || '').trim(),
       unit: unit,
       expires_at: fields.expires_at || null,
-      received_at: fields.received_at || new Date().toISOString()
+      received_at: fields.received_at || new Date().toISOString(),
+      unit_price: fields.unit_price != null ? Number(fields.unit_price) : null
     };
     if (!lot.sku || !lot.product_name) {
       throw new Error('sku and product_name are required');
@@ -269,6 +270,7 @@
       sku: 'FLOWER-OGK',
       product_name: 'ดอก OG Kush',
       unit: 'g',
+      unit_price: 120,
       expires_at: '2027-03-01',
       received_at: '2026-09-01T09:00:00.000+07:00'
     });
@@ -277,6 +279,7 @@
       sku: 'OIL-CBD10',
       product_name: 'น้ำมัน CBD 10%',
       unit: 'pcs',
+      unit_price: 450,
       expires_at: '2027-06-15',
       received_at: '2026-09-05T10:30:00.000+07:00'
     });
@@ -285,6 +288,7 @@
       sku: 'EDIBLE-GEL',
       product_name: 'กัมมี่เจลลี่ THC',
       unit: 'pcs',
+      unit_price: 80,
       expires_at: '2026-12-31',
       received_at: '2026-09-10T14:00:00.000+07:00'
     });
