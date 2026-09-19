@@ -911,6 +911,32 @@
   }
 
   function bindDriveUi() {
+    var idInput = $('drive-client-id');
+    if (idInput && window.RamaganDrive && RamaganDrive.getClientId) {
+      idInput.value = RamaganDrive.getClientId() || '';
+    }
+    var saveId = $('btn-drive-save-id');
+    if (saveId) {
+      saveId.addEventListener('click', function () {
+        var v = ($('drive-client-id') && $('drive-client-id').value.trim()) || '';
+        if (!window.RamaganDrive || !RamaganDrive.setClientId) {
+          alert('โมดูล Drive ยังไม่พร้อม');
+          return;
+        }
+        RamaganDrive.setClientId(v);
+        refreshDriveStatus();
+        alert(v ? 'บันทึก Client ID บนเครื่องนี้แล้ว' : 'ล้าง Client ID แล้ว');
+      });
+    }
+    var clearId = $('btn-drive-clear-id');
+    if (clearId) {
+      clearId.addEventListener('click', function () {
+        if ($('drive-client-id')) $('drive-client-id').value = '';
+        if (window.RamaganDrive && RamaganDrive.setClientId) RamaganDrive.setClientId('');
+        refreshDriveStatus();
+      });
+    }
+
     var c = $('btn-drive-connect');
     var d = $('btn-drive-disconnect');
     var p = $('btn-drive-push');

@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=ui1" />
+  <link rel="stylesheet" href="styles.css?v=ui2" />
 </head>
 <body>
   <header class="app-header">
@@ -29,6 +29,20 @@
       <button type="button" class="btn btn-ghost" id="btn-reset" title="ล้างแล้วใส่ seed 5 หมวดใหม่">รีเซ็ต</button>
     </div>
   </header>
+
+  <details class="drive-setup" id="drive-setup">
+    <summary>ตั้งค่า Google Drive (OAuth Client ID)</summary>
+    <div class="drive-setup-body">
+      <p class="hint">สร้าง Client ID ชนิด <strong>Web application</strong> ใน Google Cloud → Authorized JavaScript origins ใส่ <code>https://nustanakritwithai.github.io</code> · เก็บในเครื่องนี้เท่านั้น ไม่ขึ้น git</p>
+      <label>OAuth Client ID
+        <input id="drive-client-id" type="text" placeholder="xxxx.apps.googleusercontent.com" autocomplete="off" spellcheck="false" />
+      </label>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="btn-drive-save-id">บันทึก Client ID</button>
+        <button type="button" class="btn btn-ghost" id="btn-drive-clear-id">ล้าง</button>
+      </div>
+    </div>
+  </details>
 
   <main>
     <div class="invariant-bar">
@@ -296,9 +310,9 @@
 
   <!-- No type=module — works under file:// -->
   <script>window.RAMAGAN_GOOGLE_CLIENT_ID=window.RAMAGAN_GOOGLE_CLIENT_ID||"";</script>
-  <script src="js/drive.js?v=ui1"></script>
-  <script src="js/store.js?v=ui1"></script>
-  <script src="js/ledger.js?v=ui1"></script>
-  <script src="js/app.js?v=ui1"></script>
+  <script src="js/drive.js?v=ui2"></script>
+  <script src="js/store.js?v=ui2"></script>
+  <script src="js/ledger.js?v=ui2"></script>
+  <script src="js/app.js?v=ui2"></script>
 </body>
 </html>

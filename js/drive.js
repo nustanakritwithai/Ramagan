@@ -11,7 +11,24 @@
   var listeners = [];
 
   function clientId() {
-    return String(global.RAMAGAN_GOOGLE_CLIENT_ID || '').trim();
+    var fromWindow = String(global.RAMAGAN_GOOGLE_CLIENT_ID || '').trim();
+    if (fromWindow) return fromWindow;
+    try {
+      return String(localStorage.getItem('ramagan-google-client-id') || '').trim();
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function setClientId(id) {
+    id = String(id || '').trim();
+    try {
+      if (id) localStorage.setItem('ramagan-google-client-id', id);
+      else localStorage.removeItem('ramagan-google-client-id');
+    } catch (e) {}
+    global.RAMAGAN_GOOGLE_CLIENT_ID = id;
+    emit();
+    return status();
   }
 
   function getToken() {
@@ -209,6 +226,8 @@
     uploadJson: uploadJson,
     onChange: onChange,
     getToken: getToken,
-    getFileId: getFileId
+    getFileId: getFileId,
+    setClientId: setClientId,
+    getClientId: clientId
   };
 })(typeof window !== 'undefined' ? window : globalThis);

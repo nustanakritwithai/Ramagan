@@ -519,3 +519,15 @@ button.btn-sell, button.btn-sell {
   background: #0d151e;
   border: 1px solid var(--border-soft);
 }
+
+.drive-setup{
+  max-width:1280px;margin:10px auto 0;padding:0 18px;
+}
+.drive-setup summary{
+  cursor:pointer;color:var(--muted);font-weight:700;padding:8px 0;
+}
+.drive-setup-body{
+  background:var(--bg-elev);border:1px solid var(--border-soft);
+  border-radius:var(--radius);padding:14px;display:grid;gap:10px;
+}
+.drive-setup-body input{width:100%;}
