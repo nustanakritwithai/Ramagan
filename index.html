@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cannabis Stock Ledger V0 · สมุดสต็อก</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <h1>สมุดสต็อกกัญชา <span>V0</span></h1>
+      <p class="subtitle">Stock ledger (immutable events) · Ai CPU WEB rules · localStorage only · no server</p>
+    </div>
+    <div class="header-actions">
+      <span class="badge-live">OFFLINE · file://</span>
+      <button type="button" class="btn btn-ghost" id="btn-reset">รีเซ็ต / Re-seed</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="invariant-bar">
+      <span>🔒 Events immutable (append-only)</span>
+      <span>⏱ Balance@T = Σ events ≤ T</span>
+      <span>🚫 No oversell</span>
+      <span>👤 actor_user_id + reason + occurred_at</span>
+    </div>
+
+    <nav class="tabs" aria-label="Sections">
+      <button type="button" class="active" data-tab="lots">สินค้า / Lots</button>
+      <button type="button" data-tab="receive">รับเข้า / Receive</button>
+      <button type="button" data-tab="sale">ขาย / Sale</button>
+      <button type="button" data-tab="adjust">ปรับ / ทำลาย</button>
+      <button type="button" data-tab="asof">รายงาน ณ เวลา / As-of</button>
+      <button type="button" data-tab="events">บันทึกเหตุการณ์ / Log</button>
+    </nav>
+
+    <!-- Lots -->
+    <section id="panel-lots" class="panel active">
+      <div class="card">
+        <h2>รายการ Lot / Product lots</h2>
+        <p class="hint">qty_remaining คำนวณจากเหตุการณ์ (derived) — ไม่ใช่ค่าที่แก้ใน UI</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Lot ID</th>
+                <th>SKU</th>
+                <th>ชื่อสินค้า</th>
+                <th>คงเหลือ</th>
+                <th>หน่วย</th>
+                <th>หมดอายุ</th>
+                <th>รับเข้าเมื่อ</th>
+              </tr>
+            </thead>
+            <tbody id="lots-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Receive -->
+    <section id="panel-receive" class="panel">
+      <div class="card">
+        <h2>รับเข้าสต็อก / Receive</h2>
+        <p class="hint">สร้าง Lot ใหม่ หรือใส่ lot_id เดิมเพื่อรับเข้าเพิ่ม (เหตุการณ์ RECEIVE)</p>
+        <form id="form-receive">
+          <div class="form-grid">
+            <label>SKU *
+              <input id="recv-sku" required placeholder="FLOWER-OGK" />
+            </label>
+            <label>ชื่อสินค้า *
+              <input id="recv-name" required placeholder="ดอก OG Kush" />
+            </label>
+            <label>หน่วย
+              <select id="recv-unit">
+                <option value="g">g (กรัม)</option>
+                <option value="pcs">pcs (ชิ้น)</option>
+              </select>
+            </label>
+            <label>จำนวน *
+              <input id="recv-qty" type="number" min="0.001" step="any" required />
+            </label>
+            <label>หมดอายุ
+              <input id="recv-expires" type="date" />
+            </label>
+            <label>Lot เดิม (ถ้ามี)
+              <input id="recv-existing-lot" placeholder="ว่าง = สร้างใหม่" />
+            </label>
+            <label>ผู้ทำรายการ *
+              <input id="recv-actor" required value="ร้าน / Staff" />
+            </label>
+            <label>เหตุผล *
+              <input id="recv-reason" required value="รับเข้าจากซัพพลายเออร์" />
+            </label>
+          </div>
+          <div class="form-actions" style="margin-top:12px">
+            <button type="submit" class="btn">บันทึก RECEIVE</button>
+          </div>
+          <div id="receive-msg" class="msg"></div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Sale -->
+    <section id="panel-sale" class="panel">
+      <div class="card">
+        <h2>ขาย / Sale</h2>
+        <p class="hint">validateSale ป้องกันขายเกินคงเหลือของ Lot</p>
+        <form id="form-sale">
+          <div class="form-grid">
+            <label>Lot *
+              <select id="sale-lot" required></select>
+            </label>
+            <label>จำนวน *
+              <input id="sale-qty" type="number" min="0.001" step="any" required />
+            </label>
+            <label>ผู้ทำรายการ *
+              <input id="sale-actor" required value="พนักงาน" />
+            </label>
+            <label>เหตุผล *
+              <input id="sale-reason" required value="ขายหน้าร้าน" />
+            </label>
+          </div>
+          <div class="form-actions" style="margin-top:12px">
+            <button type="submit" class="btn">บันทึก SALE</button>
+          </div>
+          <div id="sale-msg" class="msg"></div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Adjust / Destroy -->
+    <section id="panel-adjust" class="panel">
+      <div class="grid-2">
+        <div class="card">
+          <h2>ปรับยอด / Adjust</h2>
+          <p class="hint">ชดเชยด้วย ADJUST — ไม่แก้เหตุการณ์เก่า</p>
+          <form id="form-adjust">
+            <div class="form-grid">
+              <label>Lot *
+                <select id="adjust-lot" required></select>
+              </label>
+              <label>ทิศทาง
+                <select id="adjust-sign">
+                  <option value="1">เพิ่ม (+)</option>
+                  <option value="-1">ลด (−)</option>
+                </select>
+              </label>
+              <label>จำนวน *
+                <input id="adjust-qty" type="number" min="0.001" step="any" required />
+              </label>
+              <label>ผู้ทำรายการ *
+                <input id="adjust-actor" required value="ตรวจนับ" />
+              </label>
+              <label>เหตุผล *
+                <input id="adjust-reason" required placeholder="เช่น นับสต็อกคลาดเคลื่อน" />
+              </label>
+            </div>
+            <div class="form-actions" style="margin-top:12px">
+              <button type="submit" class="btn btn-secondary">บันทึก ADJUST</button>
+            </div>
+            <div id="adjust-msg" class="msg"></div>
+          </form>
+        </div>
+        <div class="card">
+          <h2>ทำลาย / Destroy</h2>
+          <p class="hint">DESTROY ลดยอด (ของเสีย / ตามระเบียบ)</p>
+          <form id="form-destroy">
+            <div class="form-grid">
+              <label>Lot *
+                <select id="destroy-lot" required></select>
+              </label>
+              <label>จำนวน *
+                <input id="destroy-qty" type="number" min="0.001" step="any" required />
+              </label>
+              <label>ผู้ทำรายการ *
+                <input id="destroy-actor" required value="ผู้จัดการ" />
+              </label>
+              <label>เหตุผล *
+                <input id="destroy-reason" required placeholder="เช่น หมดอายุ / ซองเสีย" />
+              </label>
+            </div>
+            <div class="form-actions" style="margin-top:12px">
+              <button type="submit" class="btn btn-danger">บันทึก DESTROY</button>
+            </div>
+            <div id="destroy-msg" class="msg"></div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- As-of report -->
+    <section id="panel-asof" class="panel">
+      <div class="card">
+        <h2>รายงานยอด ณ เวลา / As-of balance</h2>
+        <p class="hint">
+          ทดลองเวลา เช่น 2026-09-13 12:00 — ดอก OG Kush ควรเหลือ 85 g
+          (รับ 100 − ขาย 15; ยังไม่นับ ADJUST +2 ของวันที่ 16)
+        </p>
+        <form id="form-asof">
+          <div class="form-grid">
+            <label>วัน-เวลา (local)
+              <input id="asof-time" type="datetime-local" required />
+            </label>
+            <div class="form-actions">
+              <button type="submit" class="btn">คำนวณ / Run</button>
+            </div>
+          </div>
+          <div id="asof-msg" class="msg"></div>
+        </form>
+        <div class="table-wrap" style="margin-top:12px">
+          <table>
+            <thead>
+              <tr>
+                <th>Lot ID</th>
+                <th>สินค้า</th>
+                <th>ยอด ณ เวลานั้น</th>
+                <th>ยอดปัจจุบัน</th>
+              </tr>
+            </thead>
+            <tbody id="asof-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Event log -->
+    <section id="panel-events" class="panel">
+      <div class="card">
+        <h2>บันทึกเหตุการณ์ (append-only)</h2>
+        <p class="hint">ไม่มีปุ่มแก้ไข/ลบ — แก้ผิดด้วยเหตุการณ์ชดเชยเท่านั้น</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Event ID</th>
+                <th>เวลา</th>
+                <th>ประเภท</th>
+                <th>Lot</th>
+                <th>Δ</th>
+                <th>ผู้ทำ</th>
+                <th>เหตุผล</th>
+              </tr>
+            </thead>
+            <tbody id="events-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <footer class="note">
+      Group: Tanakrit · Stock rules/audit: Ai CPU WEB · UI polish later: New Bot · Schema review: aaa01 ·
+      Data in <code>localStorage['cannabis-pos-v0']</code>
+    </footer>
+  </main>
+
+  <!-- No type=module — works under file:// -->
+  <script src="js/store.js"></script>
+  <script src="js/ledger.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
