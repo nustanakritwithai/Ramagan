@@ -115,6 +115,16 @@
     return { ok: true, remaining: remaining, message: 'OK' };
   }
 
+
+  /** Locked retail categories (aaa01 2026-09-19) */
+  var CATEGORIES = [
+    { id: 'leaf-trim', name: 'ใบทริม', unit_price: 20 },
+    { id: 'under-machine', name: 'ใต้เครื่อง', unit_price: 25 },
+    { id: 'mini', name: 'mini', unit_price: null }, // 40 and 50 as separate SKUs
+    { id: 'pop', name: 'pop', unit_price: 80 },
+    { id: 'top', name: 'Top', unit_price: 150 }
+  ];
+
   function createLot(fields) {
     var state = getState();
     var lotId = fields.lot_id || uid('LOT');
@@ -129,6 +139,7 @@
       lot_id: lotId,
       sku: String(fields.sku || '').trim(),
       product_name: String(fields.product_name || '').trim(),
+      category_id: String(fields.category_id || '').trim() || null,
       unit: unit,
       expires_at: fields.expires_at || null,
       received_at: fields.received_at || new Date().toISOString(),
@@ -266,89 +277,974 @@
     if (StockStore.hasData()) return false;
 
     createLot({
-      lot_id: 'LOT-OGK-001',
-      sku: 'FLOWER-OGK',
-      product_name: 'ดอก OG Kush',
-      unit: 'g',
-      unit_price: 120,
-      expires_at: '2027-03-01',
-      received_at: '2026-09-01T09:00:00.000+07:00'
-    });
-    createLot({
-      lot_id: 'LOT-CBD-002',
-      sku: 'OIL-CBD10',
-      product_name: 'น้ำมัน CBD 10%',
+      lot_id: 'LOT-LEAF-001',
+      sku: 'LEAFTR-20-01',
+      product_name: 'ใบทริม ออโต้ A',
+      category_id: 'leaf-trim',
       unit: 'pcs',
-      unit_price: 450,
-      expires_at: '2027-06-15',
-      received_at: '2026-09-05T10:30:00.000+07:00'
+      unit_price: 20,
+      received_at: '2026-09-18T09:00:00.000+07:00'
     });
     createLot({
-      lot_id: 'LOT-GEL-003',
-      sku: 'EDIBLE-GEL',
-      product_name: 'กัมมี่เจลลี่ THC',
+      lot_id: 'LOT-LEAF-002',
+      sku: 'LEAFTR-20-02',
+      product_name: 'ใบทริม ออโต้ B',
+      category_id: 'leaf-trim',
+      unit: 'pcs',
+      unit_price: 20,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-LEAF-003',
+      sku: 'LEAFTR-20-03',
+      product_name: 'ใบทริม ออโต้ C',
+      category_id: 'leaf-trim',
+      unit: 'pcs',
+      unit_price: 20,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-LEAF-004',
+      sku: 'LEAFTR-20-04',
+      product_name: 'ใบทริม ออโต้ D',
+      category_id: 'leaf-trim',
+      unit: 'pcs',
+      unit_price: 20,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-LEAF-005',
+      sku: 'LEAFTR-20-05',
+      product_name: 'ใบทริม ออโต้ E',
+      category_id: 'leaf-trim',
+      unit: 'pcs',
+      unit_price: 20,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-LEAF-006',
+      sku: 'LEAFTR-20-06',
+      product_name: 'ใบทริม โฟโต้ A',
+      category_id: 'leaf-trim',
+      unit: 'pcs',
+      unit_price: 20,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-LEAF-007',
+      sku: 'LEAFTR-20-07',
+      product_name: 'ใบทริม โฟโต้ B',
+      category_id: 'leaf-trim',
+      unit: 'pcs',
+      unit_price: 20,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-LEAF-008',
+      sku: 'LEAFTR-20-08',
+      product_name: 'ใบทริม โฟโต้ C',
+      category_id: 'leaf-trim',
+      unit: 'pcs',
+      unit_price: 20,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-LEAF-009',
+      sku: 'LEAFTR-20-09',
+      product_name: 'ใบทริม โฟโต้ D',
+      category_id: 'leaf-trim',
+      unit: 'pcs',
+      unit_price: 20,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-LEAF-010',
+      sku: 'LEAFTR-20-10',
+      product_name: 'ใบทริม มิกซ์ A',
+      category_id: 'leaf-trim',
+      unit: 'pcs',
+      unit_price: 20,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-LEAF-011',
+      sku: 'LEAFTR-20-11',
+      product_name: 'ใบทริม มิกซ์ B',
+      category_id: 'leaf-trim',
+      unit: 'pcs',
+      unit_price: 20,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-LEAF-012',
+      sku: 'LEAFTR-20-12',
+      product_name: 'ใบทริม พรีเมียม',
+      category_id: 'leaf-trim',
+      unit: 'pcs',
+      unit_price: 20,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-UNDE-013',
+      sku: 'UNDERM-25-01',
+      product_name: 'ใต้เครื่อง ออโต้ A',
+      category_id: 'under-machine',
+      unit: 'pcs',
+      unit_price: 25,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-UNDE-014',
+      sku: 'UNDERM-25-02',
+      product_name: 'ใต้เครื่อง ออโต้ B',
+      category_id: 'under-machine',
+      unit: 'pcs',
+      unit_price: 25,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-UNDE-015',
+      sku: 'UNDERM-25-03',
+      product_name: 'ใต้เครื่อง ออโต้ C',
+      category_id: 'under-machine',
+      unit: 'pcs',
+      unit_price: 25,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-UNDE-016',
+      sku: 'UNDERM-25-04',
+      product_name: 'ใต้เครื่อง ออโต้ D',
+      category_id: 'under-machine',
+      unit: 'pcs',
+      unit_price: 25,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-UNDE-017',
+      sku: 'UNDERM-25-05',
+      product_name: 'ใต้เครื่อง โฟโต้ A',
+      category_id: 'under-machine',
+      unit: 'pcs',
+      unit_price: 25,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-UNDE-018',
+      sku: 'UNDERM-25-06',
+      product_name: 'ใต้เครื่อง โฟโต้ B',
+      category_id: 'under-machine',
+      unit: 'pcs',
+      unit_price: 25,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-UNDE-019',
+      sku: 'UNDERM-25-07',
+      product_name: 'ใต้เครื่อง โฟโต้ C',
+      category_id: 'under-machine',
+      unit: 'pcs',
+      unit_price: 25,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-UNDE-020',
+      sku: 'UNDERM-25-08',
+      product_name: 'ใต้เครื่อง โฟโต้ D',
+      category_id: 'under-machine',
+      unit: 'pcs',
+      unit_price: 25,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-UNDE-021',
+      sku: 'UNDERM-25-09',
+      product_name: 'ใต้เครื่อง มิกซ์ A',
+      category_id: 'under-machine',
+      unit: 'pcs',
+      unit_price: 25,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-UNDE-022',
+      sku: 'UNDERM-25-10',
+      product_name: 'ใต้เครื่อง มิกซ์ B',
+      category_id: 'under-machine',
+      unit: 'pcs',
+      unit_price: 25,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-UNDE-023',
+      sku: 'UNDERM-25-11',
+      product_name: 'ใต้เครื่อง พรีเมียม',
+      category_id: 'under-machine',
+      unit: 'pcs',
+      unit_price: 25,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-MINI-024',
+      sku: 'MINI-40-01',
+      product_name: 'mini 40 ออโต้ A',
+      category_id: 'mini',
+      unit: 'pcs',
+      unit_price: 40,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-MINI-025',
+      sku: 'MINI-40-02',
+      product_name: 'mini 40 ออโต้ B',
+      category_id: 'mini',
+      unit: 'pcs',
+      unit_price: 40,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-MINI-026',
+      sku: 'MINI-40-03',
+      product_name: 'mini 40 ออโต้ C',
+      category_id: 'mini',
+      unit: 'pcs',
+      unit_price: 40,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-MINI-027',
+      sku: 'MINI-40-04',
+      product_name: 'mini 40 โฟโต้ A',
+      category_id: 'mini',
+      unit: 'pcs',
+      unit_price: 40,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-MINI-028',
+      sku: 'MINI-40-05',
+      product_name: 'mini 40 โฟโต้ B',
+      category_id: 'mini',
+      unit: 'pcs',
+      unit_price: 40,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-MINI-029',
+      sku: 'MINI-40-06',
+      product_name: 'mini 40 มิกซ์ A',
+      category_id: 'mini',
+      unit: 'pcs',
+      unit_price: 40,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-MINI-030',
+      sku: 'MINI-50-01',
+      product_name: 'mini 50 ออโต้ A',
+      category_id: 'mini',
+      unit: 'pcs',
+      unit_price: 50,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-MINI-031',
+      sku: 'MINI-50-02',
+      product_name: 'mini 50 ออโต้ B',
+      category_id: 'mini',
+      unit: 'pcs',
+      unit_price: 50,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-MINI-032',
+      sku: 'MINI-50-03',
+      product_name: 'mini 50 ออโต้ C',
+      category_id: 'mini',
+      unit: 'pcs',
+      unit_price: 50,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-MINI-033',
+      sku: 'MINI-50-04',
+      product_name: 'mini 50 โฟโต้ A',
+      category_id: 'mini',
+      unit: 'pcs',
+      unit_price: 50,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-MINI-034',
+      sku: 'MINI-50-05',
+      product_name: 'mini 50 โฟโต้ B',
+      category_id: 'mini',
+      unit: 'pcs',
+      unit_price: 50,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-MINI-035',
+      sku: 'MINI-50-06',
+      product_name: 'mini 50 มิกซ์ A',
+      category_id: 'mini',
+      unit: 'pcs',
+      unit_price: 50,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-POP-036',
+      sku: 'POP-80-01',
+      product_name: 'pop ออโต้ A',
+      category_id: 'pop',
       unit: 'pcs',
       unit_price: 80,
-      expires_at: '2026-12-31',
-      received_at: '2026-09-10T14:00:00.000+07:00'
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-POP-037',
+      sku: 'POP-80-02',
+      product_name: 'pop ออโต้ B',
+      category_id: 'pop',
+      unit: 'pcs',
+      unit_price: 80,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-POP-038',
+      sku: 'POP-80-03',
+      product_name: 'pop ออโต้ C',
+      category_id: 'pop',
+      unit: 'pcs',
+      unit_price: 80,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-POP-039',
+      sku: 'POP-80-04',
+      product_name: 'pop ออโต้ D',
+      category_id: 'pop',
+      unit: 'pcs',
+      unit_price: 80,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-POP-040',
+      sku: 'POP-80-05',
+      product_name: 'pop โฟโต้ A',
+      category_id: 'pop',
+      unit: 'pcs',
+      unit_price: 80,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-POP-041',
+      sku: 'POP-80-06',
+      product_name: 'pop โฟโต้ B',
+      category_id: 'pop',
+      unit: 'pcs',
+      unit_price: 80,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-POP-042',
+      sku: 'POP-80-07',
+      product_name: 'pop โฟโต้ C',
+      category_id: 'pop',
+      unit: 'pcs',
+      unit_price: 80,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-POP-043',
+      sku: 'POP-80-08',
+      product_name: 'pop มิกซ์ A',
+      category_id: 'pop',
+      unit: 'pcs',
+      unit_price: 80,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-POP-044',
+      sku: 'POP-80-09',
+      product_name: 'pop มิกซ์ B',
+      category_id: 'pop',
+      unit: 'pcs',
+      unit_price: 80,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-POP-045',
+      sku: 'POP-80-10',
+      product_name: 'pop พรีเมียม A',
+      category_id: 'pop',
+      unit: 'pcs',
+      unit_price: 80,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-POP-046',
+      sku: 'POP-80-11',
+      product_name: 'pop พรีเมียม B',
+      category_id: 'pop',
+      unit: 'pcs',
+      unit_price: 80,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-TOP-047',
+      sku: 'TOP-150-01',
+      product_name: 'Top ออโต้ A',
+      category_id: 'top',
+      unit: 'pcs',
+      unit_price: 150,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-TOP-048',
+      sku: 'TOP-150-02',
+      product_name: 'Top ออโต้ B',
+      category_id: 'top',
+      unit: 'pcs',
+      unit_price: 150,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-TOP-049',
+      sku: 'TOP-150-03',
+      product_name: 'Top ออโต้ C',
+      category_id: 'top',
+      unit: 'pcs',
+      unit_price: 150,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-TOP-050',
+      sku: 'TOP-150-04',
+      product_name: 'Top ออโต้ D',
+      category_id: 'top',
+      unit: 'pcs',
+      unit_price: 150,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-TOP-051',
+      sku: 'TOP-150-05',
+      product_name: 'Top โฟโต้ A',
+      category_id: 'top',
+      unit: 'pcs',
+      unit_price: 150,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-TOP-052',
+      sku: 'TOP-150-06',
+      product_name: 'Top โฟโต้ B',
+      category_id: 'top',
+      unit: 'pcs',
+      unit_price: 150,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-TOP-053',
+      sku: 'TOP-150-07',
+      product_name: 'Top โฟโต้ C',
+      category_id: 'top',
+      unit: 'pcs',
+      unit_price: 150,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-TOP-054',
+      sku: 'TOP-150-08',
+      product_name: 'Top มิกซ์ A',
+      category_id: 'top',
+      unit: 'pcs',
+      unit_price: 150,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-TOP-055',
+      sku: 'TOP-150-09',
+      product_name: 'Top มิกซ์ B',
+      category_id: 'top',
+      unit: 'pcs',
+      unit_price: 150,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-TOP-056',
+      sku: 'TOP-150-10',
+      product_name: 'Top พรีเมียม A',
+      category_id: 'top',
+      unit: 'pcs',
+      unit_price: 150,
+      received_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    createLot({
+      lot_id: 'LOT-TOP-057',
+      sku: 'TOP-150-11',
+      product_name: 'Top พรีเมียม B',
+      category_id: 'top',
+      unit: 'pcs',
+      unit_price: 150,
+      received_at: '2026-09-18T09:00:00.000+07:00'
     });
 
     appendEvent({
-      lot_id: 'LOT-OGK-001',
+      lot_id: 'LOT-LEAF-001',
       type: 'RECEIVE',
-      qty: 100,
+      qty: 30,
       actor_user_id: 'user-owner',
-      reason: 'รับเข้าจากซัพพลายเออร์ A',
-      occurred_at: '2026-09-01T09:00:00.000+07:00'
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
     });
     appendEvent({
-      lot_id: 'LOT-CBD-002',
+      lot_id: 'LOT-LEAF-002',
       type: 'RECEIVE',
-      qty: 24,
+      qty: 30,
       actor_user_id: 'user-owner',
-      reason: 'รับเข้าล็อตน้ำมัน CBD',
-      occurred_at: '2026-09-05T10:30:00.000+07:00'
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
     });
     appendEvent({
-      lot_id: 'LOT-GEL-003',
+      lot_id: 'LOT-LEAF-003',
       type: 'RECEIVE',
-      qty: 50,
-      actor_user_id: 'user-staff',
-      reason: 'รับเข้ากัมมี่',
-      occurred_at: '2026-09-10T14:00:00.000+07:00'
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
     });
     appendEvent({
-      lot_id: 'LOT-OGK-001',
-      type: 'SALE',
-      qty: 15,
-      actor_user_id: 'user-cashier-a',
-      reason: 'ขายหน้าร้าน',
-      occurred_at: '2026-09-12T16:20:00.000+07:00'
+      lot_id: 'LOT-LEAF-004',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
     });
     appendEvent({
-      lot_id: 'LOT-CBD-002',
-      type: 'SALE',
-      qty: 2,
-      actor_user_id: 'user-cashier-b',
-      reason: 'ขายหน้าร้าน',
-      occurred_at: '2026-09-14T11:05:00.000+07:00'
+      lot_id: 'LOT-LEAF-005',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
     });
     appendEvent({
-      lot_id: 'LOT-GEL-003',
-      type: 'DESTROY',
-      qty: 3,
-      actor_user_id: 'user-manager',
-      reason: 'ซองเสียหาย — ทำลายตามระเบียบ',
-      occurred_at: '2026-09-15T09:45:00.000+07:00'
+      lot_id: 'LOT-LEAF-006',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
     });
     appendEvent({
-      lot_id: 'LOT-OGK-001',
-      type: 'ADJUST',
-      qty: 2,
-      actor_user_id: 'user-staff',
-      reason: 'นับสต็อกได้มากกว่าที่ระบบ (ชดเชย)',
-      occurred_at: '2026-09-16T18:00:00.000+07:00',
-      meta: { adjust_sign: 1 }
+      lot_id: 'LOT-LEAF-007',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-LEAF-008',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-LEAF-009',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-LEAF-010',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-LEAF-011',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-LEAF-012',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-UNDE-013',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-UNDE-014',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-UNDE-015',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-UNDE-016',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-UNDE-017',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-UNDE-018',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-UNDE-019',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-UNDE-020',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-UNDE-021',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-UNDE-022',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-UNDE-023',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-MINI-024',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-MINI-025',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-MINI-026',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-MINI-027',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-MINI-028',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-MINI-029',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-MINI-030',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-MINI-031',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-MINI-032',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-MINI-033',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-MINI-034',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-MINI-035',
+      type: 'RECEIVE',
+      qty: 30,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-POP-036',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-POP-037',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-POP-038',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-POP-039',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-POP-040',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-POP-041',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-POP-042',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-POP-043',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-POP-044',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-POP-045',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-POP-046',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-TOP-047',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-TOP-048',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-TOP-049',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-TOP-050',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-TOP-051',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-TOP-052',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-TOP-053',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-TOP-054',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-TOP-055',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-TOP-056',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
+    });
+    appendEvent({
+      lot_id: 'LOT-TOP-057',
+      type: 'RECEIVE',
+      qty: 20,
+      actor_user_id: 'user-owner',
+      reason: 'seed รับเข้าหน้าร้าน',
+      occurred_at: '2026-09-18T09:00:00.000+07:00'
     });
 
     return true;
@@ -362,6 +1258,7 @@
   var api = {
     EVENT_TYPES: EVENT_TYPES,
     UNITS: UNITS,
+    CATEGORIES: CATEGORIES,
     createLot: createLot,
     appendEvent: appendEvent,
     balanceAt: balanceAt,

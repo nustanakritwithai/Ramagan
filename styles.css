@@ -537,3 +537,12 @@ button.btn-sell:hover {
 .shift-var.neg{color:#fca5a5}
 .shift-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px;align-items:center}
 .shift-actions .btn-sell{flex:1;min-width:200px}
+
+.pos-cat-chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+.pos-cat-chip{
+  appearance:none;border:1px solid var(--border);background:#121a22;color:var(--text);
+  border-radius:999px;padding:8px 14px;font-weight:700;cursor:pointer;font-size:13px;
+}
+.pos-cat-chip.active{border-color:var(--accent);background:var(--accent-dim);color:#d8ffe8}
+.pos-cat-section{grid-column:1/-1;margin:8px 0 0;font-size:13px;color:var(--muted);font-weight:700;letter-spacing:.02em}
+.pos-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px}
