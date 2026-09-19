@@ -1937,12 +1937,31 @@
   }
 
   function applyRoleUi() {
-    if (!window.RamaganRoles) return;
+    if (!window.RamaganRoles) {
+      console.warn('RamaganRoles missing');
+      return;
+    }
     RamaganRoles.ensurePins();
     var role = RamaganRoles.currentRole();
     var chip = $('btn-role-switch');
     if (!role) {
       if (chip) chip.textContent = 'เข้าสู่ระบบ';
+      // Hide privileged chrome until login
+      var tabs0 = document.querySelectorAll('[data-tab]');
+      for (var t0 = 0; t0 < tabs0.length; t0++) {
+        tabs0[t0].hidden = true;
+        tabs0[t0].style.display = 'none';
+      }
+      var reset0 = $('btn-reset');
+      if (reset0) reset0.hidden = true;
+      var drive0 = $('drive-setup');
+      if (drive0) drive0.hidden = true;
+      var disc0 = $('btn-drive-disconnect');
+      if (disc0) disc0.hidden = true;
+      var exp0 = $('btn-export');
+      var imp0 = $('btn-import');
+      if (exp0) exp0.hidden = true;
+      if (imp0) imp0.hidden = true;
       showRoleGate(true);
       return;
     }
@@ -1982,9 +2001,15 @@
   }
 
   function openTab(id) {
-    if (window.RamaganRoles && !RamaganRoles.canOpenTab(id)) {
-      showMsg($('sale-msg'), 'บทบาทนี้เปิดหน้านี้ไม่ได้', true);
-      return;
+    if (window.RamaganRoles) {
+      if (!RamaganRoles.currentRole()) {
+        showRoleGate(true);
+        return;
+      }
+      if (!RamaganRoles.canOpenTab(id)) {
+        showMsg($('sale-msg'), 'บทบาทนี้เปิดหน้านี้ไม่ได้', true);
+        return;
+      }
     }
     var panels = document.querySelectorAll('.panel');
     for (var j = 0; j < panels.length; j++) panels[j].classList.remove('active');
@@ -2080,6 +2105,8 @@
     StockLedger.seedIfEmpty();
     migrateOldDemoSeedIfNeeded();
     bindTabs();
+    bindRoleUi();
+    applyRoleUi();
     bindNavDrawer();
 
     $('form-receive').addEventListener('submit', onReceive);

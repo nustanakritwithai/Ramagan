@@ -828,3 +828,10 @@ button.btn-sell, button.btn-sell {
 .role-pin-change{font-size:0.9rem}
 .role-pin-change label{display:grid;gap:4px;margin:8px 0}
 body.role-locked .app-header .header-actions > :not(#btn-role-switch):not(#btn-nav-toggle){opacity:0.35}
+
+body.role-gate-open main,
+body.role-gate-open .tabs,
+body.role-gate-open .backup-hint,
+body.role-gate-open .drive-setup{visibility:hidden}
+body.role-gate-open .role-gate{visibility:visible}
+.role-gate:not([hidden]){display:flex !important}
