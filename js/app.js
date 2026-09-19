@@ -1876,6 +1876,14 @@
   }
 
   function onResetSeed() {
+    if (window.RamaganRoles) {
+      var role = RamaganRoles.currentRole();
+      if (!role || !role.canResetSeed) {
+        alert('บทบาทนี้ล้าง seed ไม่ได้');
+        return;
+      }
+    }
+
     if (
       !confirm(
         'ล้างข้อมูล localStorage แล้วใส่ seed ใหม่?\nClear all data and re-seed?'
@@ -1919,28 +1927,154 @@
     });
   }
 
+
+  /* —— Roles / PIN gate (local only) —— */
+  function showRoleGate(show) {
+    var gate = $('role-gate');
+    if (!gate) return;
+    gate.hidden = !show;
+    document.body.classList.toggle('role-gate-open', !!show);
+  }
+
+  function applyRoleUi() {
+    if (!window.RamaganRoles) return;
+    RamaganRoles.ensurePins();
+    var role = RamaganRoles.currentRole();
+    var chip = $('btn-role-switch');
+    if (!role) {
+      if (chip) chip.textContent = 'เข้าสู่ระบบ';
+      showRoleGate(true);
+      return;
+    }
+    if (chip) chip.textContent = role.label;
+    showRoleGate(false);
+
+    var tabs = document.querySelectorAll('[data-tab][data-roles]');
+    for (var i = 0; i < tabs.length; i++) {
+      var allowed = (tabs[i].getAttribute('data-roles') || '')
+        .split(',')
+        .map(function (s) { return s.trim(); });
+      var ok = allowed.indexOf(role.id) !== -1;
+      tabs[i].hidden = !ok;
+      tabs[i].style.display = ok ? '' : 'none';
+    }
+
+    var reset = $('btn-reset');
+    if (reset) reset.hidden = !role.canResetSeed;
+
+    var driveSetup = $('drive-setup');
+    if (driveSetup) driveSetup.hidden = !role.canDriveSetup;
+
+    var disc = $('btn-drive-disconnect');
+    if (disc) disc.hidden = !role.canDriveDisconnect;
+
+    var exp = $('btn-export');
+    var imp = $('btn-import');
+    if (exp) exp.hidden = !role.canExportImport;
+    if (imp) imp.hidden = !role.canExportImport;
+
+    // If current panel forbidden, jump to default
+    var active = document.querySelector('[data-tab].active');
+    var activeId = active && active.getAttribute('data-tab');
+    if (!activeId || !RamaganRoles.canOpenTab(activeId)) {
+      openTab(RamaganRoles.defaultTab());
+    }
+  }
+
+  function openTab(id) {
+    if (window.RamaganRoles && !RamaganRoles.canOpenTab(id)) {
+      showMsg($('sale-msg'), 'บทบาทนี้เปิดหน้านี้ไม่ได้', true);
+      return;
+    }
+    var panels = document.querySelectorAll('.panel');
+    for (var j = 0; j < panels.length; j++) panels[j].classList.remove('active');
+    var btns = document.querySelectorAll('[data-tab]');
+    for (var k = 0; k < btns.length; k++) btns[k].classList.remove('active');
+    var btn = document.querySelector('[data-tab="' + id + '"]');
+    if (btn) btn.classList.add('active');
+    var panel = document.getElementById('panel-' + id);
+    if (panel) panel.classList.add('active');
+    if (id === 'admin') renderAdminDashboard();
+    if (id === 'shop') renderShopCatalog();
+    if (id === 'shift') renderShiftCount();
+    if (id === 'sale') renderPosGrid();
+    setNavOpen(false);
+  }
+
+  function bindRoleUi() {
+    if (!window.RamaganRoles) return;
+    RamaganRoles.ensurePins();
+    var selected = 'owner';
+    var picks = document.querySelectorAll('.role-pick');
+    for (var i = 0; i < picks.length; i++) {
+      picks[i].addEventListener('click', function (e) {
+        for (var j = 0; j < picks.length; j++) picks[j].classList.remove('active');
+        e.currentTarget.classList.add('active');
+        selected = e.currentTarget.getAttribute('data-role') || 'owner';
+      });
+    }
+    var loginBtn = $('btn-role-login');
+    if (loginBtn) {
+      loginBtn.addEventListener('click', function () {
+        var pin = ($('role-pin') && $('role-pin').value) || '';
+        var res = RamaganRoles.login(selected, pin);
+        var msg = $('role-gate-msg');
+        if (!res.ok) {
+          if (msg) {
+            msg.textContent = res.message || 'เข้าไม่ได้';
+            msg.className = 'msg error';
+          }
+          return;
+        }
+        if ($('role-pin')) $('role-pin').value = '';
+        if (msg) {
+          msg.textContent = 'เข้าเป็น ' + res.role.label;
+          msg.className = 'msg ok';
+        }
+        applyRoleUi();
+        refreshAll();
+      });
+    }
+    var changeBtn = $('btn-role-change-pin');
+    if (changeBtn) {
+      changeBtn.addEventListener('click', function () {
+        var oldP = ($('role-pin-old') && $('role-pin-old').value) || '';
+        var newP = ($('role-pin-new') && $('role-pin-new').value) || '';
+        var res = RamaganRoles.changePin(selected, oldP, newP);
+        var msg = $('role-gate-msg');
+        if (msg) {
+          msg.textContent = res.ok ? 'เปลี่ยน PIN แล้ว' : res.message || 'เปลี่ยนไม่ได้';
+          msg.className = 'msg ' + (res.ok ? 'ok' : 'error');
+        }
+      });
+    }
+    var sw = $('btn-role-switch');
+    if (sw) {
+      sw.addEventListener('click', function () {
+        RamaganRoles.logout();
+        applyRoleUi();
+        showRoleGate(true);
+      });
+    }
+    // Enter key on PIN
+    var pinInput = $('role-pin');
+    if (pinInput) {
+      pinInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && loginBtn) loginBtn.click();
+      });
+    }
+  }
+
   function bindTabs() {
     var tabs = document.querySelectorAll('[data-tab]');
     for (var i = 0; i < tabs.length; i++) {
       tabs[i].addEventListener('click', function (e) {
         var id = e.currentTarget.getAttribute('data-tab');
-        var panels = document.querySelectorAll('.panel');
-        for (var j = 0; j < panels.length; j++) {
-          panels[j].classList.remove('active');
-        }
-        var btns = document.querySelectorAll('[data-tab]');
-        for (var k = 0; k < btns.length; k++) {
-          btns[k].classList.remove('active');
-        }
-        e.currentTarget.classList.add('active');
-        setNavOpen(false);
-        var panel = document.getElementById('panel-' + id);
-        if (panel) panel.classList.add('active');
-        if (id === 'admin') renderAdminDashboard();
-        if (id === 'shop') renderShopCatalog();
+        openTab(id);
       });
     }
   }
+
 
   function init() {
     StockLedger.seedIfEmpty();

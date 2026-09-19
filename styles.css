@@ -803,3 +803,28 @@ button.btn-sell, button.btn-sell {
   min-height:44px;font-size:1.15rem;font-weight:700;border-radius:12px;
   padding:8px 12px;border:1px solid var(--border,#2a3a4d);background:#0d151e;color:#e8eef5;
 }
+
+/* Role gate */
+.role-gate[hidden]{display:none !important}
+.role-gate{
+  position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.72);padding:16px;
+}
+.role-gate-card{
+  width:min(100%,420px);background:#121a24;border:1px solid #2a3a4d;border-radius:18px;
+  padding:18px;display:grid;gap:12px;
+}
+.role-gate-roles{display:grid;grid-template-columns:1fr;gap:8px}
+.role-pick{
+  min-height:48px;border-radius:12px;border:1px solid #2a3a4d;background:#1a2430;
+  color:#e8eef5;font-weight:700;cursor:pointer;
+}
+.role-pick.active{outline:2px solid #2fe39a;background:#163528}
+.role-gate-card input{
+  width:100%;min-height:48px;font-size:1.25rem;letter-spacing:0.2em;text-align:center;
+  border-radius:12px;border:1px solid #2a3a4d;background:#0d151e;color:#e8eef5;
+}
+.btn-role{min-height:44px;font-weight:800}
+.role-pin-change{font-size:0.9rem}
+.role-pin-change label{display:grid;gap:4px;margin:8px 0}
+body.role-locked .app-header .header-actions > :not(#btn-role-switch):not(#btn-nav-toggle){opacity:0.35}

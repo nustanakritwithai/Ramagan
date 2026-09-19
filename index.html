@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=payable1" />
+  <link rel="stylesheet" href="styles.css?v=roles1" />
 </head>
 <body>
   <header class="app-header">
@@ -19,12 +19,13 @@
       </div>
     </div>
     <div class="header-actions">
+      <button type="button" class="btn btn-role" id="btn-role-switch" title="สลับบทบาท">บทบาท</button>
       <button type="button" class="btn btn-nav" id="btn-nav-toggle" aria-expanded="false" aria-controls="nav-drawer" title="เมนู">☰ เมนู</button>
       <span class="badge-live" id="badge-drive-status" title="โหมดสำรองข้อมูล">LOCAL · ส่งออก/นำเข้า</span>
-      <button type="button" class="btn btn-primary" id="btn-export" title="ส่งออก JSON ไปเก็บในโฟลเดอร์ Drive">ส่งออก JSON</button>
-      <button type="button" class="btn btn-primary" id="btn-import" title="นำเข้า JSON จากโฟลเดอร์ Drive">นำเข้า JSON</button>
+      <button type="button" class="btn btn-primary" id="btn-export" data-role-export="1" title="ส่งออก JSON ไปเก็บในโฟลเดอร์ Drive">ส่งออก JSON</button>
+      <button type="button" class="btn btn-primary" id="btn-import" data-role-export="1" title="นำเข้า JSON จากโฟลเดอร์ Drive">นำเข้า JSON</button>
       <input type="file" id="import-file" accept="application/json,.json" hidden />
-      <button type="button" class="btn btn-ghost" id="btn-reset" title="ล้างแล้วใส่ seed 5 หมวดใหม่">รีเซ็ต</button>
+      <button type="button" class="btn btn-ghost" id="btn-reset" data-role-only="owner" title="ล้างแล้วใส่ seed 5 หมวดใหม่">รีเซ็ต</button>
     </div>
   </header>
 
@@ -32,7 +33,7 @@
     <strong>สำรองข้อมูล:</strong> ถ้าเจ้าของเชื่อม Drive แล้ว ระบบอัปอัตโนมัติหลังขาย/นับกะ · สำรองมือ: <em>ส่งออก/นำเข้า JSON</em> — พนักงานไม่ต้อง login
   </div>
 
-  <details class="drive-setup" id="drive-setup">
+  <details class="drive-setup" id="drive-setup" data-role-drive="setup">
     <summary>ขั้นสูง · เจ้าของเชื่อม Drive ครั้งเดียว (พนักงานไม่ต้องเปิด)</summary>
     <div class="drive-setup-body">
       <p class="hint">ใส่ Client ID → กดเชื่อม Drive ครั้งเดียว แล้วปิดทิ้งได้ · หลังนั้นขาย/นับกะจะ debounce อัป <code>ledger.json</code> เอง · ส่งออก/นำเข้ายังใช้เป็นสำรอง · Client ID เก็บในเครื่องนี้เท่านั้น ไม่ขึ้น git · origin: <code>https://nustanakritwithai.github.io</code></p>
@@ -43,7 +44,7 @@
         <button type="button" class="btn btn-secondary" id="btn-drive-save-id">บันทึก Client ID</button>
         <button type="button" class="btn btn-ghost" id="btn-drive-clear-id">ล้าง</button>
         <button type="button" class="btn btn-ghost" id="btn-drive-connect" title="เชื่อม Google Drive (OAuth)">เชื่อม Drive</button>
-        <button type="button" class="btn btn-ghost hidden" id="btn-drive-disconnect" title="ยกเลิกการเชื่อม Drive">ตัด Drive</button>
+        <button type="button" class="btn btn-ghost hidden" id="btn-drive-disconnect" data-role-drive="disconnect" title="ยกเลิกการเชื่อม Drive">ตัด Drive</button>
         <button type="button" class="btn btn-ghost" id="btn-drive-push" title="อัป JSON ขึ้น Drive (เมื่อเชื่อมแล้ว)" disabled>อัป Drive</button>
       </div>
     </div>
@@ -63,15 +64,15 @@
         <strong>เมนู</strong>
         <button type="button" class="btn btn-ghost" id="btn-nav-close" aria-label="ปิดเมนู">ปิด ✕</button>
       </div>
-      <button type="button" data-tab="lots">สินค้า / Lots</button>
-      <button type="button" data-tab="shop">ตั้งค่าร้าน / Catalog</button>
-      <button type="button" data-tab="receive">รับเข้า / Receive</button>
-      <button type="button" class="active" data-tab="sale">หน้าพนักงานขาย / Sales</button>
-      <button type="button" data-tab="shift">ก่อนเข้ากะ / Shift count</button>
-      <button type="button" data-tab="adjust">ปรับ / ทำลาย</button>
-      <button type="button" data-tab="asof">รายงาน ณ เวลา / As-of</button>
-      <button type="button" data-tab="admin">Admin / Dashboard</button>
-      <button type="button" data-tab="events">บันทึกเหตุการณ์ / Log</button>
+      <button type="button" data-tab="lots" data-roles="owner">สินค้า / Lots</button>
+      <button type="button" data-tab="shop" data-roles="owner,manager">ตั้งค่าร้าน / Catalog</button>
+      <button type="button" data-tab="receive" data-roles="owner">รับเข้า / Receive</button>
+      <button type="button" class="active" data-tab="sale" data-roles="owner,manager,staff">หน้าพนักงานขาย / Sales</button>
+      <button type="button" data-tab="shift" data-roles="owner,manager,staff">ก่อนเข้ากะ / Shift count</button>
+      <button type="button" data-tab="adjust" data-roles="owner">ปรับ / ทำลาย</button>
+      <button type="button" data-tab="asof" data-roles="owner">รายงาน ณ เวลา / As-of</button>
+      <button type="button" data-tab="admin" data-roles="owner,manager">Admin / Dashboard</button>
+      <button type="button" data-tab="events" data-roles="owner">บันทึกเหตุการณ์ / Log</button>
     </nav>
 
     <!-- Lots -->
@@ -508,12 +509,13 @@
 
   <!-- No type=module — works under file:// -->
   <script>window.RAMAGAN_GOOGLE_CLIENT_ID=window.RAMAGAN_GOOGLE_CLIENT_ID||"";</script>
-  <script src="js/drive.js?v=payable1"></script>
-  <script src="js/store.js?v=payable1"></script>
-  <script src="js/ledger.js?v=payable1"></script>
+  <script src="js/drive.js?v=roles1"></script>
+  <script src="js/roles.js?v=roles1"></script>
+  <script src="js/store.js?v=roles1"></script>
+  <script src="js/ledger.js?v=roles1"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="js/admin-analytics.js?v=payable1"></script>
-  <script src="js/app.js?v=payable1"></script>
+  <script src="js/admin-analytics.js?v=roles1"></script>
+  <script src="js/app.js?v=roles1"></script>
 
   <div id="keypad-modal" class="keypad-modal" hidden>
     <div class="keypad-sheet" role="dialog" aria-modal="true" aria-labelledby="keypad-title">
@@ -541,6 +543,30 @@
     </div>
   </div>
   <input type="file" id="shift-photo-input" accept="image/*" capture="environment" hidden />
+
+
+  <div id="role-gate" class="role-gate" hidden>
+    <div class="role-gate-card" role="dialog" aria-modal="true" aria-labelledby="role-gate-title">
+      <h2 id="role-gate-title">เข้าสู่ระบบ / เลือกบทบาท</h2>
+      <p class="hint">PIN เก็บในเครื่องนี้เท่านั้น · ไม่ขึ้น git · ค่าเริ่ม: เจ้าของ 0000 · ผู้จัดการ 1111 · พนักงาน 2222 (เปลี่ยนได้)</p>
+      <div class="role-gate-roles" role="group" aria-label="บทบาท">
+        <button type="button" class="role-pick active" data-role="owner">1. เจ้าของ</button>
+        <button type="button" class="role-pick" data-role="manager">2. ผู้จัดการ</button>
+        <button type="button" class="role-pick" data-role="staff">3. พนักงาน</button>
+      </div>
+      <label>PIN
+        <input id="role-pin" type="password" inputmode="numeric" maxlength="6" autocomplete="off" />
+      </label>
+      <button type="button" class="btn btn-sell" id="btn-role-login">เข้าใช้</button>
+      <p id="role-gate-msg" class="msg" role="status"></p>
+      <details class="role-pin-change">
+        <summary>เปลี่ยน PIN บทบาทนี้</summary>
+        <label>PIN เดิม <input id="role-pin-old" type="password" inputmode="numeric" maxlength="6" /></label>
+        <label>PIN ใหม่ <input id="role-pin-new" type="password" inputmode="numeric" maxlength="6" /></label>
+        <button type="button" class="btn btn-secondary" id="btn-role-change-pin">บันทึก PIN</button>
+      </details>
+    </div>
+  </div>
 
 </body>
 </html>
