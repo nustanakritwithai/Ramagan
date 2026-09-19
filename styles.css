@@ -604,3 +604,17 @@ button.btn-sell, button.btn-sell {
   border-radius:var(--radius);padding:14px;display:grid;gap:10px;
 }
 .drive-setup-body input{width:100%;}
+
+.backup-hint{
+  max-width:1280px;margin:10px auto 0;padding:10px 14px;
+  border-radius:12px;border:1px solid var(--border-soft, #243244);
+  background:rgba(47,227,154,0.08);color:var(--muted,#8fa0b3);font-size:0.9rem;
+}
+.backup-hint strong{color:var(--accent,#2fe39a)}
+.btn-primary{
+  background:linear-gradient(180deg,#4dffb0,var(--accent,#2fe39a));
+  color:#062216;border:none;font-weight:800;
+  box-shadow:0 6px 14px rgba(47,227,154,0.22);
+}
+.btn-primary:hover{filter:brightness(1.05)}
+.drive-setup summary{color:var(--muted,#8fa0b3)}
