@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=backup1" />
+  <link rel="stylesheet" href="styles.css?v=autosync1" />
 </head>
 <body>
   <header class="app-header">
@@ -28,13 +28,13 @@
   </header>
 
   <div class="backup-hint">
-    <strong>สำรองข้อมูล:</strong> กด <em>ส่งออก JSON</em> แล้วอัปขึ้นโฟลเดอร์ Drive · กด <em>นำเข้า JSON</em> เพื่อโหลดกลับ — พนักงานไม่ต้อง login
+    <strong>สำรองข้อมูล:</strong> ถ้าเจ้าของเชื่อม Drive แล้ว ระบบอัปอัตโนมัติหลังขาย/นับกะ · สำรองมือ: <em>ส่งออก/นำเข้า JSON</em> — พนักงานไม่ต้อง login
   </div>
 
   <details class="drive-setup" id="drive-setup">
-    <summary>ขั้นสูง · Google Drive OAuth (ไม่จำเป็นสำหรับพนักงาน)</summary>
+    <summary>ขั้นสูง · เจ้าของเชื่อม Drive ครั้งเดียว (พนักงานไม่ต้องเปิด)</summary>
     <div class="drive-setup-body">
-      <p class="hint">ทางเลือกสำหรับ sync อัตโนมัติในเบราว์เซอร์ · ทางหลักของร้านคือส่งออก/นำเข้า JSON กับโฟลเดอร์ Drive ผ่านแชท/ปลั๊กอิน · Client ID เก็บในเครื่องนี้เท่านั้น ไม่ขึ้น git · origin: <code>https://nustanakritwithai.github.io</code></p>
+      <p class="hint">ใส่ Client ID → กดเชื่อม Drive ครั้งเดียว แล้วปิดทิ้งได้ · หลังนั้นขาย/นับกะจะ debounce อัป <code>ledger.json</code> เอง · ส่งออก/นำเข้ายังใช้เป็นสำรอง · Client ID เก็บในเครื่องนี้เท่านั้น ไม่ขึ้น git · origin: <code>https://nustanakritwithai.github.io</code></p>
       <label>OAuth Client ID
         <input id="drive-client-id" type="text" placeholder="xxxx.apps.googleusercontent.com" autocomplete="off" spellcheck="false" />
       </label>
@@ -331,9 +331,9 @@
 
   <!-- No type=module — works under file:// -->
   <script>window.RAMAGAN_GOOGLE_CLIENT_ID=window.RAMAGAN_GOOGLE_CLIENT_ID||"";</script>
-  <script src="js/drive.js?v=backup1"></script>
-  <script src="js/store.js?v=backup1"></script>
-  <script src="js/ledger.js?v=backup1"></script>
-  <script src="js/app.js?v=backup1"></script>
+  <script src="js/drive.js?v=autosync1"></script>
+  <script src="js/store.js?v=autosync1"></script>
+  <script src="js/ledger.js?v=autosync1"></script>
+  <script src="js/app.js?v=autosync1"></script>
 </body>
 </html>

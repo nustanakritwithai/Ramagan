@@ -849,26 +849,26 @@
         ? RamaganDrive.status()
         : { configured: false, connected: false, label: 'OFFLINE · local', phase: 'offline' };
     if (badge) {
+      // Cashiers: quiet sync status only (no OAuth wording)
       if (st.conflict) {
-        badge.textContent = 'DRIVE · ขัดแย้ง';
+        badge.textContent = 'SYNC · ต้องเลือกรายการ';
         badge.className = 'badge-live warn conflict';
       } else if (st.syncing) {
-        badge.textContent = 'DRIVE · กำลังซิงค์';
+        badge.textContent = 'SYNC · กำลังบันทึก…';
         badge.className = 'badge-live syncing';
       } else if (st.connected) {
         badge.textContent = st.lastSyncAt
-          ? 'DRIVE · ซิงค์แล้ว'
-          : 'DRIVE · เชื่อมแล้ว';
+          ? 'SYNC · ' + formatSyncAt(st.lastSyncAt)
+          : 'SYNC · พร้อมอัตโนมัติ';
         badge.className = 'badge-live connected';
-      } else if (st.configured) {
-        badge.textContent = 'DRIVE · พร้อมเชื่อม';
-        badge.className = 'badge-live';
       } else {
-        badge.textContent = 'OFFLINE · local';
-        badge.className = 'badge-live warn';
+        badge.textContent = 'LOCAL · ส่งออก/นำเข้า';
+        badge.className = 'badge-live';
       }
-      var tip = st.label || '';
-      if (st.lastSyncAt) tip += ' · last ' + formatSyncAt(st.lastSyncAt) + ' (Bangkok)';
+      var tip = st.connected
+        ? 'ซิงค์อัตโนมัติหลังขาย/นับกะ (เจ้าของเชื่อมแล้ว)'
+        : 'สำรองด้วยส่งออก/นำเข้า หรือให้เจ้าของเชื่อม Drive ในขั้นสูง';
+      if (st.lastSyncAt) tip += ' · ล่าสุด ' + formatSyncAt(st.lastSyncAt) + ' (Bangkok)';
       if (st.lastError) tip += ' · ' + st.lastError;
       badge.title = tip;
     }
