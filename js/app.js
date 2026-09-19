@@ -33,11 +33,14 @@
     el.className = 'msg' + (isError ? ' msg-error' : text ? ' msg-ok' : '');
   }
 
-  function lotOptions(selectEl, includeEmpty) {
+  function lotOptions(selectEl, includeEmpty, onlyPositive) {
     var lots = StockLedger.listLots();
     var html = includeEmpty ? '<option value="">— เลือก Lot —</option>' : '';
+    var count = 0;
     for (var i = 0; i < lots.length; i++) {
       var L = lots[i];
+      if (onlyPositive && !(Number(L.qty_remaining) > 0)) continue;
+      count++;
       html +=
         '<option value="' +
         escapeAttr(L.lot_id) +
@@ -48,6 +51,10 @@
         ' (' +
         fmtQty(L.qty_remaining, L.unit) +
         ')</option>';
+    }
+    if (onlyPositive && count === 0) {
+      html =
+        '<option value="">— ไม่มี Lot ที่ขายได้ (คงเหลือ 0) —</option>';
     }
     selectEl.innerHTML = html;
   }
@@ -152,15 +159,17 @@
   }
 
   function refreshSelects() {
-    lotOptions($('sale-lot'), true);
-    lotOptions($('adjust-lot'), true);
-    lotOptions($('destroy-lot'), true);
+    // Sales cashier: only lots with remaining > 0
+    lotOptions($('sale-lot'), true, true);
+    lotOptions($('adjust-lot'), true, false);
+    lotOptions($('destroy-lot'), true, false);
   }
 
   function refreshAll() {
     renderLots();
     renderEvents();
     refreshSelects();
+    updateSalePreview();
   }
 
   function datetimeLocalToIso(localVal) {
@@ -237,21 +246,76 @@
     }
   }
 
+
+  function updateSalePreview() {
+    var remEl = $('sale-remaining');
+    var afterEl = $('sale-after');
+    var checkEl = $('sale-check');
+    var btn = $('btn-sell');
+    if (!remEl || !StockLedger) return;
+    var lotId = $('sale-lot') && $('sale-lot').value;
+    var qty = Number($('sale-qty') && $('sale-qty').value);
+    if (!lotId) {
+      remEl.textContent = '—';
+      afterEl.textContent = '—';
+      checkEl.textContent = 'เลือก Lot และจำนวนเพื่อตรวจ';
+      checkEl.className = 'cashier-check muted';
+      if (btn) btn.disabled = true;
+      return;
+    }
+    var remaining = StockLedger.balanceAt(lotId);
+    var lot = null;
+    var lotsNow = StockLedger.listLots() || [];
+    for (var li = 0; li < lotsNow.length; li++) {
+      if (lotsNow[li].lot_id === lotId) {
+        lot = lotsNow[li];
+        break;
+      }
+    }
+    var unit = lot && lot.unit ? lot.unit : '';
+    remEl.textContent = remaining + (unit ? ' ' + unit : '');
+    if (!(qty > 0)) {
+      afterEl.textContent = '—';
+      checkEl.textContent = 'ใส่จำนวนที่จะขาย';
+      checkEl.className = 'cashier-check muted';
+      if (btn) btn.disabled = true;
+      return;
+    }
+    var check = StockLedger.validateSale(lotId, qty);
+    afterEl.textContent = check.ok
+      ? (check.remaining - qty) + (unit ? ' ' + unit : '')
+      : '—';
+    checkEl.textContent = check.message;
+    checkEl.className = 'cashier-check ' + (check.ok ? 'ok' : 'bad');
+    if (btn) btn.disabled = !check.ok;
+  }
+
   function onSale(ev) {
     ev.preventDefault();
     var msg = $('sale-msg');
     try {
       var lotId = $('sale-lot').value;
       var qty = Number($('sale-qty').value);
-      var actor = $('sale-actor').value.trim();
+      var actor = $('sale-actor').value.trim() || 'cashier';
       var reason = $('sale-reason').value.trim() || 'ขายหน้าร้าน';
+
+      if (!lotId) {
+        showMsg(msg, 'กรุณาเลือก Lot ที่จะขาย / please pick a lot', true);
+        return;
+      }
+      if (!actor) {
+        showMsg(msg, 'ต้องระบุผู้ทำรายการ (actor_user_id)', true);
+        return;
+      }
 
       var check = StockLedger.validateSale(lotId, qty);
       if (!check.ok) {
+        // Clear Thai oversell / qty error from validateSale
         showMsg(msg, check.message, true);
         return;
       }
 
+      var remainingAfter = Math.round((check.remaining - qty) * 1000) / 1000;
       StockLedger.appendEvent({
         lot_id: lotId,
         type: 'SALE',
@@ -259,12 +323,34 @@
         actor_user_id: actor,
         reason: reason
       });
-      showMsg(msg, 'บันทึกการขายแล้ว (เหลือ ' + check.remaining + ' − ' + qty + ')', false);
+      showMsg(
+        msg,
+        'ขายสำเร็จ · Lot ' +
+          lotId +
+          ' · ขาย ' +
+          qty +
+          ' (คงเหลือก่อน ' +
+          check.remaining +
+          ' → หลัง ' +
+          remainingAfter +
+          ')',
+        false
+      );
       $('form-sale').reset();
       $('sale-actor').value = actor;
       refreshAll();
+      onAsOf(); // keep as-of audit view in sync
     } catch (err) {
-      showMsg(msg, String(err.message || err), true);
+      var raw = String(err.message || err);
+      if (/Insufficient stock|oversell/i.test(raw)) {
+        showMsg(
+          msg,
+          'ขายเกินคงเหลือ / ไม่สามารถขายได้: ' + raw,
+          true
+        );
+      } else {
+        showMsg(msg, raw, true);
+      }
     }
   }
 
@@ -407,6 +493,9 @@
 
     $('form-receive').addEventListener('submit', onReceive);
     $('form-sale').addEventListener('submit', onSale);
+    $('sale-lot').addEventListener('change', updateSalePreview);
+    $('sale-qty').addEventListener('input', updateSalePreview);
+    updateSalePreview();
     $('form-adjust').addEventListener('submit', onAdjust);
     $('form-destroy').addEventListener('submit', onDestroy);
     $('form-asof').addEventListener('submit', onAsOf);

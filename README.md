@@ -44,8 +44,27 @@ Local-only prototype for Thai cannabis **retail stock ledger** with retrospectiv
 | `schema.md` | Data model for aaa01 |
 | `js/store.js` | localStorage load/save |
 | `js/ledger.js` | `createLot`, `appendEvent`, `balanceAt`, `balanceAllAt`, `validateSale` |
-| `js/app.js` | Forms + as-of report + event log |
+| `js/app.js` | Forms + **sales cashier** + as-of report + event log |
 | `README.md` | This file |
+
+---
+
+## Sales cashier / หน้าพนักงานขาย
+
+Thin storefront UI for staff sales — wraps the existing immutable ledger (`validateSale` → `appendEvent` type `SALE`).  
+หน้าขายหน้าร้านแบบบาง ๆ — ไม่ใช่ POS เต็ม / ไม่มีชำระเงิน / CRM / พิมพ์ใบเสร็จ
+
+1. Open tab **หน้าพนักงานขาย / Sales**
+2. Pick a lot with **remaining > 0**, enter qty, `actor_user_id` (default `cashier`), optional note
+3. Press the big **ขาย / Sell** button
+4. Oversell is blocked with a clear Thai error (`ขายเกินคงเหลือ …`)
+5. After a sale, lots / event log refresh; **As-of** remains the primary audit view
+
+Locked event fields: `occurred_at` · `qty_delta` · `actor_user_id`
+
+```bash
+node tests/ledger.smoke.mjs
+```
 
 ---
 

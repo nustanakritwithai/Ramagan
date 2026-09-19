@@ -29,7 +29,7 @@
     <nav class="tabs" aria-label="Sections">
       <button type="button" class="active" data-tab="lots">สินค้า / Lots</button>
       <button type="button" data-tab="receive">รับเข้า / Receive</button>
-      <button type="button" data-tab="sale">ขาย / Sale</button>
+      <button type="button" data-tab="sale">หน้าพนักงานขาย / Sales</button>
       <button type="button" data-tab="adjust">ปรับ / ทำลาย</button>
       <button type="button" data-tab="asof">รายงาน ณ เวลา / As-of</button>
       <button type="button" data-tab="events">บันทึกเหตุการณ์ / Log</button>
@@ -102,30 +102,38 @@
       </div>
     </section>
 
-    <!-- Sale -->
+    <!-- Sales cashier (หน้าพนักงานขาย) — thin storefront wrapping ledger SALE -->
     <section id="panel-sale" class="panel">
-      <div class="card">
-        <h2>ขาย / Sale</h2>
-        <p class="hint">validateSale ป้องกันขายเกินคงเหลือของ Lot</p>
-        <form id="form-sale">
-          <div class="form-grid">
-            <label>Lot *
+      <div class="card card-cashier">
+        <h2>หน้าพนักงานขาย / Sales cashier</h2>
+        <p class="hint">
+          บางๆ ตามล็อก: เลือก Lot → จำนวน → <code>validateSale</code> → <code>SALE</code> ·
+          กัน oversell · ยังไม่บัญชี/CRM · ไม่แตะหน้า as-of
+        </p>
+        <div id="sale-stock-preview" class="cashier-preview" aria-live="polite">
+          <div><span class="muted">คงเหลือตอนนี้</span><strong id="sale-remaining">—</strong></div>
+          <div><span class="muted">หลังขาย</span><strong id="sale-after">—</strong></div>
+          <div id="sale-check" class="cashier-check muted">เลือก Lot และจำนวนเพื่อตรวจ</div>
+        </div>
+        <form id="form-sale" class="cashier-form">
+          <div class="cashier-grid">
+            <label class="cashier-lot">Lot ที่ขายได้ * <span class="muted">(เฉพาะคงเหลือ &gt; 0)</span>
               <select id="sale-lot" required></select>
             </label>
             <label>จำนวน *
-              <input id="sale-qty" type="number" min="0.001" step="any" required />
+              <input id="sale-qty" type="number" min="0.001" step="any" required placeholder="เช่น 1 หรือ 3.5" />
             </label>
-            <label>ผู้ทำรายการ *
-              <input id="sale-actor" required value="พนักงาน" />
+            <label>ผู้ทำรายการ (actor_user_id) *
+              <input id="sale-actor" required value="cashier" />
             </label>
-            <label>เหตุผล *
-              <input id="sale-reason" required value="ขายหน้าร้าน" />
+            <label>หมายเหตุ / เหตุผล <span class="muted">(ไม่บังคับ)</span>
+              <input id="sale-reason" placeholder="ขายหน้าร้าน" />
             </label>
           </div>
-          <div class="form-actions" style="margin-top:12px">
-            <button type="submit" class="btn">บันทึก SALE</button>
+          <div class="cashier-actions">
+            <button type="submit" class="btn btn-sell" id="btn-sell">ขาย / Sell</button>
           </div>
-          <div id="sale-msg" class="msg"></div>
+          <div id="sale-msg" class="msg" role="status" aria-live="polite"></div>
         </form>
       </div>
     </section>
@@ -193,7 +201,7 @@
     <!-- As-of report -->
     <section id="panel-asof" class="panel">
       <div class="card">
-        <h2>รายงานยอด ณ เวลา / As-of balance</h2>
+        <h2>รายงานยอด ณ เวลา / As-of balance <span class="muted">(หลักสำหรับ audit)</span></h2>
         <p class="hint">
           ทดลองเวลา เช่น 2026-09-13 12:00 — ดอก OG Kush ควรเหลือ 85 g
           (รับ 100 − ขาย 15; ยังไม่นับ ADJUST +2 ของวันที่ 16)
