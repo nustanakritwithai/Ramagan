@@ -693,13 +693,22 @@
         '</strong></label>' +
         '<label>นับจริง<input class="shift-count" type="number" step="any" inputmode="decimal" value="' +
         sys +
-        '" aria-label="นับจริง ' +
+        '" oninput="window.__ramaganShiftVar&&window.__ramaganShiftVar()" aria-label="นับจริง ' +
         escapeHtml(name) +
         '" /></label>' +
         '<label>ส่วนต่าง<strong class="shift-var zero" data-var="0">0</strong></label>' +
         '</div>';
     }
     box.innerHTML = html;
+    var inputs = box.querySelectorAll('.shift-count');
+    for (var ii = 0; ii < inputs.length; ii++) {
+      (function (el) {
+        el.addEventListener('input', updateShiftVariances);
+        el.addEventListener('change', updateShiftVariances);
+        el.addEventListener('keyup', updateShiftVariances);
+        el.addEventListener('blur', updateShiftVariances);
+      })(inputs[ii]);
+    }
     updateShiftVariances();
   }
 
@@ -1000,6 +1009,32 @@
     reader.readAsText(file);
   }
 
+
+  function migrateOldDemoSeedIfNeeded() {
+    var lots = StockLedger.listLots() || [];
+    if (!lots.length) return false;
+    var hasCategory = false;
+    for (var i = 0; i < lots.length; i++) {
+      if (lots[i].category_id) {
+        hasCategory = true;
+        break;
+      }
+    }
+    // Old V0 seed was 3 flower/oil/gummy lots without category_id
+    if (hasCategory && lots.length > 10) return false;
+    var looksOld =
+      lots.length <= 5 ||
+      !hasCategory ||
+      lots.some(function (L) {
+        var n = String(L.product_name || '');
+        return /OG Kush|CBD 10%|กัมมี่|เจลลี่/.test(n);
+      });
+    if (!looksOld) return false;
+    StockStore.clear();
+    StockLedger.seedIfEmpty();
+    return true;
+  }
+
   function onResetSeed() {
     if (
       !confirm(
@@ -1037,11 +1072,18 @@
 
   function init() {
     StockLedger.seedIfEmpty();
+    migrateOldDemoSeedIfNeeded();
     bindTabs();
 
     $('form-receive').addEventListener('submit', onReceive);
     bindPosUi();
     bindShiftUi();
+    window.__ramaganShiftVar = updateShiftVariances;
+    document.addEventListener('input', function (e) {
+      if (e.target && e.target.classList && e.target.classList.contains('shift-count')) {
+        updateShiftVariances();
+      }
+    });
     $('form-adjust').addEventListener('submit', onAdjust);
     $('form-destroy').addEventListener('submit', onDestroy);
     $('form-asof').addEventListener('submit', onAsOf);

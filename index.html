@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=shiftfix1" />
 </head>
 <body>
   <header class="app-header">
@@ -20,7 +20,7 @@
       <button type="button" class="btn btn-ghost" id="btn-export" title="Export JSON for Google Drive backup">ส่งออก JSON</button>
       <button type="button" class="btn btn-ghost" id="btn-import" title="Import JSON from Drive/manual file">นำเข้า JSON</button>
       <input type="file" id="import-file" accept="application/json,.json" hidden />
-      <button type="button" class="btn btn-ghost" id="btn-reset">รีเซ็ต / Re-seed</button>
+      <button type="button" class="btn btn-ghost" id="btn-reset" title="ล้างแล้วใส่ seed 5 หมวดใหม่">รีเซ็ต / Re-seed (5 หมวด)</button>
     </div>
   </header>
 
@@ -289,8 +289,8 @@
   </main>
 
   <!-- No type=module — works under file:// -->
-  <script src="js/store.js"></script>
-  <script src="js/ledger.js"></script>
-  <script src="js/app.js"></script>
+  <script src="js/store.js?v=shiftfix1"></script>
+  <script src="js/ledger.js?v=shiftfix1"></script>
+  <script src="js/app.js?v=shiftfix1"></script>
 </body>
 </html>
