@@ -1394,6 +1394,7 @@
       if (el) el.textContent = text;
     }
     setText('admin-sales-baht', fmtBahtAdmin(stats.salesBaht));
+    setText('admin-sales-gross', fmtBahtAdmin(stats.salesBahtGross || 0));
     setText('admin-sales-paid-g', fmtG(stats.salesPaidG));
     setText('admin-sales-stock-g', fmtG(stats.salesStockG));
     setText('admin-cash', fmtBahtAdmin(stats.cashBaht));

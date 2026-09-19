@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=discount1" />
+  <link rel="stylesheet" href="styles.css?v=payable1" />
 </head>
 <body>
   <header class="app-header">
@@ -388,7 +388,8 @@
         </div>
 
         <div class="admin-kpis" id="admin-kpis">
-          <div class="kpi"><span class="kpi-label">ยอดขาย (บาท)</span><strong id="admin-sales-baht">฿0</strong></div>
+          <div class="kpi"><span class="kpi-label">ยอดขายหลังลด (บาท)</span><strong id="admin-sales-baht">฿0</strong></div>
+          <div class="kpi"><span class="kpi-label">ยอดก่อนลด (บาท)</span><strong id="admin-sales-gross">฿0</strong></div>
           <div class="kpi"><span class="kpi-label">ขาย (กรัมจ่าย)</span><strong id="admin-sales-paid-g">0 g</strong></div>
           <div class="kpi"><span class="kpi-label">ตัดสต็อก (กรัม)</span><strong id="admin-sales-stock-g">0 g</strong></div>
           <div class="kpi"><span class="kpi-label">เงินสด</span><strong id="admin-cash">฿0</strong></div>
@@ -507,12 +508,12 @@
 
   <!-- No type=module — works under file:// -->
   <script>window.RAMAGAN_GOOGLE_CLIENT_ID=window.RAMAGAN_GOOGLE_CLIENT_ID||"";</script>
-  <script src="js/drive.js?v=discount1"></script>
-  <script src="js/store.js?v=discount1"></script>
-  <script src="js/ledger.js?v=discount1"></script>
+  <script src="js/drive.js?v=payable1"></script>
+  <script src="js/store.js?v=payable1"></script>
+  <script src="js/ledger.js?v=payable1"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="js/admin-analytics.js?v=discount1"></script>
-  <script src="js/app.js?v=discount1"></script>
+  <script src="js/admin-analytics.js?v=payable1"></script>
+  <script src="js/app.js?v=payable1"></script>
 
   <div id="keypad-modal" class="keypad-modal" hidden>
     <div class="keypad-sheet" role="dialog" aria-modal="true" aria-labelledby="keypad-title">

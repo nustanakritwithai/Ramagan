@@ -44,6 +44,33 @@
     return arr.slice(0, n || 5);
   }
 
+
+  /** SALE baht: prefer payable (after discount), allocate by line share when cart-level meta. */
+  function saleLineAmounts(meta, ev) {
+    meta = meta || {};
+    var paid = toNum(meta.qty_paid != null ? meta.qty_paid : ev.qty);
+    var stock = toNum(
+      meta.qty_stock != null ? meta.qty_stock : Math.abs(toNum(ev.qty_delta != null ? ev.qty_delta : ev.qty))
+    );
+    var gross = toNum(meta.line_total);
+    if (!(gross > 0) && meta.unit_price != null) {
+      gross = paid * toNum(meta.unit_price);
+    }
+    var subtotal = toNum(meta.subtotal_before_discount);
+    var net;
+    if (meta.payable_baht != null && isFinite(Number(meta.payable_baht))) {
+      var payableCart = toNum(meta.payable_baht);
+      if (subtotal > 0 && gross > 0) {
+        net = Math.round(payableCart * (gross / subtotal) * 100) / 100;
+      } else {
+        net = Math.round(payableCart * 100) / 100;
+      }
+    } else {
+      net = gross;
+    }
+    return { paid: paid, stock: stock, gross: gross, net: net };
+  }
+
   function computeAdminStats(events, lots, range, balanceNowFn) {
     events = events || [];
     lots = lots || [];
@@ -53,6 +80,7 @@
     var lowAt = range.lowStockAt != null ? Number(range.lowStockAt) : 10;
 
     var salesBaht = 0;
+    var salesBahtGross = 0;
     var salesPaidG = 0;
     var salesStockG = 0;
     var cashBaht = 0;
@@ -76,15 +104,13 @@
       var lot = lotMap[ev.lot_id] || {};
 
       if (ev.type === 'SALE') {
-        var paid = toNum(meta.qty_paid != null ? meta.qty_paid : ev.qty);
-        var stock = toNum(
-          meta.qty_stock != null ? meta.qty_stock : Math.abs(toNum(ev.qty_delta))
-        );
-        var line = toNum(meta.line_total);
-        if (!(line > 0) && meta.unit_price != null) {
-          line = paid * toNum(meta.unit_price);
-        }
+        var amt = saleLineAmounts(meta, ev);
+        var paid = amt.paid;
+        var stock = amt.stock;
+        var line = amt.net; // after discount (primary)
+        var gross = amt.gross;
         salesBaht += line;
+        salesBahtGross += gross;
         salesPaidG += paid;
         salesStockG += stock;
         if (meta.payment === 'transfer') transferBaht += line;
@@ -141,6 +167,7 @@
       fromKey: fromKey,
       toKey: toKey,
       salesBaht: salesBaht,
+      salesBahtGross: Math.round(salesBahtGross * 100) / 100,
       salesPaidG: salesPaidG,
       salesStockG: salesStockG,
       cashBaht: cashBaht,
@@ -212,12 +239,10 @@
       var meta = ev.meta || {};
       var lot = lotMap[ev.lot_id] || {};
       if (ev.type === 'SALE') {
-        var paid = toNum(meta.qty_paid != null ? meta.qty_paid : ev.qty);
-        var stock = toNum(
-          meta.qty_stock != null ? meta.qty_stock : Math.abs(toNum(ev.qty_delta))
-        );
-        var line = toNum(meta.line_total);
-        if (!(line > 0) && meta.unit_price != null) line = paid * toNum(meta.unit_price);
+        var amt = saleLineAmounts(meta, ev);
+        var paid = amt.paid;
+        var stock = amt.stock;
+        var line = amt.net;
         byDay[day].baht += line;
         byDay[day].paid_g += paid;
         byDay[day].stock_g += stock;
