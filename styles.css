@@ -493,3 +493,47 @@ button.btn-sell:hover {
 }
 .btn-sell:disabled{opacity:.4;cursor:not-allowed}
 .pos-cart-note{margin:0;font-size:12px}
+
+
+/* —— Before-shift count —— */
+.shift-card .hint{margin-bottom:12px}
+.shift-meta{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:12px;
+  margin-bottom:14px;
+}
+@media(max-width:700px){.shift-meta{grid-template-columns:1fr}}
+.shift-rows{display:flex;flex-direction:column;gap:12px}
+.shift-row{
+  display:grid;
+  grid-template-columns:minmax(120px,1.2fr) repeat(3,minmax(90px,1fr));
+  gap:10px;
+  align-items:end;
+  padding:14px;
+  border-radius:14px;
+  border:1px solid var(--border);
+  background:#121a22;
+}
+@media(max-width:800px){
+  .shift-row{grid-template-columns:1fr 1fr; }
+}
+.shift-row-name{font-weight:700;font-size:16px;grid-column:1/-1}
+.shift-row-sku{font-size:12px;color:var(--muted);grid-column:1/-1;margin-top:-6px}
+.shift-row label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
+.shift-sys{
+  font-size:28px;font-weight:800;color:#93c5fd;font-variant-numeric:tabular-nums;
+}
+.shift-count{
+  font-size:28px;font-weight:800;padding:10px 12px;border-radius:12px;
+  border:2px solid var(--accent);background:#0b1117;color:var(--text);
+  font-variant-numeric:tabular-nums;width:100%;
+}
+.shift-var{
+  font-size:28px;font-weight:800;font-variant-numeric:tabular-nums;
+}
+.shift-var.zero{color:var(--muted)}
+.shift-var.pos{color:#86efac}
+.shift-var.neg{color:#fca5a5}
+.shift-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px;align-items:center}
+.shift-actions .btn-sell{flex:1;min-width:200px}

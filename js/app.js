@@ -169,6 +169,7 @@
     refreshSelects();
     renderPosGrid();
     renderPosCart();
+    renderShiftCount();
   }
 
 
@@ -509,6 +510,189 @@
     if (payTransfer) payTransfer.addEventListener('click', function () { setPay('transfer'); });
     var checkout = $('btn-pos-checkout');
     if (checkout) checkout.addEventListener('click', onPosCheckout);
+  }
+
+  /* —— Before-shift physical count → ADJUST on confirm —— */
+  function renderShiftCount() {
+    var box = $('shift-rows');
+    if (!box) return;
+    var lots = StockLedger.listLots() || [];
+    if (!lots.length) {
+      box.innerHTML = '<p class="muted">ยังไม่มี Lot — รับเข้าก่อน</p>';
+      var btn0 = $('btn-shift-confirm');
+      if (btn0) btn0.disabled = true;
+      return;
+    }
+    var html = '';
+    for (var i = 0; i < lots.length; i++) {
+      var lot = lots[i];
+      var sys = StockLedger.balanceAt(lot.lot_id);
+      var unit = lot.unit || '';
+      var name = lot.product_name || lot.lot_id;
+      var sku = lot.sku || '';
+      html +=
+        '<div class="shift-row" data-lot-id="' +
+        escapeHtml(lot.lot_id) +
+        '">' +
+        '<div class="shift-row-name">' +
+        escapeHtml(name) +
+        '</div>' +
+        '<div class="shift-row-sku">' +
+        escapeHtml(sku) +
+        ' · <code>' +
+        escapeHtml(lot.lot_id) +
+        '</code> · ' +
+        escapeHtml(unit) +
+        '</div>' +
+        '<label>ยอดระบบ<strong class="shift-sys" data-sys="' +
+        sys +
+        '">' +
+        fmtQty(sys, unit) +
+        '</strong></label>' +
+        '<label>นับจริง<input class="shift-count" type="number" step="any" inputmode="decimal" value="' +
+        sys +
+        '" aria-label="นับจริง ' +
+        escapeHtml(name) +
+        '" /></label>' +
+        '<label>ส่วนต่าง<strong class="shift-var zero" data-var="0">0</strong></label>' +
+        '</div>';
+    }
+    box.innerHTML = html;
+    updateShiftVariances();
+  }
+
+  function updateShiftVariances() {
+    var rows = document.querySelectorAll('#shift-rows .shift-row');
+    var dirty = 0;
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      var sysEl = row.querySelector('[data-sys]');
+      var input = row.querySelector('.shift-count');
+      var varEl = row.querySelector('.shift-var');
+      if (!sysEl || !input || !varEl) continue;
+      var sys = Number(sysEl.getAttribute('data-sys'));
+      var counted = Number(input.value);
+      if (!isFinite(counted)) {
+        varEl.textContent = '—';
+        varEl.className = 'shift-var';
+        continue;
+      }
+      var diff = Math.round((counted - sys) * 1000) / 1000;
+      varEl.setAttribute('data-var', String(diff));
+      var sign = diff > 0 ? '+' : '';
+      varEl.textContent = sign + diff;
+      varEl.className =
+        'shift-var ' + (diff === 0 ? 'zero' : diff > 0 ? 'pos' : 'neg');
+      if (diff !== 0) dirty++;
+    }
+    var btn = $('btn-shift-confirm');
+    if (btn) btn.disabled = dirty === 0;
+  }
+
+  function onShiftConfirm() {
+    var msg = $('shift-msg');
+    var actor = ($('shift-actor') && $('shift-actor').value.trim()) || '';
+    var shiftLabel = ($('shift-label') && $('shift-label').value.trim()) || '';
+    if (!actor) {
+      showMsg(msg, 'ต้องระบุผู้ตรวจนับ', true);
+      return;
+    }
+    if (!shiftLabel) {
+      showMsg(msg, 'ต้องระบุกะ / รอบ', true);
+      return;
+    }
+    var rows = document.querySelectorAll('#shift-rows .shift-row');
+    var plans = [];
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      var lotId = row.getAttribute('data-lot-id');
+      var sys = Number(row.querySelector('[data-sys]').getAttribute('data-sys'));
+      var counted = Number(row.querySelector('.shift-count').value);
+      if (!isFinite(counted)) {
+        showMsg(msg, 'ตัวเลขนับจริงไม่ถูกต้อง: ' + lotId, true);
+        return;
+      }
+      var diff = Math.round((counted - sys) * 1000) / 1000;
+      if (diff === 0) continue;
+      plans.push({
+        lot_id: lotId,
+        sys: sys,
+        counted: counted,
+        diff: diff,
+        qty: Math.abs(diff),
+        sign: diff > 0 ? 1 : -1
+      });
+    }
+    if (!plans.length) {
+      showMsg(msg, 'ไม่มีส่วนต่าง — ไม่ต้อง ADJUST', true);
+      return;
+    }
+    var summary = plans
+      .map(function (p) {
+        return p.lot_id + ' ' + (p.sign > 0 ? '+' : '-') + p.qty;
+      })
+      .join(', ');
+    if (
+      !confirm(
+        'ยืนยัน ADJUST ตามนับจริง?\nกะ: ' +
+          shiftLabel +
+          '\nผู้ตรวจ: ' +
+          actor +
+          '\n' +
+          summary
+      )
+    ) {
+      return;
+    }
+    try {
+      for (var j = 0; j < plans.length; j++) {
+        var p = plans[j];
+        StockLedger.appendEvent({
+          lot_id: p.lot_id,
+          type: 'ADJUST',
+          qty: p.qty,
+          actor_user_id: actor,
+          reason: 'นับก่อนเข้ากะ · ' + shiftLabel,
+          meta: {
+            adjust_sign: p.sign,
+            shift_label: shiftLabel,
+            counted_qty: p.counted,
+            system_qty: p.sys,
+            variance: p.diff,
+            source: 'shift_count'
+          }
+        });
+      }
+      showMsg(
+        msg,
+        'บันทึก ADJUST ' + plans.length + ' รายการ · กะ ' + shiftLabel,
+        false
+      );
+      refreshAll();
+    } catch (err) {
+      showMsg(msg, String(err.message || err), true);
+      refreshAll();
+    }
+  }
+
+  function bindShiftUi() {
+    var box = $('shift-rows');
+    if (box) {
+      box.addEventListener('input', function (e) {
+        if (e.target && e.target.classList.contains('shift-count')) {
+          updateShiftVariances();
+        }
+      });
+    }
+    var reload = $('btn-shift-reload');
+    if (reload) {
+      reload.addEventListener('click', function () {
+        renderShiftCount();
+        showMsg($('shift-msg'), 'รีโหลดยอดระบบแล้ว', false);
+      });
+    }
+    var confirmBtn = $('btn-shift-confirm');
+    if (confirmBtn) confirmBtn.addEventListener('click', onShiftConfirm);
   }
 
   function onAdjust(ev) {

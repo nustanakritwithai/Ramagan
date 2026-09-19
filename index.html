@@ -36,6 +36,7 @@
       <button type="button" data-tab="lots">สินค้า / Lots</button>
       <button type="button" data-tab="receive">รับเข้า / Receive</button>
       <button type="button" class="active" data-tab="sale">หน้าพนักงานขาย / Sales</button>
+      <button type="button" data-tab="shift">ก่อนเข้ากะ / Shift count</button>
       <button type="button" data-tab="adjust">ปรับ / ทำลาย</button>
       <button type="button" data-tab="asof">รายงาน ณ เวลา / As-of</button>
       <button type="button" data-tab="events">บันทึกเหตุการณ์ / Log</button>
@@ -139,6 +140,29 @@
     </section>
 
     <!-- Adjust / Destroy -->
+
+    <!-- Before-shift physical count -->
+    <section id="panel-shift" class="panel">
+      <div class="card shift-card">
+        <h2>นับสต็อกก่อนเข้ากะ</h2>
+        <p class="hint">ชั่ง/นับจริง → ใส่เลขใหญ่ → ดูส่วนต่างกับยอดระบบ → ยืนยันค่อย ADJUST · ยังไม่เชื่อมเครื่องชั่ง/กล้อง</p>
+        <div class="shift-meta">
+          <label>กะ / รอบ *
+            <input id="shift-label" required placeholder="เช่น กะเช้า 19 ก.ย." value="กะเช้า" />
+          </label>
+          <label>ผู้ตรวจนับ *
+            <input id="shift-actor" required value="น้องร้าน" />
+          </label>
+        </div>
+        <div id="shift-rows" class="shift-rows" aria-label="รายการนับสต็อก"></div>
+        <div class="shift-actions">
+          <button type="button" class="btn btn-ghost" id="btn-shift-reload">รีโหลดยอดระบบ</button>
+          <button type="button" class="btn btn-sell" id="btn-shift-confirm" disabled>ยืนยัน ADJUST ตามส่วนต่าง</button>
+        </div>
+        <div id="shift-msg" class="msg" role="status" aria-live="polite"></div>
+      </div>
+    </section>
+
     <section id="panel-adjust" class="panel">
       <div class="grid-2">
         <div class="card">
