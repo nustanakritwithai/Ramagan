@@ -826,6 +826,103 @@
     }
   }
 
+
+  /* —— Google Drive connect UI (OAuth hook; sync rules by Ai CPU WEB) —— */
+  function refreshDriveStatus() {
+    var badge = $('badge-drive-status');
+    var btnConnect = $('btn-drive-connect');
+    var btnDisconnect = $('btn-drive-disconnect');
+    var btnPush = $('btn-drive-push');
+    var st =
+      window.RamaganDrive && typeof RamaganDrive.status === 'function'
+        ? RamaganDrive.status()
+        : { configured: false, connected: false, label: 'OFFLINE · local' };
+    if (badge) {
+      badge.textContent = st.connected
+        ? 'DRIVE · เชื่อมแล้ว'
+        : st.configured
+          ? 'DRIVE · พร้อมเชื่อม'
+          : 'OFFLINE · local';
+      badge.className =
+        'badge-live' +
+        (st.connected ? ' connected' : st.configured ? '' : ' warn');
+      badge.title = st.label || '';
+    }
+    if (btnConnect) {
+      btnConnect.classList.toggle('hidden', !!st.connected);
+      btnConnect.disabled = false;
+    }
+    if (btnDisconnect) {
+      btnDisconnect.classList.toggle('hidden', !st.connected);
+    }
+    if (btnPush) {
+      btnPush.disabled = !st.connected;
+    }
+  }
+
+  function onDriveConnect() {
+    if (!window.RamaganDrive) {
+      alert('โมดูล Drive ยังไม่โหลด');
+      return;
+    }
+    RamaganDrive.connect()
+      .then(function () {
+        refreshDriveStatus();
+        showMsg($('sale-msg'), 'เชื่อม Google Drive แล้ว', false);
+      })
+      .catch(function (err) {
+        refreshDriveStatus();
+        alert(String(err.message || err));
+      });
+  }
+
+  function onDriveDisconnect() {
+    if (!window.RamaganDrive) return;
+    RamaganDrive.disconnect();
+    refreshDriveStatus();
+    showMsg($('sale-msg'), 'ตัดการเชื่อม Drive แล้ว', false);
+  }
+
+  function onDrivePush() {
+    if (!window.RamaganDrive) return;
+    try {
+      var state = StockStore.load();
+      var payload = JSON.stringify(
+        {
+          version: state.version || 1,
+          exported_at: new Date().toISOString(),
+          lots: state.lots || [],
+          events: state.events || []
+        },
+        null,
+        2
+      );
+      RamaganDrive.uploadJson('ramagan-ledger.json', payload)
+        .then(function () {
+          showMsg($('sale-msg'), 'อัปขึ้น Google Drive แล้ว', false);
+          refreshDriveStatus();
+        })
+        .catch(function (err) {
+          alert('อัป Drive ไม่สำเร็จ: ' + String(err.message || err));
+        });
+    } catch (err) {
+      alert(String(err.message || err));
+    }
+  }
+
+  function bindDriveUi() {
+    var c = $('btn-drive-connect');
+    var d = $('btn-drive-disconnect');
+    var p = $('btn-drive-push');
+    if (c) c.addEventListener('click', onDriveConnect);
+    if (d) d.addEventListener('click', onDriveDisconnect);
+    if (p) p.addEventListener('click', onDrivePush);
+    if (window.RamaganDrive && RamaganDrive.onChange) {
+      RamaganDrive.onChange(refreshDriveStatus);
+    }
+    refreshDriveStatus();
+  }
+
   function bindShiftUi() {
     var box = $('shift-rows');
     if (box && !box.dataset.shiftBound) {
@@ -1078,6 +1175,7 @@
     $('form-receive').addEventListener('submit', onReceive);
     bindPosUi();
     bindShiftUi();
+    bindDriveUi();
     window.__ramaganShiftVar = updateShiftVariances;
     document.addEventListener('input', function (e) {
       if (e.target && e.target.classList && e.target.classList.contains('shift-count')) {

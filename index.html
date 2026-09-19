@@ -3,24 +3,30 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Cannabis Stock Ledger V0 · สมุดสต็อก</title>
+  <title>Ramagan · ร้านกัญชา POS</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=shiftfix1" />
+  <link rel="stylesheet" href="styles.css?v=ui1" />
 </head>
 <body>
   <header class="app-header">
-    <div>
-      <h1>สมุดสต็อกกัญชา <span>V0</span></h1>
-      <p class="subtitle">Stock ledger (immutable events) · Ai CPU WEB rules · localStorage only · no server</p>
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">🌿</div>
+      <div>
+        <h1>Ramagan <span>POS</span></h1>
+        <p class="subtitle">ขายหน้าร้าน · สต็อกย้อนหลังได้ · โปร 5 แถม 2 · หน่วยกรัม</p>
+      </div>
     </div>
     <div class="header-actions">
-      <span class="badge-live">OFFLINE · localStorage</span>
-      <button type="button" class="btn btn-ghost" id="btn-export" title="Export JSON for Google Drive backup">ส่งออก JSON</button>
-      <button type="button" class="btn btn-ghost" id="btn-import" title="Import JSON from Drive/manual file">นำเข้า JSON</button>
+      <span class="badge-live" id="badge-drive-status" title="สถานะ Google Drive">OFFLINE · local</span>
+      <button type="button" class="btn btn-drive" id="btn-drive-connect" title="เชื่อม Google Drive (OAuth)">เชื่อม Drive</button>
+      <button type="button" class="btn btn-ghost hidden" id="btn-drive-disconnect" title="ยกเลิกการเชื่อม Drive">ตัด Drive</button>
+      <button type="button" class="btn btn-ghost" id="btn-drive-push" title="อัป JSON ขึ้น Drive (เมื่อเชื่อมแล้ว)" disabled>อัป Drive</button>
+      <button type="button" class="btn btn-ghost" id="btn-export" title="Export JSON สำรอง">ส่งออก</button>
+      <button type="button" class="btn btn-ghost" id="btn-import" title="Import JSON">นำเข้า</button>
       <input type="file" id="import-file" accept="application/json,.json" hidden />
-      <button type="button" class="btn btn-ghost" id="btn-reset" title="ล้างแล้วใส่ seed 5 หมวดใหม่">รีเซ็ต / Re-seed (5 หมวด)</button>
+      <button type="button" class="btn btn-ghost" id="btn-reset" title="ล้างแล้วใส่ seed 5 หมวดใหม่">รีเซ็ต</button>
     </div>
   </header>
 
@@ -289,8 +295,10 @@
   </main>
 
   <!-- No type=module — works under file:// -->
-  <script src="js/store.js?v=shiftfix1"></script>
-  <script src="js/ledger.js?v=shiftfix1"></script>
-  <script src="js/app.js?v=shiftfix1"></script>
+  <script>window.RAMAGAN_GOOGLE_CLIENT_ID=window.RAMAGAN_GOOGLE_CLIENT_ID||"";</script>
+  <script src="js/drive.js?v=ui1"></script>
+  <script src="js/store.js?v=ui1"></script>
+  <script src="js/ledger.js?v=ui1"></script>
+  <script src="js/app.js?v=ui1"></script>
 </body>
 </html>
