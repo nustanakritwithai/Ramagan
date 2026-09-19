@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=keypad1" />
+  <link rel="stylesheet" href="styles.css?v=discount1" />
 </head>
 <body>
   <header class="app-header">
@@ -222,9 +222,18 @@
           <div id="pos-cart-lines" class="pos-cart-lines">
             <p class="muted pos-cart-empty">ยังไม่มีสินค้า — กดกล่องด้านซ้าย</p>
           </div>
-          <div class="pos-cart-total">
-            <span>รวมยอด</span>
-            <strong id="pos-cart-total">฿0</strong>
+          <div class="pos-cart-totals">
+            <div class="pos-cart-row">
+              <span>รวมสินค้า</span>
+              <strong id="pos-cart-subtotal">฿0</strong>
+            </div>
+            <label class="pos-cart-discount">ส่วนลด (บาท)
+              <input type="number" id="pos-discount-baht" min="0" step="any" inputmode="decimal" value="0" />
+            </label>
+            <div class="pos-cart-row pos-cart-payable">
+              <span>ยอดชำระ</span>
+              <strong id="pos-cart-total">฿0</strong>
+            </div>
           </div>
           <div class="pos-pay" role="group" aria-label="ช่องทางชำระ">
             <button type="button" class="pos-pay-btn active" data-pay="cash" id="pay-cash">เงินสด</button>
@@ -498,12 +507,12 @@
 
   <!-- No type=module — works under file:// -->
   <script>window.RAMAGAN_GOOGLE_CLIENT_ID=window.RAMAGAN_GOOGLE_CLIENT_ID||"";</script>
-  <script src="js/drive.js?v=keypad1"></script>
-  <script src="js/store.js?v=keypad1"></script>
-  <script src="js/ledger.js?v=keypad1"></script>
+  <script src="js/drive.js?v=discount1"></script>
+  <script src="js/store.js?v=discount1"></script>
+  <script src="js/ledger.js?v=discount1"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="js/admin-analytics.js?v=keypad1"></script>
-  <script src="js/app.js?v=keypad1"></script>
+  <script src="js/admin-analytics.js?v=discount1"></script>
+  <script src="js/app.js?v=discount1"></script>
 
   <div id="keypad-modal" class="keypad-modal" hidden>
     <div class="keypad-sheet" role="dialog" aria-modal="true" aria-labelledby="keypad-title">

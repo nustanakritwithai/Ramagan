@@ -793,3 +793,13 @@ button.btn-sell, button.btn-sell {
   .keypad-modal{align-items:center}
   .keypad-sheet{border-radius:20px}
 }
+
+.pos-cart-totals{display:grid;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border,#2a3a4d)}
+.pos-cart-row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.pos-cart-row strong{font-size:1.15rem}
+.pos-cart-payable strong{font-size:1.6rem;color:var(--accent,#2fe39a)}
+.pos-cart-discount{display:grid;gap:4px;font-size:0.9rem;color:var(--muted,#9aabbd)}
+.pos-cart-discount input{
+  min-height:44px;font-size:1.15rem;font-weight:700;border-radius:12px;
+  padding:8px 12px;border:1px solid var(--border,#2a3a4d);background:#0d151e;color:#e8eef5;
+}

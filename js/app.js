@@ -296,6 +296,21 @@
     return price * Number(line.qty);
   }
 
+  function posCartDiscountBaht() {
+    var el = $('pos-discount-baht');
+    if (!el) return 0;
+    var n = Number(el.value);
+    if (!isFinite(n) || n < 0) return 0;
+    return Math.round(n * 100) / 100;
+  }
+
+  function posCartPayable() {
+    var sub = posCartTotal();
+    var disc = posCartDiscountBaht();
+    if (disc > sub) disc = sub;
+    return Math.round((sub - disc) * 100) / 100;
+  }
+
   function posCartTotal() {
     var sum = 0;
     for (var i = 0; i < posCart.length; i++) sum += posLineTotal(posCart[i]);
@@ -420,7 +435,11 @@
     if (!posCart.length) {
       box.innerHTML =
         '<p class="muted pos-cart-empty">ยังไม่มีสินค้า — กดกล่องด้านซ้าย</p>';
+      var sub0 = $('pos-cart-subtotal');
+      if (sub0) sub0.textContent = fmtBaht(0);
       if (totalEl) totalEl.textContent = fmtBaht(0);
+      var discEl0 = $('pos-discount-baht');
+      if (discEl0) discEl0.value = '0';
       if (btn) btn.disabled = true;
       return;
     }
@@ -456,7 +475,16 @@
         '</div>';
     }
     box.innerHTML = html;
-    if (totalEl) totalEl.textContent = fmtBaht(posCartTotal());
+    var subtotal = posCartTotal();
+    var disc = posCartDiscountBaht();
+    if (disc > subtotal) {
+      disc = subtotal;
+      var discEl = $('pos-discount-baht');
+      if (discEl) discEl.value = String(disc);
+    }
+    var subEl = $('pos-cart-subtotal');
+    if (subEl) subEl.textContent = fmtBaht(subtotal);
+    if (totalEl) totalEl.textContent = fmtBaht(Math.round((subtotal - disc) * 100) / 100);
     if (btn) btn.disabled = false;
   }
 
@@ -540,7 +568,14 @@
     }
     var payment = posPayment === 'transfer' ? 'transfer' : 'cash';
     var actor = 'cashier';
-    // Validate stock qty (with promo free grams), not paid qty
+    var subtotalBefore = posCartTotal();
+    var discountBaht = posCartDiscountBaht();
+    if (discountBaht > subtotalBefore) discountBaht = subtotalBefore;
+    var payableBaht = Math.round((subtotalBefore - discountBaht) * 100) / 100;
+    var checkoutId =
+      'CHK-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 1e4).toString(36);
+
+    // Validate stock qty (with promo free grams), not paid qty — discount does not change stock
     for (var i = 0; i < posCart.length; i++) {
       var line = posCart[i];
       var qtyPaid = promoPaidQty(line.qty);
@@ -565,35 +600,42 @@
       var sold = 0;
       for (var j = 0; j < posCart.length; j++) {
         var L = posCart[j];
-        var qtyPaid = promoPaidQty(L.qty);
-        var qtyStock = promoStockQty(qtyPaid);
-        var lineTotal = posLineTotal(L); // paid * price
+        var qtyPaid2 = promoPaidQty(L.qty);
+        var qtyStock2 = promoStockQty(qtyPaid2);
+        var lineTotal = posLineTotal(L); // paid * price (before cart discount)
         StockLedger.appendEvent({
           lot_id: L.lot_id,
           type: 'SALE',
-          qty: qtyStock,
+          qty: qtyStock2,
           actor_user_id: actor,
           reason: 'ขายหน้าร้าน · โปร ' + PROMO_CODE,
           meta: {
             payment: payment,
             promo: PROMO_CODE,
-            qty_paid: qtyPaid,
-            qty_stock: qtyStock,
+            qty_paid: qtyPaid2,
+            qty_stock: qtyStock2,
             unit_price: L.unit_price || 0,
             line_total: lineTotal,
             product_name: L.product_name,
-            unit: 'g'
+            unit: 'g',
+            checkout_id: checkoutId,
+            subtotal_before_discount: subtotalBefore,
+            discount_baht: discountBaht,
+            payable_baht: payableBaht
           }
         });
         sold++;
       }
       var payLabel = payment === 'transfer' ? 'โอน' : 'เงินสด';
+      var discNote =
+        discountBaht > 0 ? ' · ส่วนลด ฿' + discountBaht + ' · ชำระ ' + fmtBaht(payableBaht) : '';
       showMsg(
         msg,
         'ขายสำเร็จ ' +
           sold +
-          ' รายการ · รวม ' +
-          fmtBaht(posCartTotal()) +
+          ' รายการ · รวมสินค้า ' +
+          fmtBaht(subtotalBefore) +
+          discNote +
           ' · ' +
           payLabel +
           ' · โปร ' +
@@ -601,6 +643,8 @@
         false
       );
       posCart = [];
+      var discReset = $('pos-discount-baht');
+      if (discReset) discReset.value = '0';
       renderPosCart();
       refreshAll();
     } catch (err) {
@@ -656,6 +700,19 @@
     }
     if (payCash) payCash.addEventListener('click', function () { setPay('cash'); });
     if (payTransfer) payTransfer.addEventListener('click', function () { setPay('transfer'); });
+    var discInput = $('pos-discount-baht');
+    if (discInput && !discInput.dataset.bound) {
+      discInput.dataset.bound = '1';
+      discInput.addEventListener('input', function () {
+        renderPosCart();
+      });
+      discInput.addEventListener('change', function () {
+        var sub = posCartTotal();
+        var d = posCartDiscountBaht();
+        if (d > sub) discInput.value = String(sub);
+        renderPosCart();
+      });
+    }
     var checkout = $('btn-pos-checkout');
     if (checkout) checkout.addEventListener('click', onPosCheckout);
   }
