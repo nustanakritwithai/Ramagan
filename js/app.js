@@ -263,6 +263,23 @@
   var posCart = []; // { lot_id, product_name, unit, unit_price, qty }
   var posPayment = 'cash'; // cash | transfer
 
+  var PROMO_BUY = 5;
+  var PROMO_FREE = 2;
+  var PROMO_CODE = '5+2';
+
+  /** qty in cart = grams paid; stock out = paid + free from 5+2 */
+  function promoStockQty(qtyPaid) {
+    var paid = Number(qtyPaid) || 0;
+    if (!(paid > 0)) return 0;
+    var sets = Math.floor(paid / PROMO_BUY);
+    return Math.round((paid + sets * PROMO_FREE) * 1000) / 1000;
+  }
+
+  function promoPaidQty(qtyPaid) {
+    return Math.round((Number(qtyPaid) || 0) * 1000) / 1000;
+  }
+
+
   function fmtBaht(n) {
     var v = Number(n) || 0;
     return '฿' + v.toLocaleString('th-TH', { maximumFractionDigits: 2 });
@@ -376,9 +393,12 @@
           '</span>' +
           '<span class="pos-tile-price">' +
           fmtBaht(price) +
-          '</span>' +
+          '/g</span>' +
+          '<span class="pos-tile-promo">โปร ' +
+          PROMO_CODE +
+          ' · จ่าย5g ได้7g</span>' +
           '<span class="pos-tile-stock">คงเหลือ ' +
-          fmtQty(rem, lot.unit) +
+          fmtQty(rem, lot.unit || 'g') +
           '</span>' +
           '</button>';
       }
@@ -410,9 +430,13 @@
         '</div>' +
         '<div class="pos-line-meta">' +
         fmtBaht(line.unit_price || 0) +
-        ' / ' +
-        escapeHtml(line.unit || '') +
-        ' · รวม ' +
+        '/g · จ่าย ' +
+        line.qty +
+        'g · ได้ ' +
+        promoStockQty(line.qty) +
+        'g (โปร ' +
+        PROMO_CODE +
+        ') · รวม ' +
         fmtBaht(posLineTotal(line)) +
         '</div>' +
         '<div class="pos-line-qty">' +
@@ -439,19 +463,31 @@
       return;
     }
     var line = findCartLine(lotId);
+    var nextPaid = line ? line.qty + PROMO_BUY : PROMO_BUY;
+    var needStock = promoStockQty(nextPaid);
+    if (needStock > rem) {
+      showMsg(
+        $('sale-msg'),
+        'โปร ' +
+          PROMO_CODE +
+          ' ต้องตัดสต็อก ' +
+          needStock +
+          'g (คงเหลือ ' +
+          rem +
+          'g)',
+        true
+      );
+      return;
+    }
     if (line) {
-      if (line.qty + 1 > rem) {
-        showMsg($('sale-msg'), 'เกินคงเหลือ (' + rem + ')', true);
-        return;
-      }
-      line.qty = Math.round((line.qty + 1) * 1000) / 1000;
+      line.qty = Math.round(nextPaid * 1000) / 1000;
     } else {
       posCart.push({
         lot_id: lot.lot_id,
         product_name: lot.product_name,
-        unit: lot.unit,
+        unit: lot.unit || 'g',
         unit_price: lot.unit_price != null ? Number(lot.unit_price) : 0,
-        qty: 1
+        qty: PROMO_BUY // paid grams
       });
     }
     showMsg($('sale-msg'), '', false);
@@ -468,7 +504,23 @@
         return L.lot_id !== lotId;
       });
     } else {
-      if (q > rem) q = rem;
+      var need = promoStockQty(q);
+      if (need > rem) {
+        // max paid such that stock fits
+        var maxPaid = rem;
+        while (promoStockQty(maxPaid) > rem && maxPaid > 0) {
+          maxPaid = Math.round((maxPaid - 0.001) * 1000) / 1000;
+        }
+        // snap down to whole grams if possible
+        maxPaid = Math.floor(rem);
+        while (promoStockQty(maxPaid) > rem && maxPaid > 0) maxPaid--;
+        q = maxPaid;
+        showMsg(
+          $('sale-msg'),
+          'โปร ' + PROMO_CODE + ' ตัดสต็อกเกินคงเหลือ — ปรับเหลือจ่าย ' + q + 'g',
+          true
+        );
+      }
       line.qty = Math.round(q * 1000) / 1000;
     }
     renderPosCart();
@@ -482,14 +534,22 @@
     }
     var payment = posPayment === 'transfer' ? 'transfer' : 'cash';
     var actor = 'cashier';
-    // Validate all lines first (no partial write)
+    // Validate stock qty (with promo free grams), not paid qty
     for (var i = 0; i < posCart.length; i++) {
       var line = posCart[i];
-      var check = StockLedger.validateSale(line.lot_id, line.qty);
+      var qtyPaid = promoPaidQty(line.qty);
+      var qtyStock = promoStockQty(qtyPaid);
+      var check = StockLedger.validateSale(line.lot_id, qtyStock);
       if (!check.ok) {
         showMsg(
           msg,
-          (line.product_name || line.lot_id) + ': ' + check.message,
+          (line.product_name || line.lot_id) +
+            ': โปร ' +
+            PROMO_CODE +
+            ' ต้องตัด ' +
+            qtyStock +
+            'g — ' +
+            check.message,
           true
         );
         return;
@@ -499,18 +559,24 @@
       var sold = 0;
       for (var j = 0; j < posCart.length; j++) {
         var L = posCart[j];
-        var lineTotal = posLineTotal(L);
+        var qtyPaid = promoPaidQty(L.qty);
+        var qtyStock = promoStockQty(qtyPaid);
+        var lineTotal = posLineTotal(L); // paid * price
         StockLedger.appendEvent({
           lot_id: L.lot_id,
           type: 'SALE',
-          qty: L.qty,
+          qty: qtyStock,
           actor_user_id: actor,
-          reason: 'ขายหน้าร้าน',
+          reason: 'ขายหน้าร้าน · โปร ' + PROMO_CODE,
           meta: {
             payment: payment,
+            promo: PROMO_CODE,
+            qty_paid: qtyPaid,
+            qty_stock: qtyStock,
             unit_price: L.unit_price || 0,
             line_total: lineTotal,
-            product_name: L.product_name
+            product_name: L.product_name,
+            unit: 'g'
           }
         });
         sold++;
@@ -523,7 +589,9 @@
           ' รายการ · รวม ' +
           fmtBaht(posCartTotal()) +
           ' · ' +
-          payLabel,
+          payLabel +
+          ' · โปร ' +
+          PROMO_CODE,
         false
       );
       posCart = [];

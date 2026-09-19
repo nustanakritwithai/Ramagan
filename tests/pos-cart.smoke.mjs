@@ -47,4 +47,21 @@ for (const line of cart) {
 const big = L.validateSale(lots[0].lot_id, 999999);
 assert.equal(big.ok, false);
 
-console.log('pos-cart.smoke: PASS (grid cart → validateSale→SALE + meta.payment)');
+
+// Promo 5+2 path: pay 5, stock 7
+const before = L.balanceAt(lots[0].lot_id);
+const stockQty = 7;
+assert.equal(L.validateSale(lots[0].lot_id, stockQty).ok, true);
+const pev = L.appendEvent({
+  lot_id: lots[0].lot_id,
+  type: 'SALE',
+  qty: stockQty,
+  actor_user_id: 'cashier',
+  reason: 'ขายหน้าร้าน · โปร 5+2',
+  meta: { promo: '5+2', qty_paid: 5, qty_stock: 7, payment: 'cash' },
+});
+assert.equal(pev.meta.promo, '5+2');
+assert.equal(pev.qty, 7);
+assert.equal(L.balanceAt(lots[0].lot_id), before - 7);
+console.log('pos-cart.smoke: PASS (grid cart + promo 5+2 → SALE)');
+

@@ -281,7 +281,7 @@
       sku: 'LEAFTR-20-01',
       product_name: 'ใบทริม ออโต้ A',
       category_id: 'leaf-trim',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 20,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -290,7 +290,7 @@
       sku: 'LEAFTR-20-02',
       product_name: 'ใบทริม ออโต้ B',
       category_id: 'leaf-trim',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 20,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -299,7 +299,7 @@
       sku: 'LEAFTR-20-03',
       product_name: 'ใบทริม ออโต้ C',
       category_id: 'leaf-trim',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 20,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -308,7 +308,7 @@
       sku: 'LEAFTR-20-04',
       product_name: 'ใบทริม ออโต้ D',
       category_id: 'leaf-trim',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 20,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -317,7 +317,7 @@
       sku: 'LEAFTR-20-05',
       product_name: 'ใบทริม ออโต้ E',
       category_id: 'leaf-trim',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 20,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -326,7 +326,7 @@
       sku: 'LEAFTR-20-06',
       product_name: 'ใบทริม โฟโต้ A',
       category_id: 'leaf-trim',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 20,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -335,7 +335,7 @@
       sku: 'LEAFTR-20-07',
       product_name: 'ใบทริม โฟโต้ B',
       category_id: 'leaf-trim',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 20,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -344,7 +344,7 @@
       sku: 'LEAFTR-20-08',
       product_name: 'ใบทริม โฟโต้ C',
       category_id: 'leaf-trim',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 20,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -353,7 +353,7 @@
       sku: 'LEAFTR-20-09',
       product_name: 'ใบทริม โฟโต้ D',
       category_id: 'leaf-trim',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 20,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -362,7 +362,7 @@
       sku: 'LEAFTR-20-10',
       product_name: 'ใบทริม มิกซ์ A',
       category_id: 'leaf-trim',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 20,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -371,7 +371,7 @@
       sku: 'LEAFTR-20-11',
       product_name: 'ใบทริม มิกซ์ B',
       category_id: 'leaf-trim',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 20,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -380,7 +380,7 @@
       sku: 'LEAFTR-20-12',
       product_name: 'ใบทริม พรีเมียม',
       category_id: 'leaf-trim',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 20,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -389,7 +389,7 @@
       sku: 'UNDERM-25-01',
       product_name: 'ใต้เครื่อง ออโต้ A',
       category_id: 'under-machine',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 25,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -398,7 +398,7 @@
       sku: 'UNDERM-25-02',
       product_name: 'ใต้เครื่อง ออโต้ B',
       category_id: 'under-machine',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 25,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -407,7 +407,7 @@
       sku: 'UNDERM-25-03',
       product_name: 'ใต้เครื่อง ออโต้ C',
       category_id: 'under-machine',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 25,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -416,7 +416,7 @@
       sku: 'UNDERM-25-04',
       product_name: 'ใต้เครื่อง ออโต้ D',
       category_id: 'under-machine',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 25,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -425,7 +425,7 @@
       sku: 'UNDERM-25-05',
       product_name: 'ใต้เครื่อง โฟโต้ A',
       category_id: 'under-machine',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 25,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -434,7 +434,7 @@
       sku: 'UNDERM-25-06',
       product_name: 'ใต้เครื่อง โฟโต้ B',
       category_id: 'under-machine',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 25,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -443,7 +443,7 @@
       sku: 'UNDERM-25-07',
       product_name: 'ใต้เครื่อง โฟโต้ C',
       category_id: 'under-machine',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 25,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -452,7 +452,7 @@
       sku: 'UNDERM-25-08',
       product_name: 'ใต้เครื่อง โฟโต้ D',
       category_id: 'under-machine',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 25,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -461,7 +461,7 @@
       sku: 'UNDERM-25-09',
       product_name: 'ใต้เครื่อง มิกซ์ A',
       category_id: 'under-machine',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 25,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -470,7 +470,7 @@
       sku: 'UNDERM-25-10',
       product_name: 'ใต้เครื่อง มิกซ์ B',
       category_id: 'under-machine',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 25,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -479,7 +479,7 @@
       sku: 'UNDERM-25-11',
       product_name: 'ใต้เครื่อง พรีเมียม',
       category_id: 'under-machine',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 25,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -488,7 +488,7 @@
       sku: 'MINI-40-01',
       product_name: 'mini 40 ออโต้ A',
       category_id: 'mini',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 40,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -497,7 +497,7 @@
       sku: 'MINI-40-02',
       product_name: 'mini 40 ออโต้ B',
       category_id: 'mini',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 40,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -506,7 +506,7 @@
       sku: 'MINI-40-03',
       product_name: 'mini 40 ออโต้ C',
       category_id: 'mini',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 40,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -515,7 +515,7 @@
       sku: 'MINI-40-04',
       product_name: 'mini 40 โฟโต้ A',
       category_id: 'mini',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 40,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -524,7 +524,7 @@
       sku: 'MINI-40-05',
       product_name: 'mini 40 โฟโต้ B',
       category_id: 'mini',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 40,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -533,7 +533,7 @@
       sku: 'MINI-40-06',
       product_name: 'mini 40 มิกซ์ A',
       category_id: 'mini',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 40,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -542,7 +542,7 @@
       sku: 'MINI-50-01',
       product_name: 'mini 50 ออโต้ A',
       category_id: 'mini',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 50,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -551,7 +551,7 @@
       sku: 'MINI-50-02',
       product_name: 'mini 50 ออโต้ B',
       category_id: 'mini',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 50,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -560,7 +560,7 @@
       sku: 'MINI-50-03',
       product_name: 'mini 50 ออโต้ C',
       category_id: 'mini',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 50,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -569,7 +569,7 @@
       sku: 'MINI-50-04',
       product_name: 'mini 50 โฟโต้ A',
       category_id: 'mini',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 50,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -578,7 +578,7 @@
       sku: 'MINI-50-05',
       product_name: 'mini 50 โฟโต้ B',
       category_id: 'mini',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 50,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -587,7 +587,7 @@
       sku: 'MINI-50-06',
       product_name: 'mini 50 มิกซ์ A',
       category_id: 'mini',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 50,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -596,7 +596,7 @@
       sku: 'POP-80-01',
       product_name: 'pop ออโต้ A',
       category_id: 'pop',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 80,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -605,7 +605,7 @@
       sku: 'POP-80-02',
       product_name: 'pop ออโต้ B',
       category_id: 'pop',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 80,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -614,7 +614,7 @@
       sku: 'POP-80-03',
       product_name: 'pop ออโต้ C',
       category_id: 'pop',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 80,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -623,7 +623,7 @@
       sku: 'POP-80-04',
       product_name: 'pop ออโต้ D',
       category_id: 'pop',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 80,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -632,7 +632,7 @@
       sku: 'POP-80-05',
       product_name: 'pop โฟโต้ A',
       category_id: 'pop',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 80,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -641,7 +641,7 @@
       sku: 'POP-80-06',
       product_name: 'pop โฟโต้ B',
       category_id: 'pop',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 80,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -650,7 +650,7 @@
       sku: 'POP-80-07',
       product_name: 'pop โฟโต้ C',
       category_id: 'pop',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 80,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -659,7 +659,7 @@
       sku: 'POP-80-08',
       product_name: 'pop มิกซ์ A',
       category_id: 'pop',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 80,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -668,7 +668,7 @@
       sku: 'POP-80-09',
       product_name: 'pop มิกซ์ B',
       category_id: 'pop',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 80,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -677,7 +677,7 @@
       sku: 'POP-80-10',
       product_name: 'pop พรีเมียม A',
       category_id: 'pop',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 80,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -686,7 +686,7 @@
       sku: 'POP-80-11',
       product_name: 'pop พรีเมียม B',
       category_id: 'pop',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 80,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -695,7 +695,7 @@
       sku: 'TOP-150-01',
       product_name: 'Top ออโต้ A',
       category_id: 'top',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 150,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -704,7 +704,7 @@
       sku: 'TOP-150-02',
       product_name: 'Top ออโต้ B',
       category_id: 'top',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 150,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -713,7 +713,7 @@
       sku: 'TOP-150-03',
       product_name: 'Top ออโต้ C',
       category_id: 'top',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 150,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -722,7 +722,7 @@
       sku: 'TOP-150-04',
       product_name: 'Top ออโต้ D',
       category_id: 'top',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 150,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -731,7 +731,7 @@
       sku: 'TOP-150-05',
       product_name: 'Top โฟโต้ A',
       category_id: 'top',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 150,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -740,7 +740,7 @@
       sku: 'TOP-150-06',
       product_name: 'Top โฟโต้ B',
       category_id: 'top',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 150,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -749,7 +749,7 @@
       sku: 'TOP-150-07',
       product_name: 'Top โฟโต้ C',
       category_id: 'top',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 150,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -758,7 +758,7 @@
       sku: 'TOP-150-08',
       product_name: 'Top มิกซ์ A',
       category_id: 'top',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 150,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -767,7 +767,7 @@
       sku: 'TOP-150-09',
       product_name: 'Top มิกซ์ B',
       category_id: 'top',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 150,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -776,7 +776,7 @@
       sku: 'TOP-150-10',
       product_name: 'Top พรีเมียม A',
       category_id: 'top',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 150,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
@@ -785,7 +785,7 @@
       sku: 'TOP-150-11',
       product_name: 'Top พรีเมียม B',
       category_id: 'top',
-      unit: 'pcs',
+      unit: 'g',
       unit_price: 150,
       received_at: '2026-09-18T09:00:00.000+07:00'
     });
