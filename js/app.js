@@ -1539,6 +1539,35 @@
     showMsg($('receive-msg'), 'รีเซ็ตและ seed แล้ว', false);
   }
 
+
+  /* —— Mobile nav drawer —— */
+  function setNavOpen(open) {
+    document.body.classList.toggle('nav-open', !!open);
+    var btn = $('btn-nav-toggle');
+    var backdrop = $('nav-backdrop');
+    if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (backdrop) {
+      if (open) backdrop.removeAttribute('hidden');
+      else backdrop.setAttribute('hidden', '');
+    }
+  }
+
+  function bindNavDrawer() {
+    var toggle = $('btn-nav-toggle');
+    var closeBtn = $('btn-nav-close');
+    var backdrop = $('nav-backdrop');
+    if (toggle) {
+      toggle.addEventListener('click', function () {
+        setNavOpen(!document.body.classList.contains('nav-open'));
+      });
+    }
+    if (closeBtn) closeBtn.addEventListener('click', function () { setNavOpen(false); });
+    if (backdrop) backdrop.addEventListener('click', function () { setNavOpen(false); });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') setNavOpen(false);
+    });
+  }
+
   function bindTabs() {
     var tabs = document.querySelectorAll('[data-tab]');
     for (var i = 0; i < tabs.length; i++) {
@@ -1553,6 +1582,7 @@
           btns[k].classList.remove('active');
         }
         e.currentTarget.classList.add('active');
+        setNavOpen(false);
         var panel = document.getElementById('panel-' + id);
         if (panel) panel.classList.add('active');
         if (id === 'admin') renderAdminDashboard();

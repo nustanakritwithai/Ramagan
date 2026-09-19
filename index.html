@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=shop1" />
+  <link rel="stylesheet" href="styles.css?v=mobile1" />
 </head>
 <body>
   <header class="app-header">
@@ -19,6 +19,7 @@
       </div>
     </div>
     <div class="header-actions">
+      <button type="button" class="btn btn-nav" id="btn-nav-toggle" aria-expanded="false" aria-controls="nav-drawer" title="เมนู">☰ เมนู</button>
       <span class="badge-live" id="badge-drive-status" title="โหมดสำรองข้อมูล">LOCAL · ส่งออก/นำเข้า</span>
       <button type="button" class="btn btn-primary" id="btn-export" title="ส่งออก JSON ไปเก็บในโฟลเดอร์ Drive">ส่งออก JSON</button>
       <button type="button" class="btn btn-primary" id="btn-import" title="นำเข้า JSON จากโฟลเดอร์ Drive">นำเข้า JSON</button>
@@ -56,7 +57,12 @@
       <span>👤 actor_user_id + reason + occurred_at</span>
     </div>
 
-    <nav class="tabs" aria-label="Sections">
+    <div class="nav-backdrop" id="nav-backdrop" hidden></div>
+    <nav class="tabs nav-drawer" id="nav-drawer" aria-label="Sections">
+      <div class="nav-drawer-head">
+        <strong>เมนู</strong>
+        <button type="button" class="btn btn-ghost" id="btn-nav-close" aria-label="ปิดเมนู">ปิด ✕</button>
+      </div>
       <button type="button" data-tab="lots">สินค้า / Lots</button>
       <button type="button" data-tab="shop">ตั้งค่าร้าน / Catalog</button>
       <button type="button" data-tab="receive">รับเข้า / Receive</button>
@@ -464,10 +470,10 @@
 
   <!-- No type=module — works under file:// -->
   <script>window.RAMAGAN_GOOGLE_CLIENT_ID=window.RAMAGAN_GOOGLE_CLIENT_ID||"";</script>
-  <script src="js/drive.js?v=shop1"></script>
-  <script src="js/store.js?v=shop1"></script>
-  <script src="js/ledger.js?v=shop1"></script>
-  <script src="js/admin-analytics.js?v=shop1"></script>
-  <script src="js/app.js?v=shop1"></script>
+  <script src="js/drive.js?v=mobile1"></script>
+  <script src="js/store.js?v=mobile1"></script>
+  <script src="js/ledger.js?v=mobile1"></script>
+  <script src="js/admin-analytics.js?v=mobile1"></script>
+  <script src="js/app.js?v=mobile1"></script>
 </body>
 </html>

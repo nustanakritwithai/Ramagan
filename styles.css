@@ -637,3 +637,97 @@ button.btn-sell, button.btn-sell {
 .shop-inline .btn{padding:6px 10px;font-size:12px}
 .badge-off{color:#fbbf24;font-weight:700;font-size:12px}
 .badge-on{color:var(--accent);font-weight:700;font-size:12px}
+
+
+/* —— Mobile nav drawer + touch POS —— */
+.btn-nav{
+  display:none;
+  min-height:44px;
+  min-width:44px;
+  padding:10px 14px;
+  font-weight:800;
+}
+.nav-drawer-head{display:none}
+.nav-backdrop{display:none}
+
+@media (max-width: 860px){
+  .btn-nav{display:inline-flex;align-items:center;justify-content:center}
+  .invariant-bar{display:none}
+  .app-header{padding:10px 12px;gap:8px;position:sticky;top:0;z-index:50}
+  .app-header h1{font-size:1.05rem}
+  .subtitle{display:none}
+  .header-actions{gap:6px}
+  .header-actions .btn{min-height:44px;padding:10px 12px}
+  .backup-hint{font-size:12px;margin:8px 12px}
+
+  .tabs.nav-drawer{
+    position:fixed;
+    top:0;left:0;bottom:0;
+    width:min(86vw,320px);
+    max-width:320px;
+    margin:0;
+    padding:12px;
+    border-radius:0 16px 16px 0;
+    flex-direction:column;
+    align-items:stretch;
+    gap:6px;
+    background:#0c1219;
+    border-right:1px solid var(--border,#2a3a4d);
+    box-shadow:12px 0 40px rgba(0,0,0,.45);
+    z-index:80;
+    transform:translateX(-105%);
+    transition:transform .2s ease;
+    overflow:auto;
+  }
+  body.nav-open .tabs.nav-drawer{transform:translateX(0)}
+  .nav-drawer-head{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:6px 4px 10px;margin-bottom:4px;
+    border-bottom:1px solid var(--border-soft,#243244);
+  }
+  .tabs.nav-drawer button{
+    width:100%;
+    text-align:left;
+    min-height:48px;
+    padding:12px 14px;
+    border-radius:12px;
+    font-size:15px;
+  }
+  .nav-backdrop{
+    display:block;
+    position:fixed;inset:0;
+    background:rgba(0,0,0,.55);
+    z-index:70;
+  }
+  .nav-backdrop[hidden]{display:none !important}
+
+  main{padding:10px 10px 28px}
+  .pos-shell{gap:10px}
+  .pos-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .pos-tile{
+    min-height:112px;
+    padding:14px 10px;
+    border-radius:14px;
+  }
+  .pos-tile-name{font-size:14px}
+  .pos-tile-price{font-size:16px}
+  .pos-cart{
+    position:static;
+    min-height:0;
+    padding:12px;
+  }
+  .pos-line-qty button{
+    width:44px;height:44px;font-size:22px;
+  }
+  .pos-pay-btn{min-height:48px;font-size:16px}
+  .btn-sell, button.btn-sell{min-height:52px;font-size:17px}
+  .admin-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .shop-inline{gap:8px}
+  .shop-inline .btn, .shop-inline button{min-height:44px}
+  .table-wrap{overflow:auto;-webkit-overflow-scrolling:touch}
+}
+
+@media (min-width: 861px){
+  .btn-nav, .nav-drawer-head, .nav-backdrop{display:none !important}
+  body.nav-open{overflow:auto}
+}
