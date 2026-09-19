@@ -661,6 +661,119 @@
   }
 
   /* —— Before-shift physical count → ADJUST on confirm —— */
+  var shiftPhotos = {}; // lot_id -> dataURL (compressed)
+  var keypadTarget = null; // input element
+
+  function compressImageFile(file, maxW, quality, cb) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var img = new Image();
+      img.onload = function () {
+        var w = img.width;
+        var h = img.height;
+        var scale = Math.min(1, (maxW || 640) / Math.max(w, h));
+        var cw = Math.max(1, Math.round(w * scale));
+        var ch = Math.max(1, Math.round(h * scale));
+        var canvas = document.createElement('canvas');
+        canvas.width = cw;
+        canvas.height = ch;
+        var ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, cw, ch);
+        cb(canvas.toDataURL('image/jpeg', quality || 0.65));
+      };
+      img.onerror = function () { cb(null); };
+      img.src = reader.result;
+    };
+    reader.onerror = function () { cb(null); };
+    reader.readAsDataURL(file);
+  }
+
+  function openKeypad(inputEl, title) {
+    keypadTarget = inputEl;
+    var modal = $('keypad-modal');
+    var display = $('keypad-display');
+    var titleEl = $('keypad-title');
+    if (!modal || !display) return;
+    if (titleEl) titleEl.textContent = title || 'ใส่จำนวนนับจริง';
+    display.textContent = String(inputEl.value || '0');
+    modal.hidden = false;
+  }
+
+  function closeKeypad() {
+    var modal = $('keypad-modal');
+    if (modal) modal.hidden = true;
+    keypadTarget = null;
+  }
+
+  function bindKeypadUi() {
+    var modal = $('keypad-modal');
+    var grid = $('keypad-grid');
+    var cancel = $('keypad-cancel');
+    if (!modal || !grid || grid.dataset.bound) return;
+    grid.dataset.bound = '1';
+    if (cancel) cancel.addEventListener('click', closeKeypad);
+    modal.addEventListener('click', function (e) {
+      if (e.target === modal) closeKeypad();
+    });
+    grid.addEventListener('click', function (e) {
+      var btn = e.target.closest('button[data-k]');
+      if (!btn) return;
+      var k = btn.getAttribute('data-k');
+      var display = $('keypad-display');
+      if (!display) return;
+      var cur = display.textContent === '0' ? '' : display.textContent;
+      if (k === 'ok') {
+        if (keypadTarget) {
+          var n = Number(display.textContent);
+          keypadTarget.value = isFinite(n) ? String(n) : '0';
+          keypadTarget.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        closeKeypad();
+        return;
+      }
+      if (k === 'del') {
+        cur = cur.slice(0, -1);
+        display.textContent = cur || '0';
+        return;
+      }
+      if (k === 'clr') {
+        display.textContent = '0';
+        return;
+      }
+      if (k === '.' && cur.indexOf('.') >= 0) return;
+      if (cur.length >= 10) return;
+      display.textContent = (cur || '') + k;
+    });
+  }
+
+  function bindShiftPhotoUi() {
+    var input = $('shift-photo-input');
+    if (!input || input.dataset.bound) return;
+    input.dataset.bound = '1';
+    input.addEventListener('change', function () {
+      var lotId = input.dataset.lotId;
+      var file = input.files && input.files[0];
+      input.value = '';
+      if (!lotId || !file) return;
+      compressImageFile(file, 640, 0.65, function (dataUrl) {
+        if (!dataUrl) {
+          showMsg($('shift-msg'), 'อ่านรูปไม่สำเร็จ', true);
+          return;
+        }
+        shiftPhotos[lotId] = dataUrl;
+        var row = document.querySelector('#shift-rows .shift-row[data-lot-id="' + lotId + '"]');
+        if (row) {
+          var thumb = row.querySelector('.shift-photo-thumb');
+          if (thumb) {
+            thumb.src = dataUrl;
+            thumb.classList.add('has');
+          }
+        }
+        showMsg($('shift-msg'), 'แนบรูปหลักฐานแล้ว (ไม่เปลี่ยนตัวเลขนับ)', false);
+      });
+    });
+  }
+
   function renderShiftCount() {
     var box = $('shift-rows');
     if (!box) return;
@@ -678,6 +791,7 @@
       var unit = lot.unit || '';
       var name = lot.product_name || lot.lot_id;
       var sku = lot.sku || '';
+      var photo = shiftPhotos[lot.lot_id] || '';
       html +=
         '<div class="shift-row" data-lot-id="' +
         escapeHtml(lot.lot_id) +
@@ -697,23 +811,59 @@
         '">' +
         fmtQty(sys, unit) +
         '</strong></label>' +
-        '<label>นับจริง<input class="shift-count" type="number" step="any" inputmode="decimal" value="' +
+        '<label>นับจริง' +
+        '<input class="shift-count" type="number" step="any" inputmode="decimal" value="' +
         sys +
-        '" oninput="window.__ramaganShiftVar&&window.__ramaganShiftVar()" aria-label="นับจริง ' +
+        '" aria-label="นับจริง ' +
         escapeHtml(name) +
         '" /></label>' +
         '<label>ส่วนต่าง<strong class="shift-var zero" data-var="0">0</strong></label>' +
+        '<div class="shift-row-actions">' +
+        '<span class="shift-count-display" aria-hidden="true">' +
+        sys +
+        '</span>' +
+        '<button type="button" class="btn btn-keypad" data-action="keypad">⌨️ กดตัวเลข</button>' +
+        '<button type="button" class="btn btn-photo" data-action="photo">📷 ถ่ายรูป</button>' +
+        '<img class="shift-photo-thumb' +
+        (photo ? ' has' : '') +
+        '" alt="หลักฐาน" ' +
+        (photo ? 'src="' + photo + '"' : '') +
+        ' />' +
+        '</div>' +
         '</div>';
     }
     box.innerHTML = html;
     var inputs = box.querySelectorAll('.shift-count');
     for (var ii = 0; ii < inputs.length; ii++) {
       (function (el) {
-        el.addEventListener('input', updateShiftVariances);
+        el.addEventListener('input', function () {
+          var disp = el.closest('.shift-row').querySelector('.shift-count-display');
+          if (disp) disp.textContent = el.value;
+          updateShiftVariances();
+        });
         el.addEventListener('change', updateShiftVariances);
-        el.addEventListener('keyup', updateShiftVariances);
-        el.addEventListener('blur', updateShiftVariances);
       })(inputs[ii]);
+    }
+    if (!box.dataset.actionsBound) {
+      box.dataset.actionsBound = '1';
+      box.addEventListener('click', function (e) {
+        var btn = e.target.closest('button[data-action]');
+        if (!btn) return;
+        var row = btn.closest('.shift-row');
+        if (!row) return;
+        var lotId = row.getAttribute('data-lot-id');
+        var action = btn.getAttribute('data-action');
+        if (action === 'keypad') {
+          var input = row.querySelector('.shift-count');
+          var title = (row.querySelector('.shift-row-name') || {}).textContent || lotId;
+          openKeypad(input, 'นับจริง · ' + title);
+        } else if (action === 'photo') {
+          var fileInput = $('shift-photo-input');
+          if (!fileInput) return;
+          fileInput.dataset.lotId = lotId;
+          fileInput.click();
+        }
+      });
     }
     updateShiftVariances();
   }
@@ -741,6 +891,8 @@
       varEl.className =
         'shift-var ' + (diff === 0 ? 'zero' : diff > 0 ? 'pos' : 'neg');
       if (diff !== 0) dirty++;
+      var disp = row.querySelector('.shift-count-display');
+      if (disp) disp.textContent = input.value;
     }
     var btn = $('btn-shift-confirm');
     if (btn) btn.disabled = dirty === 0;
@@ -777,7 +929,8 @@
         counted: counted,
         diff: diff,
         qty: Math.abs(diff),
-        sign: diff > 0 ? 1 : -1
+        sign: diff > 0 ? 1 : -1,
+        photo: shiftPhotos[lotId] || ''
       });
     }
     if (!plans.length) {
@@ -786,7 +939,7 @@
     }
     var summary = plans
       .map(function (p) {
-        return p.lot_id + ' ' + (p.sign > 0 ? '+' : '-') + p.qty;
+        return p.lot_id + ' ' + (p.sign > 0 ? '+' : '-') + p.qty + (p.photo ? ' 📷' : '');
       })
       .join(', ');
     if (
@@ -804,21 +957,30 @@
     try {
       for (var j = 0; j < plans.length; j++) {
         var p = plans[j];
+        var meta = {
+          adjust_sign: p.sign,
+          shift_label: shiftLabel,
+          counted_qty: p.counted,
+          system_qty: p.sys,
+          variance: p.diff,
+          source: 'shift_count'
+        };
+        if (p.photo) {
+          meta.photo_data_url = p.photo;
+          meta.has_photo = true;
+        }
         StockLedger.appendEvent({
           lot_id: p.lot_id,
           type: 'ADJUST',
           qty: p.qty,
           actor_user_id: actor,
           reason: 'นับก่อนเข้ากะ · ' + shiftLabel,
-          meta: {
-            adjust_sign: p.sign,
-            shift_label: shiftLabel,
-            counted_qty: p.counted,
-            system_qty: p.sys,
-            variance: p.diff,
-            source: 'shift_count'
-          }
+          meta: meta
         });
+      }
+      // clear used photos
+      for (var k = 0; k < plans.length; k++) {
+        delete shiftPhotos[plans[k].lot_id];
       }
       showMsg(
         msg,
@@ -831,9 +993,6 @@
       refreshAll();
     }
   }
-
-
-
 
   /* —— Shop catalog (owner settings) —— */
   function fillCategorySelect(sel, selected) {
@@ -1064,7 +1223,18 @@
   }
 
   function renderAdminCharts(series) {
-    if (!window.Chart || !series) return;
+    if (!window.Chart) {
+      var host = $('admin-charts');
+      if (host && !host.dataset.chartWarn) {
+        host.dataset.chartWarn = '1';
+        var p = document.createElement('p');
+        p.className = 'hint';
+        p.textContent = 'โหลด Chart.js ไม่สำเร็จ — ตรวจเน็ต/CDN แล้วรีเฟรช';
+        host.insertBefore(p, host.firstChild);
+      }
+      return;
+    }
+    if (!series) return;
     var empty = !series.labels || !series.labels.length;
     function lineOrBar(id, key, type, datasets) {
       var canvas = $(id);
@@ -1253,6 +1423,17 @@
           .join('');
       }
     }
+
+    var series = AdminAnalytics.buildChartSeries
+      ? AdminAnalytics.buildChartSeries(events, lots, {
+          fromKey: fromEl.value,
+          toKey: toEl.value
+        })
+      : null;
+    // rAF so canvas has layout after panel becomes visible
+    requestAnimationFrame(function () {
+      renderAdminCharts(series);
+    });
   }
 
   function bindAdminUi() {
@@ -1701,10 +1882,13 @@
     StockLedger.seedIfEmpty();
     migrateOldDemoSeedIfNeeded();
     bindTabs();
+    bindNavDrawer();
 
     $('form-receive').addEventListener('submit', onReceive);
     bindPosUi();
     bindShiftUi();
+    bindKeypadUi();
+    bindShiftPhotoUi();
     bindDriveUi();
     bindAdminUi();
     bindShopUi();

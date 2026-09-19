@@ -175,9 +175,8 @@
   /**
    * Interactive chart series from events only (same filters as KPIs).
    */
-  function toNum(n){var v=Number(n);return isFinite(v)?v:0;}
-  // alias
-  var toNum = toNum;
+  
+
   function buildChartSeries(events, lots, range) {
     events = events || [];
     lots = lots || [];

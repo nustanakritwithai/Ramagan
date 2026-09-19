@@ -745,7 +745,51 @@ button.btn-sell, button.btn-sell {
   padding:12px;
 }
 .admin-chart-card h3{margin:0 0 8px;font-size:0.92rem}
-.admin-chart-card canvas{width:100% !important;max-height:220px}
+.admin-chart-card{min-height:240px}
+.admin-chart-card .chart-wrap{position:relative;height:200px}
+.admin-chart-card canvas{width:100% !important;height:200px !important;max-height:220px}
 @media (max-width:860px){
   .admin-charts{grid-template-columns:1fr}
+}
+
+/* Shift keypad + photo evidence */
+.shift-row-actions{display:flex;gap:8px;grid-column:1/-1;flex-wrap:wrap;align-items:center}
+.shift-count-display{
+  font-size:1.6rem;font-weight:800;min-width:4.5ch;text-align:right;
+  padding:8px 12px;border-radius:12px;background:#0d151e;border:1px solid var(--border,#2a3a4d);
+}
+.btn-keypad,.btn-photo{
+  min-height:48px;min-width:48px;padding:10px 14px;font-weight:700;border-radius:12px;
+}
+.shift-photo-thumb{
+  width:56px;height:56px;object-fit:cover;border-radius:10px;border:1px solid var(--border,#2a3a4d);
+  display:none;
+}
+.shift-photo-thumb.has{display:block}
+.keypad-modal[hidden]{display:none !important}
+.keypad-modal{
+  position:fixed;inset:0;z-index:120;display:flex;align-items:flex-end;justify-content:center;
+  background:rgba(0,0,0,.55);
+}
+.keypad-sheet{
+  width:min(100%,420px);background:#121a24;border-radius:20px 20px 0 0;padding:16px;
+  border:1px solid var(--border,#2a3a4d);box-shadow:0 -12px 40px rgba(0,0,0,.45);
+}
+.keypad-display{
+  font-size:2rem;font-weight:800;text-align:right;padding:12px 14px;margin-bottom:12px;
+  background:#0d151e;border-radius:14px;border:1px solid var(--border,#2a3a4d);
+  min-height:56px;
+}
+.keypad-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.keypad-grid button{
+  min-height:56px;font-size:1.4rem;font-weight:800;border-radius:14px;
+  border:1px solid var(--border,#2a3a4d);background:#1a2430;color:#e8eef5;cursor:pointer;
+}
+.keypad-grid button:active{transform:scale(0.97)}
+.keypad-grid .key-ok{background:#2fe39a;color:#062016;grid-column:span 1}
+.keypad-grid .key-del{background:#3a2030}
+.keypad-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+@media (min-width:720px){
+  .keypad-modal{align-items:center}
+  .keypad-sheet{border-radius:20px}
 }

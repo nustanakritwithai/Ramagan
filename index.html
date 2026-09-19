@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=charts1" />
+  <link rel="stylesheet" href="styles.css?v=keypad1" />
 </head>
 <body>
   <header class="app-header">
@@ -242,7 +242,7 @@
     <section id="panel-shift" class="panel">
       <div class="card shift-card">
         <h2>นับสต็อกก่อนเข้ากะ</h2>
-        <p class="hint">ชั่ง/นับจริง → ใส่เลขใหญ่ → ดูส่วนต่างกับยอดระบบ → ยืนยันค่อย ADJUST · ยังไม่เชื่อมเครื่องชั่ง/กล้อง</p>
+        <p class="hint">กดปุ่มตัวเลขใหญ่ + ถ่ายรูปประกอบต่อ lot → เทียบยอดระบบ (balanceAt) → ยืนยันค่อย ADJUST · รูปไม่สร้างยอด · ยังไม่เชื่อมเครื่องชั่ง</p>
         <div class="shift-meta">
           <label>กะ / รอบ *
             <input id="shift-label" required placeholder="เช่น กะเช้า 19 ก.ย." value="กะเช้า" />
@@ -393,27 +393,27 @@
         <div class="admin-charts" id="admin-charts">
           <div class="admin-chart-card">
             <h3>ยอดขายรายวัน (บาท)</h3>
-            <canvas id="chart-sales-daily" height="160"></canvas>
+            <div class="chart-wrap"><canvas id="chart-sales-daily" height="160"></canvas></div>
           </div>
           <div class="admin-chart-card">
             <h3>กรัมจ่าย vs กรัมตัด (โปร)</h3>
-            <canvas id="chart-grams-daily" height="160"></canvas>
+            <div class="chart-wrap"><canvas id="chart-grams-daily" height="160"></canvas></div>
           </div>
           <div class="admin-chart-card">
             <h3>เงินสด / โอน</h3>
-            <canvas id="chart-payment" height="160"></canvas>
+            <div class="chart-wrap"><canvas id="chart-payment" height="160"></canvas></div>
           </div>
           <div class="admin-chart-card">
             <h3>Top สินค้า (บาท)</h3>
-            <canvas id="chart-top-products" height="160"></canvas>
+            <div class="chart-wrap"><canvas id="chart-top-products" height="160"></canvas></div>
           </div>
           <div class="admin-chart-card">
             <h3>Top หมวด (บาท)</h3>
-            <canvas id="chart-top-cats" height="160"></canvas>
+            <div class="chart-wrap"><canvas id="chart-top-cats" height="160"></canvas></div>
           </div>
           <div class="admin-chart-card">
             <h3>ADJUST กะ |ส่วนต่าง| รายวัน</h3>
-            <canvas id="chart-shift-daily" height="160"></canvas>
+            <div class="chart-wrap"><canvas id="chart-shift-daily" height="160"></canvas></div>
           </div>
         </div>
 
@@ -498,11 +498,39 @@
 
   <!-- No type=module — works under file:// -->
   <script>window.RAMAGAN_GOOGLE_CLIENT_ID=window.RAMAGAN_GOOGLE_CLIENT_ID||"";</script>
-  <script src="js/drive.js?v=charts1"></script>
-  <script src="js/store.js?v=charts1"></script>
-  <script src="js/ledger.js?v=charts1"></script>
+  <script src="js/drive.js?v=keypad1"></script>
+  <script src="js/store.js?v=keypad1"></script>
+  <script src="js/ledger.js?v=keypad1"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="js/admin-analytics.js?v=charts1"></script>
-  <script src="js/app.js?v=charts1"></script>
+  <script src="js/admin-analytics.js?v=keypad1"></script>
+  <script src="js/app.js?v=keypad1"></script>
+
+  <div id="keypad-modal" class="keypad-modal" hidden>
+    <div class="keypad-sheet" role="dialog" aria-modal="true" aria-labelledby="keypad-title">
+      <div class="keypad-head">
+        <strong id="keypad-title">ใส่จำนวนนับจริง</strong>
+        <button type="button" class="btn btn-ghost" id="keypad-cancel">ปิด</button>
+      </div>
+      <div class="keypad-display" id="keypad-display">0</div>
+      <div class="keypad-grid" id="keypad-grid">
+        <button type="button" data-k="1">1</button>
+        <button type="button" data-k="2">2</button>
+        <button type="button" data-k="3">3</button>
+        <button type="button" data-k="4">4</button>
+        <button type="button" data-k="5">5</button>
+        <button type="button" data-k="6">6</button>
+        <button type="button" data-k="7">7</button>
+        <button type="button" data-k="8">8</button>
+        <button type="button" data-k="9">9</button>
+        <button type="button" data-k=".">.</button>
+        <button type="button" data-k="0">0</button>
+        <button type="button" class="key-del" data-k="del">⌫</button>
+        <button type="button" data-k="clr">C</button>
+        <button type="button" class="key-ok" data-k="ok" style="grid-column:span 2">ตกลง</button>
+      </div>
+    </div>
+  </div>
+  <input type="file" id="shift-photo-input" accept="image/*" capture="environment" hidden />
+
 </body>
 </html>
