@@ -1,0 +1,44 @@
+name: Ramagan V1 Android debug APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/v1-central-web-mobile]
+    paths:
+      - 'v1/**'
+      - '.github/workflows/v1-android-debug.yml'
+permissions:
+  contents: read
+jobs:
+  debug-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - name: Build shared website
+        working-directory: v1
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund
+          npm run build
+      - name: Generate Android wrapper
+        working-directory: v1
+        run: |
+          npx cap add android
+          npx cap sync android
+      - name: Build debug APK (TEST ONLY)
+        working-directory: v1/android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ramagan-v1-android-debug-UNCONFIGURED
+          path: v1/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
