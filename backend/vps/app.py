@@ -16,6 +16,7 @@ import sqlite3
 import time
 import uuid
 from datetime import date, datetime, timezone
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
 from zoneinfo import ZoneInfo
@@ -140,12 +141,16 @@ def now_utc() -> str:
 def uuid_str() -> str:
     return str(uuid.uuid4())
 
-def connect(path: str) -> sqlite3.Connection:
+@contextmanager
+def connect(path: str):
     db = sqlite3.connect(path, timeout=20, isolation_level=None, check_same_thread=False)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA foreign_keys=ON")
-    db.execute("PRAGMA busy_timeout=15000")
-    return db
+    try:
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute("PRAGMA busy_timeout=15000")
+        yield db
+    finally:
+        db.close()
 
 def init_database(path: str) -> None:
     target = Path(path)
@@ -460,14 +465,9 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
                     error(422, "Authorized document reference required")
                 total = 0
                 stamp = now_utc()
-                db.execute("""
-                  INSERT INTO sales(id,store_id,client_sale_id,request_hash,cashier_user_id,
-                                    payment_method,authorization_ref,subtotal_satang,
-                                    total_satang,created_at)
-                  VALUES(?,?,?,?,?,?,?,?,?,?)
-                """, (sid, actor["store_id"], str(payload.client_sale_id), request_hash,
-                      actor["id"], payload.payment_method, ref or None, 0, 0, stamp))
-                # SQLite single-writer lock + transaction is atomic across devices.
+                validated = []
+                # Preflight every line before inserting the immutable sale.
+                # BEGIN IMMEDIATE already serializes concurrent SQLite writers.
                 for item in items:
                     lot = db.execute("""
                        SELECT b.quantity_mg,p.price_satang_per_gram,l.expires_on
@@ -486,26 +486,33 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
                     price = lot["price_satang_per_gram"]
                     line_satang = (price * qty + 500) // 1000
                     total += line_satang
-                    count = db.execute("""
+                    validated.append((item["lot_id"], qty, price, line_satang))
+                db.execute("""
+                  INSERT INTO sales(id,store_id,client_sale_id,request_hash,cashier_user_id,
+                                    payment_method,authorization_ref,subtotal_satang,
+                                    total_satang,created_at)
+                  VALUES(?,?,?,?,?,?,?,?,?,?)
+                """, (sid, actor["store_id"], str(payload.client_sale_id), request_hash,
+                      actor["id"], payload.payment_method, ref or None, total, total, stamp))
+                for lot_id, qty, price, line_satang in validated:
+                    changed = db.execute("""
                       UPDATE lot_balances SET quantity_mg=quantity_mg-?,updated_at=?
                        WHERE lot_id=? AND quantity_mg>=?
-                    """, (qty, stamp, item["lot_id"], qty)).rowcount
-                    if count != 1:
+                    """, (qty, stamp, lot_id, qty)).rowcount
+                    if changed != 1:
                         error(409, "Concurrent stock change")
                     db.execute("""
                       INSERT INTO sale_lines(id,sale_id,lot_id,quantity_mg,
                                              unit_price_satang_per_gram,line_total_satang)
                       VALUES(?,?,?,?,?,?)
-                    """, (uuid_str(), sid, item["lot_id"], qty, price, line_satang))
+                    """, (uuid_str(), sid, lot_id, qty, price, line_satang))
                     db.execute("""
                       INSERT INTO ledger_events(id,store_id,lot_id,actor_user_id,
                                                 event_type,quantity_delta_mg,reason,
                                                 sale_id,created_at)
                       VALUES(?,?,?,?,?,?,?,?,?)
-                    """, (uuid_str(), actor["store_id"], item["lot_id"], actor["id"],
+                    """, (uuid_str(), actor["store_id"], lot_id, actor["id"],
                           "SALE", -qty, "POS checkout", sid, stamp))
-                db.execute("UPDATE sales SET subtotal_satang=?,total_satang=? WHERE id=?",
-                           (total, total, sid))
                 db.commit()
             except Exception:
                 db.rollback()
