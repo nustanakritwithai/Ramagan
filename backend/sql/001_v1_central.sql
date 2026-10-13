@@ -131,13 +131,13 @@ create policy "member can see own store" on public.ramagan_stores
 create policy "member can see products" on public.ramagan_products
  for select to authenticated using (exists (
    select 1 from public.ramagan_members m
-   where m.store_id = store_id and m.user_id = (select auth.uid()) and m.is_active
+   where m.store_id = public.ramagan_products.store_id and m.user_id = (select auth.uid()) and m.is_active
  ));
 
 create policy "member can see lots" on public.ramagan_lots
  for select to authenticated using (exists (
    select 1 from public.ramagan_members m
-   where m.store_id = store_id and m.user_id = (select auth.uid()) and m.is_active
+   where m.store_id = public.ramagan_lots.store_id and m.user_id = (select auth.uid()) and m.is_active
  ));
 
 create policy "member can see balances" on public.ramagan_lot_balances
@@ -150,7 +150,7 @@ create policy "member can see balances" on public.ramagan_lot_balances
 create policy "role scoped sale visibility" on public.ramagan_sales
  for select to authenticated using (exists (
    select 1 from public.ramagan_members m
-   where m.store_id = store_id and m.user_id = (select auth.uid())
+   where m.store_id = public.ramagan_sales.store_id and m.user_id = (select auth.uid())
      and m.is_active and (m.role in ('owner','manager') or cashier_user_id = (select auth.uid()))
  ));
 
@@ -162,7 +162,7 @@ create policy "role scoped sale lines" on public.ramagan_sale_lines
 create policy "managers can read ledger" on public.ramagan_ledger_events
  for select to authenticated using (exists (
    select 1 from public.ramagan_members m
-   where m.store_id = store_id and m.user_id = (select auth.uid())
+   where m.store_id = public.ramagan_ledger_events.store_id and m.user_id = (select auth.uid())
      and m.is_active and m.role in ('owner','manager')
  ));
 
