@@ -60,7 +60,7 @@ test('public HTML ships without embedded secrets or sales; reports require VPS',
   assert.match(script,/\/v1\/me/);
   assert.match(script,/\/v1\/admin\/sales-report/);
   assert.doesNotMatch(script,/sessionStorage\./);
-  assert.match(script,/localStorage\.setItem\(endpointKey/);
+  assert.doesNotMatch(script,/localStorage\./);
   assert.doesNotMatch(script,/localStorage\.setItem\([^)]*token/);
   assert.doesNotMatch(script,/service_role|sb_secret_|supabase-js/);
 });
