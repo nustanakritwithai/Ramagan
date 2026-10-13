@@ -66,6 +66,31 @@ https://YOUR-ACTUAL-HTTPS-HOST/ramagan-api
 Android WebView origin is https://localhost. GitHub Pages origin is
 https://nustanakritwithai.github.io. Keep a strict CORS allowlist; no wildcard.
 
+## 4b. Host the central website on the same HTTPS VPS
+
+Install Node.js 22+ for the one-time frontend build. From your project root:
+
+    cd C:\Ramagan\repo\v1
+    npm install
+    npm run build
+
+Vite uses relative URLs so dist/ can be served from a subdirectory.
+Inspect the existing Apache DocumentRoot first; if it is the usual XAMPP
+C:\xampp\htdocs and HTTPS already serves that root:
+
+    New-Item -ItemType Directory -Force C:\xampp\htdocs\ramagan-v1
+    Copy-Item -Path .\dist\* -Destination C:\xampp\htdocs\ramagan-v1 -Recurse -Force
+
+The staging website will be at:
+https://YOUR-ACTUAL-HTTPS-HOST/ramagan-v1/
+
+On first visit, enter exactly the same API URL as Android:
+https://YOUR-ACTUAL-HTTPS-HOST/ramagan-api
+
+Never copy backend/vps/, .sqlite3, .env, credentials or backup files into
+Apache DocumentRoot. Keep old website V0 untouched, and verify existing
+Apache paths before editing its configuration.
+
 ## 5. Use website / Android
 
 On first launch the app shows "เชื่อมต่อเซิร์ฟเวอร์ร้าน".
