@@ -114,6 +114,27 @@ Database sales_enabled defaults to FALSE. Do not enable it until actual
 licenses, required authorization workflow, recordkeeping, security,
 backup/restore and device checks are independently verified.
 
+## Android login / API 404 troubleshooting
+
+If `/ramagan-api/health` returns JSON `{"detail":"Not Found"}` from the
+public URL, first consult
+[STAGING_ANDROID_TRIAGE.md](STAGING_ANDROID_TRIAGE.md).
+The FastAPI route is `/health`, so Caddy must strip the public
+`/ramagan-api` prefix when proxying.
+
+Diagnose without changing running services:
+
+    powershell -NoProfile -File .\diagnose_staging.ps1 -PublicApiBase "https://157.85.96.139/ramagan-api"
+
+Check owner credentials **inside the VPS console**, against the same database
+path used by the running FastAPI service (never paste passwords in chat):
+
+    .\.venv\Scripts\python.exe admin.py --db "C:\Ramagan\data\ramagan.sqlite3" check-login --email "OWNER_EMAIL_AS_PROVISIONED"
+
+The CLI prompts locally for the password and reports FOUND/NOT_FOUND and
+PASS/FAIL. It refuses to silently create another empty database if the path is
+wrong. Do not reset passwords unless explicitly authorized.
+
 ## Local tests
 
     .\.venv\Scripts\python.exe -m unittest discover -s tests -v

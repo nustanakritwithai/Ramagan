@@ -19,6 +19,19 @@ non-disruptive to other sites and services.
 - Prepare rollback of any reverse-proxy configuration changes and verify all
   preexisting sites after edits. Do not assume the old domain or DocumentRoot.
 
+## Android UAT blocker (2026-10-14)
+
+User reports public `/ramagan-api/health` returning FastAPI JSON 404,
+plus a separate invalid owner-email/password response.
+
+**Follow [STAGING_ANDROID_TRIAGE.md](STAGING_ANDROID_TRIAGE.md) first.**
+Run [diagnose_staging.ps1](diagnose_staging.ps1) as a read-only probe.
+Inspect the ACTIVE Caddyfile and FastAPI process database path; compare with
+the exact provisioned owner's email. The new `admin.py check-login` command
+verifies an owner account/password locally using getpass and never prints the
+password. Do not create or reset accounts until the actual service DB is
+confirmed. Do not assume a new reload is already authorized.
+
 ## Implementation path
 
 1. git clone / git fetch repo branch feat/v1-central-web-mobile.
