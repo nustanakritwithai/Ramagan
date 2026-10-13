@@ -13,15 +13,16 @@ import secrets
 import sqlite3
 import time
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from reports import build_sales_report
 
 APP_VERSION = "1.1.0-vps-preview"
 BKK = ZoneInfo("Asia/Bangkok")
@@ -529,6 +530,25 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
         if row["cashier_user_id"] != actor["id"] and actor["role"] == "staff":
             error(403, "Not permitted to inspect this sale")
         return {"id": row["id"], "total_satang": row["total_satang"]}
+
+    @app.get("/v1/admin/sales-report")
+    def sales_report(
+        actor: Annotated[dict, Depends(current)],
+        from_date: date | None = Query(default=None, alias="from"),
+        to_date: date | None = Query(default=None, alias="to"),
+        low_stock_mg: int = Query(default=10000, ge=0, le=1_000_000_000),
+    ):
+        # The static GitHub Pages dashboard contains NO data or service key.
+        # Every report must be authenticated and authorized against the VPS.
+        require_manager(actor)
+        actual_to = to_date or datetime.now(BKK).date()
+        actual_from = from_date or (actual_to - timedelta(days=6))
+        try:
+            with connect(path) as db:
+                return build_sales_report(db, actor["store_id"], actual_from,
+                                          actual_to, low_stock_mg)
+        except ValueError as exc:
+            error(422, str(exc))
 
     @app.get("/v1/ledger")
     def ledger(actor: Annotated[dict, Depends(current)]):
