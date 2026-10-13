@@ -9,3 +9,6 @@
 .inventory-table th,.inventory-table td{padding:12px;border-bottom:1px solid #304355}
 .login-card #signup{width:100%;margin:14px 0}
 @media(max-width:790px){.admin-grid{grid-template-columns:1fr}.manager-layout{padding:0 10px;margin:10px auto}}
+
+.admin-link{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;white-space:nowrap}
+.view-links{flex-wrap:wrap}
