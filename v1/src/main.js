@@ -1,18 +1,17 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, validateServerUrl } from './backend-api.js';
 import { gramsToMilligrams, milligramsToGrams, lineTotalSatang, formatBaht, bahtToSatang } from './math.js';
 import './style.css';
 
 const root = document.getElementById('app');
-const url = import.meta.env.VITE_SUPABASE_URL;
-const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-const configured = Boolean(
-  url && key && /^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/.test(url)
-  && (/^sb_publishable_[a-zA-Z0-9]+$/.test(key) || /^eyJ[a-zA-Z0-9_.-]+$/.test(key))
-  && !key.includes('REPLACE_ME')
+// A user can configure HTTPS endpoint directly in their Android app.
+// A change of VPS/domain does not require rebuilding the APK.
+const ENDPOINT_STORAGE = 'ramagan.v1.server.url';
+let apiUrl = validateServerUrl(
+  localStorage.getItem(ENDPOINT_STORAGE) || import.meta.env.VITE_RAMAGAN_API_URL || ''
 );
-const api = configured ? createClient(url, key, {
-  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
-}) : null;
+let configured = Boolean(apiUrl);
+let api = configured ? createClient(apiUrl) : null;
+let setupError = '';
 
 const state = {
   user: null, store: null, role: null, lots: [], cart: new Map(),
@@ -43,13 +42,7 @@ function statusChip() {
     '<span class="status offline">ออฟไลน์ · ดูข้อมูลเท่านั้น</span>';
 }
 function render() {
-  if (!configured) {
-    root.innerHTML = '<div class="setup"><h1>RAMAGAN POS V1</h1>' +
-      '<p>ยังไม่ได้ตั้งค่าฐานข้อมูลกลาง</p>' +
-      '<p>สร้างไฟล์ .env.local ตาม .env.example และใช้ Supabase TEST project ก่อน</p>' +
-      '<strong>ระบบขายจริงยังไม่เปิดใช้งาน</strong></div>';
-    return;
-  }
+  if (!configured) return renderSetup();
   if (!state.user) return renderLogin();
   if (!state.store) {
     root.innerHTML = '<div class="setup"><h1>RAMAGAN POS</h1><p>' +
@@ -61,6 +54,84 @@ function render() {
   if (state.view === 'inventory' && canManage()) return renderInventory();
   renderDashboard();
 }
+function renderSetup() {
+  root.innerHTML = [
+    '<main class="login-wrap"><section class="login-card">',
+    '<div class="brand">R<span>●</span> RAMAGAN</div>',
+    '<div class="muted">ระบบหน้าร้าน · เว็บไซต์ + Android</div>',
+    '<h1>เชื่อมต่อเซิร์ฟเวอร์ร้าน</h1>',
+    '<p class="muted">ใช้ URL HTTPS ของ Ramagan API บน VPS ที่ผู้ดูแลร้านตั้งค่าไว้</p>',
+    '<form id="server-form"><label>ที่อยู่เซิร์ฟเวอร์ HTTPS',
+    '<input name="server" type="url" required autocomplete="url" ',
+    'placeholder="https://your-domain.com/ramagan-api" value="',
+    h(apiUrl || ''), '" /></label>',
+    '<button type="submit" class="primary">ตรวจสอบและเชื่อมต่อ</button></form>',
+    setupError ? '<p class="alert danger">' + h(setupError) + '</p>' : '',
+    '<p class="footnote">ไม่จำเป็นต้องมี Supabase และไม่ต้องใส่ API secret',
+    ' · เซิร์ฟเวอร์ของร้านจะเก็บข้อมูลสินค้าและบัญชีพนักงาน</p>',
+    '<p class="footnote">ก่อนใช้งานจริงต้องเปิด HTTPS, ตั้งบัญชี Owner และทดสอบระบบบน VPS</p>',
+    '</section></main>'
+  ].join('');
+  root.querySelector('#server-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = root.querySelector('#server-form button');
+    const endpoint = validateServerUrl(event.currentTarget.elements.server.value);
+    if (!endpoint) {
+      setupError = 'กรุณาระบุ URL HTTPS ที่ถูกต้อง (HTTP ใช้ได้เฉพาะ localhost สำหรับทดสอบ)';
+      return renderSetup();
+    }
+    button.disabled = true;
+    setupError = '';
+    const candidate = createClient(endpoint);
+    const result = await candidate.health();
+    button.disabled = false;
+    if (result.error || result.data?.status !== 'ok') {
+      setupError = 'ยังติดต่อ Ramagan API ไม่ได้: ' +
+        (result.error?.message || 'ปลายทางไม่ใช่ Ramagan API');
+      return renderSetup();
+    }
+    apiUrl = endpoint;
+    configured = true;
+    api = candidate;
+    localStorage.setItem(ENDPOINT_STORAGE, endpoint);
+    await startSession();
+  });
+}
+
+async function changeServer() {
+  if (state.pendingId) {
+    return setMessage('ต้องตรวจสอบรายการขายค้างก่อนเปลี่ยนเซิร์ฟเวอร์', true);
+  }
+  if (api) await api.auth.signOut();
+  localStorage.removeItem(ENDPOINT_STORAGE);
+  apiUrl = null;
+  api = null;
+  configured = false;
+  state.user = null;
+  state.store = null;
+  state.role = null;
+  state.products = [];
+  state.lots = [];
+  state.cart.clear();
+  state.lastSale = null;
+  setupError = '';
+  render();
+}
+
+async function startSession() {
+  api.auth.onAuthStateChange((event) => {
+    if (event === 'SIGNED_OUT') {
+      state.user = null;
+      state.store = null;
+      state.role = null;
+      render();
+    }
+  });
+  const {data, error} = await api.auth.getUser();
+  if (!error && data?.user) await loadProfile(data.user);
+  else render();
+}
+
 function canManage() {
   return state.role === 'owner' || state.role === 'manager';
 }
@@ -76,9 +147,9 @@ function renderLogin() {
     '<label>รหัสผ่าน <input name="password" type="password" autocomplete="current-password" required /></label>',
     '<button class="primary" type="submit" ', state.busy ? 'disabled' : '', '>เข้าสู่ระบบ</button>',
     '</form>',
-    '<button class="ghost" id="signup" type="button" ', state.busy ? 'disabled' : '',
-    '>ขอสร้างบัญชีใหม่ (ยืนยันอีเมล)</button>',
-    '<p class="footnote">บัญชีใหม่ต้องได้รับสิทธิ์ร้านจากเจ้าของร้านก่อนเข้าใช้งาน</p>',
+    '<button class="ghost" id="signup" type="button">วิธีขอบัญชีพนักงาน</button>',
+    '<button class="ghost" id="server-change" type="button">เปลี่ยนเซิร์ฟเวอร์</button>',
+    '<p class="footnote">บัญชีพนักงานสร้างโดยเจ้าของร้านผ่านเครื่อง VPS เท่านั้น</p>',
     state.message ? '<p class="alert ' + (state.error ? 'danger' : '') + '">' + h(state.message) + '</p>' : '',
     '<p class="footnote">ข้อมูลขายจะถูกบันทึกในฐานข้อมูลกลางเท่านั้น</p>',
     '</section></main>'
@@ -95,26 +166,10 @@ function renderLogin() {
     if (error) return setMessage('เข้าสู่ระบบไม่สำเร็จ: ' + error.message, true);
     await loadProfile(data.user);
   });
-  root.querySelector('#signup').addEventListener('click', async () => {
-    if (state.busy) return;
-    if (window.Capacitor?.isNativePlatform?.()) {
-      return setMessage('กรุณาสมัครและยืนยันอีเมลผ่านเว็บไซต์ Ramagan ก่อน แล้วจึงกลับมาเข้าแอป', true);
-    }
-    const form = root.querySelector('#login-form');
-    const email = form.elements.email.value.trim();
-    const password = form.elements.password.value;
-    if (!email || password.length < 12) {
-      return setMessage('กรอกอีเมล และตั้งรหัสผ่านอย่างน้อย 12 ตัวอักษร', true);
-    }
-    state.busy = true;
-    const redirect = new URL(import.meta.env.BASE_URL, window.location.origin).href;
-    const { error } = await api.auth.signUp({
-      email, password, options: { emailRedirectTo: redirect }
-    });
-    state.busy = false;
-    if (error) return setMessage('สมัครบัญชีไม่สำเร็จ: ' + error.message, true);
-    setMessage('ส่งคำขอสมัครแล้ว กรุณาตรวจอีเมลเพื่อยืนยัน และให้เจ้าของร้านกำหนดสิทธิ์');
+  root.querySelector('#signup').addEventListener('click', () => {
+    setMessage('ให้เจ้าของร้านเพิ่มบัญชีผ่านคำสั่ง VPS: python admin.py add-user', false);
   });
+  root.querySelector('#server-change').addEventListener('click', changeServer);
 }
 function cartItems() {
   return [...state.cart.entries()].map(([lot_id, quantity_mg]) => ({ lot_id, quantity_mg }))
@@ -160,7 +215,9 @@ function renderDashboard() {
 
   root.innerHTML = [
     '<header class="topbar"><div class="brand">R<span>●</span> RAMAGAN <small>V1</small></div>',
-    '<div class="top-actions">', statusChip(), '<button id="logout" class="ghost">ออกจากระบบ</button></div></header>',
+    '<div class="top-actions">', statusChip(),
+    '<button id="change-server" class="ghost">เซิร์ฟเวอร์</button>',
+    '<button id="logout" class="ghost">ออกจากระบบ</button></div></header>',
     '<main class="layout"><section class="main-panel">',
     '<div class="view-links"><strong>หน้าขาย</strong>',
     canManage() ? '<button id="open-inventory" class="ghost" type="button">จัดการสินค้า / รับเข้า</button>' : '',
@@ -197,6 +254,7 @@ function renderDashboard() {
   ].join('');
 
   root.querySelector('#logout').addEventListener('click', logout);
+  root.querySelector('#change-server')?.addEventListener('click', changeServer);
   root.querySelector('#open-inventory')?.addEventListener('click', () => {
     state.view = 'inventory';
     state.message = '';
@@ -245,6 +303,7 @@ function renderInventory() {
   root.innerHTML = [
     '<header class="topbar"><div class="brand">R<span>●</span> RAMAGAN <small>V1</small></div>',
     '<div class="top-actions">', statusChip(),
+    '<button id="change-server" class="ghost">เซิร์ฟเวอร์</button>',
     '<button id="logout" class="ghost">ออกจากระบบ</button></div></header>',
     '<main class="manager-layout"><div class="view-links">',
     '<button id="open-sales" class="ghost">หน้าขาย</button><strong>จัดการสต็อก</strong></div>',
@@ -282,6 +341,7 @@ function renderInventory() {
     '</main>'
   ].join('');
   root.querySelector('#logout').addEventListener('click', logout);
+  root.querySelector('#change-server')?.addEventListener('click', changeServer);
   root.querySelector('#refresh').addEventListener('click', refreshLots);
   root.querySelector('#open-sales').addEventListener('click', () => {
     state.view = 'sales';
@@ -463,19 +523,8 @@ window.addEventListener('online', () => {
   else render();
 });
 window.addEventListener('offline', render);
-api?.auth.onAuthStateChange((event) => {
-  if (event === 'SIGNED_OUT') {
-    state.user = null;
-    state.store = null;
-    render();
-  }
-});
-if (api) {
-  api.auth.getUser().then(({ data, error }) => {
-    if (!error && data?.user) loadProfile(data.user);
-    else render();
-  });
-} else render();
+if (api) startSession();
+else render();
 
 if ('serviceWorker' in navigator && !window.Capacitor?.isNativePlatform?.()) {
   window.addEventListener('load', () => {
