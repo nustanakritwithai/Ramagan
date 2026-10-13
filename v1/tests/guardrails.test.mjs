@@ -44,3 +44,8 @@ test('the VPS API uses opaque sessions and transaction barriers', () => {
   assert.match(backend, /CHECK\(quantity_mg >= 0\)/);
   assert.match(backend, /ledger_no_update/);
 });
+
+test('owner/manager website reports link stays external and has no token in URL', () => {
+  assert.match(main, /https:\/\/nustanakritwithai\.github\.io\/Ramagan\/admin\//);
+  assert.match(main, /rel="noopener noreferrer"/);
+});
