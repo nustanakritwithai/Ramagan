@@ -30,4 +30,10 @@ test('SQL is closed for client writes and gated for release', () => {
   assert.match(sql, /for update of b;/);
   assert.match(sql, /m\.store_id = public\.ramagan_sales\.store_id/);
   assert.match(sql, /m\.store_id = public\.ramagan_products\.store_id/);
+  const receipt = fs.readFileSync(path.resolve(root, '../backend/sql/002_v1_inventory_admin.sql'), 'utf8');
+  assert.match(receipt, /ramagan_private\.receive_lot_impl/);
+  assert.match(receipt, /m\.role in \('owner', 'manager'\)/);
+  assert.match(receipt, /revok[e]? all on function public\.ramagan_receive_lot/);
+  assert.match(main, /\.rpc\('ramagan_create_product'/);
+  assert.match(main, /\.rpc\('ramagan_receive_lot'/);
 });
