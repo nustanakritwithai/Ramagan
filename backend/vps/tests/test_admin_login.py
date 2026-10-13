@@ -7,13 +7,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from admin import main
-from app import create_store, create_user
+from app import create_store, create_user, init_database
 
 class LoginDiagnosticTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = str(Path(self.tmp.name) / "ramagan-qa.sqlite3")
+        init_database(self.path)
         self.store_id = create_store(self.path, "UAT Test Store")
         self.password = "StrongPassphraseThatIsNotARealSecret-987"
         create_user(self.path, self.store_id, "owner@example.test",
