@@ -183,6 +183,7 @@ declare
   v_sale_id uuid;
   v_old_total bigint;
   v_old_hash text;
+  v_old_actor uuid;
   v_request_hash text;
   v_total bigint := 0;
   v_line jsonb;
@@ -211,10 +212,16 @@ begin
   )::text, 'sha256'), 'hex');
 
   -- Idempotency: already committed sale -> return exactly the same sale.
-  select id, total_satang, request_hash into v_sale_id, v_old_total, v_old_hash
+  select id, total_satang, request_hash, cashier_user_id into v_sale_id, v_old_total, v_old_hash, v_old_actor
     from public.ramagan_sales where store_id = p_store_id
     and client_sale_id = p_client_sale_id;
   if found then
+    if v_old_actor <> v_actor then
+      raise exception 'Checkout belongs to another cashier' using errcode = '42501';
+    end if;
+    if v_old_actor <> v_actor then
+      raise exception 'Checkout belongs to another cashier' using errcode = '42501';
+    end if;
     if v_old_hash <> v_request_hash then
       raise exception 'Checkout ID reused with different request';
     end if;
@@ -254,7 +261,7 @@ begin
 
   -- Handles concurrent retry of the same client UUID.
   if v_sale_id is null then
-    select id, total_satang, request_hash into v_sale_id, v_old_total, v_old_hash
+    select id, total_satang, request_hash, cashier_user_id into v_sale_id, v_old_total, v_old_hash, v_old_actor
       from public.ramagan_sales where store_id = p_store_id
       and client_sale_id = p_client_sale_id;
     if v_sale_id is null then
