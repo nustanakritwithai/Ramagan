@@ -4,7 +4,7 @@ on:
     branches: [feat/v1-central-web-mobile]
     paths:
       - 'v1/**'
-      - 'backend/sql/**'
+      - 'backend/vps/**'
       - '.github/workflows/v1-checks.yml'
   pull_request:
     paths:
@@ -25,6 +25,7 @@ jobs:
         run: |
           cd v1
           node --check src/main.js
+          node --check src/backend-api.js
           node --check src/math.js
           node --check public/sw.js
           npm test
@@ -36,3 +37,18 @@ jobs:
         run: |
           cd v1
           npm run build
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated self-hosted API dependencies
+        working-directory: backend/vps
+        run: python -m pip install -r requirements.txt
+      - name: Validate Python syntax and SQLite stock transactions
+        working-directory: backend/vps
+        run: |
+          python -m compileall -q .
+          python -m unittest discover -s tests -v

@@ -1,47 +1,57 @@
-# Ramagan V1 (web + mobile)
+# RAMAGAN V1 — Website + Android on Windows VPS backend
 
-**Experimental branch only — NOT READY FOR LIVE SALES.**
+**Preview, NOT APPROVED FOR LIVE SALES.** Existing V0 remains at repo root.
 
-Existing V0 remains at repository root. V1 is a shared website + Android app
-codebase. Supabase PostgreSQL is the source of truth; the browser is NOT.
+## Architecture
 
-## Run web development locally
+Shared Vite frontend and Capacitor Android app at v1/. Frontend connects to
+HTTPS REST on the user's own Windows VPS. Python FastAPI + local SQLite WAL
+is the ONE central source of truth. No Supabase account or keys.
 
-- Node 22+ required for Capacitor 8 / Vite 8.
-- In this directory: run npm install to generate a lockfile, review it and
-  commit the lockfile before CI/release. Then run npm run dev.
-- Copy .env.example to .env.local, setting VITE_SUPABASE_URL and
-  VITE_SUPABASE_PUBLISHABLE_KEY from a **dedicated test project**.
-- First apply the SQL under backend/sql in a test project (after review),
-  then set up an Auth user, store and user-to-store membership.
-- Do NOT insert actual customers, prescriptions or live inventory into a demo.
-- Do NOT put Supabase secret or service_role keys in any VITE_ variable.
+- Frontend uses only one runtime-configurable API URL.
+- First open Android app -> set HTTPS URL (e.g. https://shop.example.com/ramagan-api)
+  -> check /health -> sign in with owner-created email/password.
+- Auth tokens are ephemeral opaque server sessions stored in sessionStorage.
+- Owner/manager can create products and receive stock. Staff may sell only
+  when the server's sales_enabled gate is explicitly active.
+- No offline checkout; no local browser ledger is treated as authoritative.
+- The server checks every item and applies one SQLite transaction (all-or-nothing).
+
+## Develop locally
+
+Backend: see ../backend/vps/README.md. In one terminal, start the Python
+backend on 127.0.0.1:8766 and provision a TEST store with admin.py.
+
+Frontend (Node 22+):
+  cd v1
+  npm install
+  npm run dev
+
+Open the Vite URL and enter http://localhost:8766 as the test endpoint.
+Only localhost may use HTTP. Real Android devices and GitHub Pages require HTTPS.
 
 ## Android
 
-After npm install and npm run build:
-
+  cd v1
+  npm install
+  npm run build
   npx cap add android
   npx cap sync android
   npx cap open android
 
-Build/sign an APK in Android Studio with an owned private signing key. This
-repository does not contain a generated Android project, APK or signing keys.
+GitHub Actions has a manually dispatched Android debug build. APK files
+are demonstration artifacts and MUST NOT be used for live retail until
+backend tests, regulated-business checks, and device checks all pass.
 
-## PWA
+No credentials or databases should be committed into GitHub.
 
-The PWA shell may be cached for display; Supabase API requests and medical or
-sales data are never put in the Service Worker cache. A lost network connection
-must NOT result in a "sale complete" message. Offline sales are NOT implemented.
+## Before production
 
-## Safety before go-live
+- Secure HTTPS gateway and strict firewall, reverse proxy local API only.
+- Use an encrypted Windows volume and restricted service account for SQLite.
+- Verify SQLite backup/restore and audit event preservation.
+- Verify staff revocation, online checkout atomics and stock concurrency.
+- Obtain independent regulatory/legal review of actual store operations.
+- Never enable the sale gate merely to test a device; use test stock instead.
 
-- Migrate legacy ledger by export + independent physical stock reconciliation,
-  NOT by copying browser localStorage into a live store.
-- Check availability and legal prerequisites, including permits and workflow
-  around any required professional authorization or prescription.
-- Review RLS, transaction SQL, release signing, backup restore and privacy.
-- Never enable ramagan_stores.sales_enabled until the compliance gate is signed
-  off for the actual store and real end-to-end tests pass.
-
-See ../docs/RAMAGAN_V1_WEB_MOBILE_PLAN.md.
+Docs: ../docs/RAMAGAN_V1_WEB_MOBILE_PLAN.md
