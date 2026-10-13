@@ -5,6 +5,7 @@ import './style.css';
 const root = document.getElementById('app');
 // A user can configure HTTPS endpoint directly in their Android app.
 // A change of VPS/domain does not require rebuilding the APK.
+const ADMIN_REPORT_URL = 'https://nustanakritwithai.github.io/Ramagan/admin/';
 const ENDPOINT_STORAGE = 'ramagan.v1.server.url';
 let apiUrl = validateServerUrl(
   localStorage.getItem(ENDPOINT_STORAGE) || import.meta.env.VITE_RAMAGAN_API_URL || ''
@@ -221,6 +222,7 @@ function renderDashboard() {
     '<main class="layout"><section class="main-panel">',
     '<div class="view-links"><strong>หน้าขาย</strong>',
     canManage() ? '<button id="open-inventory" class="ghost" type="button">จัดการสินค้า / รับเข้า</button>' : '',
+    canManage() ? '<a class="ghost admin-link" href="' + ADMIN_REPORT_URL + '" target="_blank" rel="noopener noreferrer">รายงานหลังบ้าน ↗</a>' : '',
     '</div>',
     '<div class="heading"><div><div class="eyebrow">หน้าร้าน / SALES</div><h1>ขายสินค้า</h1>',
     '<p class="muted">', h(state.store.name), ' · ', h(state.role), '</p></div>',
@@ -306,7 +308,8 @@ function renderInventory() {
     '<button id="change-server" class="ghost">เซิร์ฟเวอร์</button>',
     '<button id="logout" class="ghost">ออกจากระบบ</button></div></header>',
     '<main class="manager-layout"><div class="view-links">',
-    '<button id="open-sales" class="ghost">หน้าขาย</button><strong>จัดการสต็อก</strong></div>',
+    '<button id="open-sales" class="ghost">หน้าขาย</button><strong>จัดการสต็อก</strong>',
+    '<a class="ghost admin-link" href="' + ADMIN_REPORT_URL + '" target="_blank" rel="noopener noreferrer">รายงานหลังบ้าน ↗</a></div>',
     '<div class="heading"><div><div class="eyebrow">INVENTORY</div><h1>รับเข้าและตั้งค่าสินค้า</h1>',
     '<p class="muted">', h(state.store.name), ' · ', h(state.role),
     ' · การรับของทุกครั้งมีประวัติผู้บันทึก</p></div>',
