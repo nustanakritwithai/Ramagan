@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from contextlib import closing
 from pathlib import Path
 
-from app import DEFAULT_PATH, ROLES, connect, create_store, create_user, init_database, password_hash
+from app import DEFAULT_PATH, ROLES, connect, create_store, create_user, init_database, password_hash, verify_password
 
 def new_password() -> str:
     first = getpass.getpass("New password (12+ characters, not echoed): ")
@@ -40,6 +40,11 @@ def main() -> int:
     revoke = commands.add_parser("disable-user", help="Disable employee and revoke sessions")
     revoke.add_argument("--email", required=True)
     commands.add_parser("status", help="Inspect stores and counts; no sensitive data")
+    check = commands.add_parser(
+        "check-login",
+        help="Read-only check: account exists, is active and the password matches this DB"
+    )
+    check.add_argument("--email", required=True)
     backup = commands.add_parser("backup", help="Consistent SQLite snapshot to a private directory")
     backup.add_argument("--out", required=True)
     activate = commands.add_parser("enable-sales", help="Only after legal + QA clearance")
@@ -48,7 +53,39 @@ def main() -> int:
     disable = commands.add_parser("disable-sales", help="Emergency stop new sales")
     disable.add_argument("--store-id", required=True)
     args = p.parse_args()
-    init_database(args.db)
+    # Never silently bootstrap a fresh empty database while diagnosing an
+    # existing VPS service: differing RAMAGAN_DB_PATH values are a common
+    # cause of "Invalid email or password" during Android UAT.
+    if args.action == "init-store":
+        init_database(args.db)
+    elif not Path(args.db).is_file():
+        raise ValueError(
+            "Database file not found. Verify RAMAGAN_DB_PATH and --db; "
+            "refusing to create a replacement database"
+        )
+
+    if args.action == "check-login":
+        print("DATABASE:", Path(args.db).resolve())
+        with connect(args.db) as db:
+            account = db.execute("""
+              SELECT u.role, u.is_active, u.password_hash,
+                     s.sales_enabled
+              FROM users u JOIN stores s ON s.id=u.store_id
+              WHERE u.email=? COLLATE NOCASE
+            """, (args.email.strip().lower(),)).fetchone()
+        if account is None:
+            print("ACCOUNT: NOT_FOUND (check spelling and actual API DB path)")
+            return 2
+        print("ACCOUNT: FOUND")
+        print("ROLE:", account["role"])
+        print("ACTIVE:", bool(account["is_active"]))
+        print("SALES_ENABLED:", bool(account["sales_enabled"]))
+        candidate = getpass.getpass("Password to verify locally (not echoed): ")
+        matched = bool(account["is_active"] and verify_password(
+            candidate, account["password_hash"]
+        ))
+        print("PASSWORD_MATCH:", "PASS" if matched else "FAIL")
+        return 0 if matched else 2
 
     if args.action == "init-store":
         pwd = new_password()
