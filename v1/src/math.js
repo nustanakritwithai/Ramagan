@@ -35,3 +35,16 @@ export function formatBaht(satang) {
     currency: 'THB'
   }).format(satang / 100);
 }
+
+export function bahtToSatang(value) {
+  const text = String(value).trim();
+  if (!/^\d+(?:\.\d{1,2})?$/.test(text)) {
+    throw new Error('ระบุราคาเป็นบาท ไม่เกิน 2 ตำแหน่งทศนิยม');
+  }
+  const [whole, fraction = ''] = text.split('.');
+  const satang = Number(whole) * 100 + Number(fraction.padEnd(2, '0'));
+  if (!Number.isSafeInteger(satang) || satang < 0 || satang > 100000000) {
+    throw new Error('ราคาไม่ถูกต้องหรือสูงเกินที่ระบบรองรับ');
+  }
+  return satang;
+}
