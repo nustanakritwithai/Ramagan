@@ -468,8 +468,16 @@ async function sendCheckout(id) {
   });
   state.busy = false;
   if (error) {
-    return setMessage('ยังไม่ยืนยันผลการขาย: ' + error.message +
-      ' — กรุณากดตรวจสอบรายการค้างก่อนเริ่มขายใหม่', true);
+    // A definitive 400/401/403/422 from the authenticated API rejects the
+    // transaction; no sale was committed. Other errors may be timeouts or
+    // write conflicts: preserve the UUID until the operator verifies it.
+    if ([400, 401, 403, 422].includes(Number(error.status))) {
+      localStorage.removeItem(storageKey());
+      state.pendingId = null;
+      return setMessage('เซิร์ฟเวอร์ปฏิเสธรายการ ไม่มีการตัดสต็อก: ' + error.message, true);
+    }
+    return setMessage('ยังไม่ทราบผลจากเซิร์ฟเวอร์: ' + error.message +
+      ' — ตรวจสอบรายการค้างก่อนเริ่มขายใหม่ ห้ามสร้างเลขอ้างอิงใหม่เอง', true);
   }
   state.lastSale = data;
   localStorage.removeItem(storageKey());
