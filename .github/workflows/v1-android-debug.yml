@@ -1,11 +1,8 @@
 name: Ramagan V1 Android debug APK
+# APK compilation consumes Android SDK build minutes; run explicitly only
+# after the website checks pass. Do not rebuild per source edit.
 on:
   workflow_dispatch:
-  push:
-    branches: [feat/v1-central-web-mobile]
-    paths:
-      - 'v1/**'
-      - '.github/workflows/v1-android-debug.yml'
 permissions:
   contents: read
 jobs:
