@@ -17,8 +17,10 @@ The report requires a valid owner/manager login from the RAMAGAN VPS:
 5. The VPS again checks owner/manager role and store isolation on EVERY query.
 6. Logout revokes the session and clears rendered data.
 
-Only the endpoint URL is persisted in localStorage. Session tokens are kept in
-sessionStorage. Never disable TLS validation, never paste tokens into a URL,
+No bearer token or API URL is stored in localStorage/sessionStorage. The
+known HTTPS VPS address is prefilled; admins may change it in the login form.
+Refreshing the page requires logging in again. GitHub Pages projects share
+one github.io origin; for production, configure a dedicated custom Admin domain. Never disable TLS validation, never paste tokens into a URL,
 and never use wildcard CORS; the VPS must allow the exact origin
 https://nustanakritwithai.github.io.
 

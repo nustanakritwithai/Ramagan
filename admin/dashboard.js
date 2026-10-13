@@ -4,8 +4,8 @@ import {
 } from './lib.js';
 
 const $ = (id) => document.getElementById(id);
-const endpointKey = 'ramagan.admin.endpoint.v1';
-let endpoint = normalizeApiBase(localStorage.getItem(endpointKey)) || '';
+const DEFAULT_API = 'https://157.85.96.139/ramagan-api';
+let endpoint = normalizeApiBase(DEFAULT_API) || '';
 let token = '';
 let store = null;
 let report = null;
@@ -235,7 +235,6 @@ async function login(event) {
     });
     token = auth.token;
     await verifyRole(); // Always verify server role before exposing admin data.
-    localStorage.setItem(endpointKey,endpoint);
     $('password').value = '';
   } catch (error) {
     if (token) {
