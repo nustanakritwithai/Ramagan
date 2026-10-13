@@ -62,6 +62,7 @@ create table public.ramagan_sales (
   id uuid primary key default gen_random_uuid(),
   store_id uuid not null references public.ramagan_stores(id) on delete restrict,
   client_sale_id uuid not null,
+  request_hash text not null check (length(request_hash) = 64),
   cashier_user_id uuid not null references auth.users(id) on delete restrict,
   payment_method text not null check (payment_method in ('cash', 'transfer')),
   authorization_ref text,
@@ -181,6 +182,8 @@ declare
   v_requires_authorization boolean;
   v_sale_id uuid;
   v_old_total bigint;
+  v_old_hash text;
+  v_request_hash text;
   v_total bigint := 0;
   v_line jsonb;
   v_lot_id uuid;
@@ -202,11 +205,19 @@ begin
     raise exception 'Not authorized for this store' using errcode = '42501';
   end if;
 
+  v_request_hash := encode(digest(jsonb_build_object(
+    'items', p_items, 'payment_method', p_payment_method,
+    'authorization_ref', p_authorization_ref
+  )::text, 'sha256'), 'hex');
+
   -- Idempotency: already committed sale -> return exactly the same sale.
-  select id, total_satang into v_sale_id, v_old_total
+  select id, total_satang, request_hash into v_sale_id, v_old_total, v_old_hash
     from public.ramagan_sales where store_id = p_store_id
     and client_sale_id = p_client_sale_id;
   if found then
+    if v_old_hash <> v_request_hash then
+      raise exception 'Checkout ID reused with different request';
+    end if;
     return jsonb_build_object('sale_id', v_sale_id, 'total_satang', v_old_total, 'duplicate', true);
   end if;
 
@@ -232,10 +243,10 @@ begin
   end if;
 
   insert into public.ramagan_sales(
-    store_id, client_sale_id, cashier_user_id,
+    store_id, client_sale_id, request_hash, cashier_user_id,
     payment_method, authorization_ref, subtotal_satang, total_satang
   ) values (
-    p_store_id, p_client_sale_id, v_actor,
+    p_store_id, p_client_sale_id, v_request_hash, v_actor,
     p_payment_method, nullif(trim(p_authorization_ref), ''), 0, 0
   )
   on conflict (store_id, client_sale_id) do nothing
@@ -243,11 +254,14 @@ begin
 
   -- Handles concurrent retry of the same client UUID.
   if v_sale_id is null then
-    select id, total_satang into v_sale_id, v_old_total
+    select id, total_satang, request_hash into v_sale_id, v_old_total, v_old_hash
       from public.ramagan_sales where store_id = p_store_id
       and client_sale_id = p_client_sale_id;
     if v_sale_id is null then
       raise exception 'Unable to resolve duplicate checkout, retry with same UUID';
+    end if;
+    if v_old_hash <> v_request_hash then
+      raise exception 'Checkout ID reused with different request';
     end if;
     return jsonb_build_object('sale_id', v_sale_id, 'total_satang', v_old_total, 'duplicate', true);
   end if;
