@@ -1,0 +1,31 @@
+name: Ramagan Private Admin UI
+
+on:
+  pull_request:
+    paths:
+      - 'admin/**'
+      - 'tests/admin-gh-pages.test.mjs'
+      - '.github/workflows/admin-gh-pages-checks.yml'
+  push:
+    branches: [feat/ramagan-pages-admin]
+    paths:
+      - 'admin/**'
+      - 'tests/admin-gh-pages.test.mjs'
+      - '.github/workflows/admin-gh-pages-checks.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-admin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: JavaScript syntax and authorization/static checks
+        run: |
+          node --check admin/lib.js
+          node --check admin/dashboard.js
+          node --test tests/admin-gh-pages.test.mjs
