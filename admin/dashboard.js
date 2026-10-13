@@ -10,7 +10,6 @@ let token = '';
 let store = null;
 let report = null;
 let busy = false;
-let tokenStorageKey = '';
 const currency = (value) => money(value);
 const quantity = (value) => grams(value);
 
@@ -41,9 +40,6 @@ function setBusy(value) {
   document.body.classList.toggle('busy', value);
   $('login-button').disabled = value;
   $('refresh').disabled = value;
-}
-function tokenKey(base) {
-  return 'ramagan.admin.session:' + base;
 }
 function wipeReport() {
   report = null;
@@ -76,7 +72,6 @@ async function request(path, {method = 'GET', body, authenticated = true} = {}) 
   if (!response.ok) {
     if (response.status === 401 && authenticated) {
       token = '';
-      sessionStorage.removeItem(tokenStorageKey);
       store = null;
       wipeReport();
       authPanel(true);
@@ -230,7 +225,6 @@ async function login(event) {
     return;
   }
   endpoint = base;
-  tokenStorageKey = tokenKey(endpoint);
   const email = $('email').value.trim();
   const password = $('password').value;
   setBusy(true);
@@ -241,7 +235,6 @@ async function login(event) {
     });
     token = auth.token;
     await verifyRole(); // Always verify server role before exposing admin data.
-    sessionStorage.setItem(tokenStorageKey,token);
     localStorage.setItem(endpointKey,endpoint);
     $('password').value = '';
   } catch (error) {
@@ -249,7 +242,6 @@ async function login(event) {
       await request('/v1/auth/logout',{method:'POST',body:{}}).catch(() => {});
     }
     token = '';
-    sessionStorage.removeItem(tokenStorageKey);
     store = null;
     wipeReport();
     authPanel(true);
@@ -264,7 +256,6 @@ async function logout() {
   if (busy) return;
   await request('/v1/auth/logout',{method:'POST',body:{}}).catch(() => {});
   token = '';
-  sessionStorage.removeItem(tokenStorageKey);
   wipeReport();
   store = null;
   authPanel(true);
@@ -299,19 +290,9 @@ async function init() {
   $('to-date').value = now;
   const earlier = new Date(Date.parse(now + 'T00:00:00+07:00') - 6 * 86400000);
   $('from-date').value = bangkokDay(earlier);
-  tokenStorageKey = tokenKey(endpoint);
-  token = endpoint ? sessionStorage.getItem(tokenStorageKey) || '' : '';
-  if (token) {
-    try {
-      await verifyRole();
-      await loadReport();
-      return;
-    } catch {
-      token = '';
-      sessionStorage.removeItem(tokenStorageKey);
-      wipeReport();
-    }
-  }
+  // GitHub Pages project paths share a site origin; never persist bearer tokens.
+  // Every new page load requires a fresh login to this in-memory session.
+
   authPanel(true);
   connection('รอล็อกอิน',false);
 }
