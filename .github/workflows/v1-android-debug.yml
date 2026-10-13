@@ -20,7 +20,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - uses: android-actions/setup-android@v3
+      # ubuntu-latest already contains Android SDK; setup-android@v3 currently
+      # fails by trying to install the removed SDK package named "tools".
+      - name: Install Android platform packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
       - name: Build shared website
         working-directory: v1
         run: |
