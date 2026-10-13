@@ -4,8 +4,6 @@ All inventory writes run in SQLite BEGIN IMMEDIATE transactions. This is
 single-node software, NOT a multi-primary replica or automatic offline POS.
 No live regulated sales until site/license compliance and QA are signed off.
 """
-from __future__ import annotations
-
 import hashlib
 import hmac
 import json
