@@ -4,7 +4,8 @@ import {
   gramsToMilligrams,
   milligramsToGrams,
   lineTotalSatang,
-  formatBaht
+  formatBaht,
+  bahtToSatang
 } from '../src/math.js';
 
 test('exact milligram scaling, no floats in stored quantity', () => {
@@ -25,4 +26,14 @@ test('prices use integer satang rounding', () => {
   assert.equal(lineTotalSatang(9999, 1500), 14999);
   assert.equal(lineTotalSatang(1, 500), 1);
   assert.match(formatBaht(10000), /100/);
+});
+
+test('store product prices as exact integer satang', () => {
+  assert.equal(bahtToSatang('0'), 0);
+  assert.equal(bahtToSatang('100'), 10000);
+  assert.equal(bahtToSatang('100.25'), 10025);
+  assert.equal(bahtToSatang('0.01'), 1);
+  for (const bad of ['-1', '1e5', '0.001', '101.256', 'NaN', '1000001']) {
+    assert.throws(() => bahtToSatang(bad));
+  }
 });
