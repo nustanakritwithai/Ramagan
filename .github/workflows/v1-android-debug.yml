@@ -1,8 +1,12 @@
 name: Ramagan V1 Android debug APK
-# APK compilation consumes Android SDK build minutes; run explicitly only
-# after the website checks pass. Do not rebuild per source edit.
+# Android build on explicit manual dispatch OR edits to this workflow only.
+# This produces a DEBUG APK; not an approved or signed store release.
 on:
   workflow_dispatch:
+  push:
+    branches: [feat/v1-central-web-mobile]
+    paths:
+      - '.github/workflows/v1-android-debug.yml'
 permissions:
   contents: read
 jobs:
@@ -43,7 +47,7 @@ jobs:
           ./gradlew assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
-          name: ramagan-v1-android-debug-UNCONFIGURED
+          name: ramagan-v1-vps-android-configurable-TEST
           path: v1/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
