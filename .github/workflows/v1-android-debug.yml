@@ -34,6 +34,7 @@ jobs:
         working-directory: v1
         run: |
           npm install --ignore-scripts --no-audit --no-fund
+          npm test
           npm run build
       - name: Generate Android wrapper
         working-directory: v1
