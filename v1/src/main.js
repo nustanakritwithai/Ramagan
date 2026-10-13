@@ -5,7 +5,11 @@ import './style.css';
 const root = document.getElementById('app');
 const url = import.meta.env.VITE_SUPABASE_URL;
 const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-const configured = Boolean(url && key && /^https:\/\//.test(url) && !url.includes('YOUR-PROJECT'));
+const configured = Boolean(
+  url && key && /^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/.test(url)
+  && (/^sb_publishable_[a-zA-Z0-9]+$/.test(key) || /^eyJ[a-zA-Z0-9_.-]+$/.test(key))
+  && !key.includes('REPLACE_ME')
+);
 const api = configured ? createClient(url, key, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
 }) : null;
