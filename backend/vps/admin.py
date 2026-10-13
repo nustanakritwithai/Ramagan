@@ -11,6 +11,7 @@ import os
 import sqlite3
 import sys
 from datetime import datetime, timezone
+from contextlib import closing
 from pathlib import Path
 
 from app import DEFAULT_PATH, ROLES, connect, create_store, create_user, init_database, password_hash
@@ -84,7 +85,7 @@ def main() -> int:
         if target.exists():
             raise ValueError("Backup file already exists, refusing overwrite")
         target.parent.mkdir(parents=True, exist_ok=True)
-        with connect(args.db) as source, sqlite3.connect(str(target)) as destination:
+        with connect(args.db) as source, closing(sqlite3.connect(str(target))) as destination:
             source.backup(destination)
         # Backup contains staff/session information: secure the volume and access.
         checksum = hashlib.sha256(target.read_bytes()).hexdigest()
