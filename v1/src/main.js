@@ -110,7 +110,7 @@ function renderDashboard() {
       expired ? ' · <span class="danger-text">หมดอายุ</span>' : '', '</div></div>',
       '<div class="product-actions">',
       '<input aria-label="จำนวนกรัม" inputmode="decimal" type="text" value="1" data-qty="', h(lot.id), '" />',
-      '<button data-add="', h(lot.id), '" ', available ? '' : 'disabled', '>เพิ่ม</button>',
+      '<button data-add="', h(lot.id), '" ', available && !state.busy && !state.pendingId ? '' : 'disabled', '>เพิ่ม</button>',
       '</div></article>'
     ].join('');
   }).join('') || '<p class="empty">ยังไม่มี Lot พร้อมขายในร้านนี้</p>';
@@ -123,7 +123,7 @@ function renderDashboard() {
       '<small>', h(milligramsToGrams(item.quantity_mg)), ' กรัม × ',
       h(formatBaht(lot.price)), '</small></div>',
       '<div class="row-right"><strong>', h(formatBaht(lineTotalSatang(lot.price, item.quantity_mg))), '</strong>',
-      '<button class="remove" data-remove="', h(item.lot_id), '" aria-label="ลบสินค้า">×</button></div></div>'
+      '<button class="remove" data-remove="', h(item.lot_id), '" aria-label="ลบสินค้า" ', (state.busy || state.pendingId) ? 'disabled' : '', '>×</button></div></div>'
     ].join('');
   }).join('') || '<p class="empty">ยังไม่ได้เลือกสินค้า</p>';
 
@@ -145,11 +145,11 @@ function renderDashboard() {
     '<span>', cartItems().length, ' รายการ</span></div>',
     '<div class="cart-items">', rows, '</div>',
     '<div class="cart-total"><span>ยอดประมาณ</span><strong>', h(formatBaht(cartTotal())), '</strong></div>',
-    '<label>การชำระเงิน <select id="payment">',
+    '<label>การชำระเงิน <select id="payment" ', (state.busy || state.pendingId) ? 'disabled' : '', '>',
     '<option value="cash" ', state.payment === 'cash' ? 'selected' : '', '>เงินสด</option>',
     '<option value="transfer" ', state.payment === 'transfer' ? 'selected' : '', '>โอนเงิน</option></select></label>',
     '<label>รหัสอ้างอิงเอกสารที่ได้รับอนุญาต',
-    '<input id="auth-ref" maxlength="120" value="', h(state.authRef), '" placeholder="รหัสเอกสาร (ไม่ใส่ชื่อผู้ป่วย)" /></label>',
+    '<input id="auth-ref" maxlength="120" value="', h(state.authRef), '" placeholder="รหัสเอกสาร (ไม่ใส่ชื่อผู้ป่วย)" ', (state.busy || state.pendingId) ? 'disabled' : '', ' /></label>',
     '<p class="footnote">การกรอกรหัสเอกสารไม่ใช่การตรวจสอบความถูกต้องของเอกสาร ต้องตรวจตามกระบวนการร้านที่ได้รับอนุญาต</p>',
     state.pendingId ? '<div class="alert danger">มีรายการส่งขายที่ยังไม่ทราบผล ห้ามสร้างรายการใหม่จนกว่าจะตรวจสอบ</div>' : '',
     '<div class="checkout-actions">',
@@ -282,13 +282,16 @@ async function verifyPending() {
     state.cart.clear();
     state.authRef = '';
     state.message = 'พบรายการที่เซิร์ฟเวอร์ยืนยันแล้ว ไม่ได้ตัดสต็อกซ้ำ';
-  } else {
-    state.message = 'ตรวจสอบเซิร์ฟเวอร์แล้วไม่พบรายการนี้ สามารถเริ่มรายการใหม่ได้';
+    state.pendingId = null;
+    localStorage.removeItem(storageKey());
+    state.error = false;
+    await refreshLots();
+    return setMessage('ตรวจพบรายการที่บันทึกสำเร็จแล้ว: ไม่ตัดสต็อกซ้ำ', false);
   }
-  state.pendingId = null;
-  localStorage.removeItem(storageKey());
-  state.error = false;
-  await refreshLots();
+  state.error = true;
+  // A timed-out request could still be committing. Never clear the idempotency
+  // key merely because a single read did not find a sale yet.
+  setMessage('ยังไม่พบผลรายการ อาจกำลังประมวลผล ห้ามสร้างรายการใหม่: ส่งซ้ำด้วย ID เดิม หรือติดต่อผู้จัดการตรวจสอบ', true);
 }
 async function logout() {
   await api.auth.signOut();
