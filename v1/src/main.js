@@ -137,8 +137,8 @@ function renderDashboard() {
     !live ? '<div class="alert danger">ร้านยังไม่เปิดใช้งานระบบขายจริง ต้องผ่านการทดสอบและอนุมัติเงื่อนไขร้านก่อน</div>' : '',
     !navigator.onLine ? '<div class="alert danger">ออฟไลน์: ยืนยันการขายไม่ได้ ข้อมูลสต็อกอาจไม่ล่าสุด</div>' : '',
     state.message ? '<div class="alert ' + (state.error ? 'danger' : '') + '">' + h(state.message) + '</div>' : '',
-    state.lastSale ? '<div class="alert success">รายการล่าสุด ', h(state.lastSale.sale_id),
-      ' · รวม ', h(formatBaht(Number(state.lastSale.total_satang))), '</div>' : '',
+    state.lastSale ? '<div class="alert success">รายการล่าสุด ' + h(state.lastSale.sale_id) +
+      ' · รวม ' + h(formatBaht(Number(state.lastSale.total_satang))) + '</div>' : '',
     '<div class="section-title"><h2>สินค้าในสต็อก</h2><span class="muted">', state.lots.length, ' Lot</span></div>',
     '<div class="products">', cards, '</div></section>',
     '<aside class="cart-panel"><div class="section-title"><h2>ตะกร้าขาย</h2>',
