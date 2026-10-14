@@ -1,6 +1,6 @@
 import {
   normalizeApiBase, isReportRole, money, grams, gramsToMgAllowZero,
-  bangkokDay, verifyPeriod, dailyCsv
+  bangkokDay, verifyPeriod, dailyCsv, prepareReport
 } from './lib.js';
 
 const $ = (id) => document.getElementById(id);
@@ -41,16 +41,19 @@ function setBusy(value) {
   $('login-button').disabled = value;
   $('api-check-button').disabled = value;
   $('refresh').disabled = value;
+  $('logout').disabled = value;
+  for (const id of ['from-date', 'to-date', 'low-stock']) $(id).disabled = value;
 }
 function wipeReport() {
   report = null;
-  for (const id of ['metric-sales', 'metric-orders', 'metric-cash',
+  for (const id of ['metric-gross', 'metric-discount', 'metric-sales', 'metric-orders', 'metric-cash',
     'metric-transfer', 'metric-grams', 'metric-average', 'period-label']) {
     $(id).textContent = '—';
   }
-  for (const id of ['daily-chart', 'top-products', 'top-categories',
+  for (const id of ['daily-chart', 'daily-rows', 'top-products', 'top-categories',
     'low-stock-rows', 'recent-sales']) $(id).replaceChildren();
   $('export-csv').disabled = true;
+  $('discount-status').textContent = 'ยังไม่มีรายงานที่ยืนยันจาก VPS';
 }
 function setHealthLink(base) {
   const link = $('health-open-link');
@@ -188,7 +191,11 @@ function showDaily(daily) {
     node.textContent = 'ยังไม่มีข้อมูล';
     return;
   }
-  const max = Math.max(1, ...daily.map((row) => Number(row.total_satang) || 0));
+  if (daily.some(row => row.net === null)) {
+    node.textContent = 'กราฟสุทธิยังไม่รองรับ: VPS ไม่ได้ยืนยัน discount contract v1';
+    return;
+  }
+  const max = Math.max(1, ...daily.map((row) => Number(row.net) || 0));
   for (const item of daily) {
     const wrapper = document.createElement('div');
     wrapper.className = 'daily-row';
@@ -198,12 +205,12 @@ function showDaily(daily) {
     track.className = 'daily-track';
     const bar = document.createElement('div');
     bar.className = 'daily-bar';
-    const value = Number(item.total_satang) || 0;
+    const value = Number(item.net) || 0;
     bar.style.width = Math.min(100, Math.max(0, (value / max) * 100)) + '%';
     track.appendChild(bar);
     const amount = document.createElement('span');
     amount.className = 'daily-amount';
-    amount.textContent = currency(item.total_satang);
+    amount.textContent = currency(item.net);
     wrapper.append(label, track, amount);
     node.appendChild(wrapper);
   }
@@ -218,21 +225,35 @@ function formatTime(value) {
 }
 function renderReport(value) {
   const summary = value.summary;
-  $('metric-sales').textContent = currency(summary.total_satang);
+  $('metric-gross').textContent = currency(summary.gross);
+  $('metric-discount').textContent = currency(summary.discount);
+  $('metric-sales').textContent = currency(summary.net);
+  $('discount-status').textContent = value.supported ?
+    'VPS รองรับส่วนลด contract v1 · ยอดสุทธิ = ก่อนส่วนลด − ส่วนลด · สุทธิรายสินค้ากระจายโดย VPS' :
+    'VPS ยังไม่ยืนยันส่วนลด contract v1 · ช่องส่วนลดและสุทธิแสดง — (ไม่ทราบ ไม่ใช่ศูนย์) · สินค้า API เดิมเป็นยอดก่อนส่วนลด';
   $('metric-orders').textContent = String(summary.sale_count);
-  $('metric-cash').textContent = currency(summary.cash_satang);
-  $('metric-transfer').textContent = currency(summary.transfer_satang);
+  $('metric-cash').textContent = currency(value.supported ? summary.cash_satang : null);
+  $('metric-transfer').textContent = currency(value.supported ? summary.transfer_satang : null);
   $('metric-grams').textContent = quantity(summary.quantity_mg);
-  $('metric-average').textContent = currency(summary.average_satang);
+  $('metric-average').textContent = currency(value.supported ? summary.average_satang : null);
   $('period-label').textContent = String(value.period.from) + ' ถึง ' + String(value.period.to);
   showDaily(value.daily);
+  rows('daily-rows', value.daily, x => [
+    {value:x.date}, {value:x.sale_count,right:true},
+    {value:currency(x.gross),right:true}, {value:currency(x.discount),right:true},
+    {value:currency(x.net),right:true}
+  ]);
   rows('top-products', value.top_products, (x) => [
     {value:String(x.name) + ' · ' + String(x.sku)},
-    {value:currency(x.total_satang),right:true},
+    {value:currency(x.gross),right:true},
+    {value:currency(x.discount),right:true},
+    {value:currency(x.net),right:true},
     {value:quantity(x.quantity_mg),right:true}
   ]);
   rows('top-categories', value.top_categories, (x) => [
-    {value:x.category}, {value:currency(x.total_satang),right:true},
+    {value:x.category}, {value:currency(x.gross),right:true},
+    {value:currency(x.discount),right:true},
+    {value:currency(x.net),right:true},
     {value:quantity(x.quantity_mg),right:true}
   ]);
   rows('low-stock-rows', value.low_stock, (x) => [
@@ -243,9 +264,11 @@ function renderReport(value) {
   rows('recent-sales', value.recent_sales, (x) => [
     {value:formatTime(x.created_at)},
     {value:String(x.id).slice(0,12), title:String(x.id)},
-    {value:x.payment_method === 'cash' ? 'เงินสด':'โอน'},
+    {value:x.payment_method === 'cash' ? 'เงินสด' : x.payment_method === 'transfer' ? 'โอน' : 'ไม่ทราบ'},
     {value:String(x.line_count),right:true},
-    {value:currency(x.total_satang),right:true}
+    {value:currency(x.gross),right:true},
+    {value:currency(x.discount),right:true},
+    {value:currency(x.net),right:true}
   ]);
   $('export-csv').disabled = false;
 }
@@ -262,18 +285,24 @@ async function loadReport() {
     return;
   }
   setBusy(true);
+  wipeReport();
+  connection('กำลังอัปเดตรายงาน', false);
   banner('กำลังอ่านรายงานจาก VPS...');
   try {
     const params = new URLSearchParams({
       'from':from, 'to':to, low_stock_mg:String(lowMg)
     });
     const data = await request('/v1/admin/sales-report?' + params.toString());
-    report = data;
-    renderReport(data);
+    const prepared = prepareReport(data);
+    if (prepared.period.from !== from || prepared.period.to !== to) throw new Error('ช่วงวันที่จาก VPS ไม่ตรงกับคำขอ');
+    renderReport(prepared);
+    report = prepared;
+    connection('รายงานยืนยันจาก VPS แล้ว', true);
     banner('โหลดรายงานสำเร็จ · ' + String(data.summary.sale_count) +
       ' บิล · เวลา Asia/Bangkok');
   } catch (error) {
     wipeReport();
+    connection('รายงานไม่พร้อมใช้งาน', false);
     banner(error.message, true);
   } finally {
     setBusy(false);
@@ -333,6 +362,8 @@ async function login(event) {
 }
 async function logout() {
   if (busy) return;
+  setBusy(true);
+  wipeReport();
   await request('/v1/auth/logout',{method:'POST',body:{}}).catch(() => {});
   token = '';
   wipeReport();
@@ -340,6 +371,7 @@ async function logout() {
   authPanel(true);
   connection('ออกจากระบบแล้ว',false);
   clearBanners();
+  setBusy(false);
 }
 function exportDaily() {
   if (!report) return;
@@ -364,6 +396,14 @@ async function init() {
     loadReport();
   });
   $('refresh').addEventListener('click',loadReport);
+  for (const id of ['from-date', 'to-date', 'low-stock']) {
+    $(id).addEventListener('input', () => {
+      if (!store || busy) return;
+      wipeReport();
+      connection('เปลี่ยนตัวกรองแล้ว · รออัปเดต', false);
+      banner('ตัวกรองเปลี่ยนแล้ว กรุณาแสดงรายงานใหม่');
+    });
+  }
   $('export-csv').addEventListener('click',exportDaily);
   if (endpoint) {
     $('api-base').value = endpoint;
