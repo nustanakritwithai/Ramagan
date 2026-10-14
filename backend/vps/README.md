@@ -1,5 +1,13 @@
 # Ramagan V1 Central API — Windows VPS deployment
 
+> Phase 2 discount candidate: see [DISCOUNT_PHASE2_HANDOFF.md](DISCOUNT_PHASE2_HANDOFF.md).
+> Existing databases require the explicit schema-version-2 offline-copy migration
+> rehearsal; the app will refuse to auto-upgrade legacy storage. A future approved
+> release needs app.py, discounts.py, migrations.py and reports.py together.
+> Earlier CORS/report deployment steps alone do not install this candidate.
+> The VPS remains unchanged and actual sales must remain disabled.
+
+
 **TEST / DRAFT only. Not cleared for live regulated retail.**
 
 Architecture: Python FastAPI, single-authoritative SQLite WAL database, HTTPS
