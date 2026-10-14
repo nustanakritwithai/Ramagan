@@ -37,7 +37,9 @@
         <label for="password">รหัสผ่าน</label>
         <input type="password" name="password" id="password" required autocomplete="current-password">
         <button type="submit" id="login-button" class="button primary full">เข้าสู่ระบบและโหลดรายงาน</button>
+        <button type="button" id="api-check-button" class="button subtle full">ตรวจสอบการเชื่อมต่อ API (ไม่ใช้รหัสผ่าน)</button>
         <p id="login-message" class="notice" role="status" aria-live="polite" hidden></p>
+        <a id="health-open-link" href="#" target="_blank" rel="noopener noreferrer" hidden>เปิดหน้า Health Check ในเบราว์เซอร์เพื่อตรวจสอบ HTTPS/TLS</a>
         <p class="muted small">ไม่รองรับบัญชีพนักงานทั่วไป · ไม่บันทึกรหัสผ่านหรือโทเค็นในเบราว์เซอร์ · รีเฟรชแล้วต้องล็อกอินใหม่</p>
       </form>
     </section>
