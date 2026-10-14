@@ -43,6 +43,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      RAMAGAN_DB_PATH: ${{ runner.temp }}/ramagan-phase2-bootstrap.sqlite3
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
