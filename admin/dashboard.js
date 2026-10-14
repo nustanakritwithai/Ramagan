@@ -39,6 +39,7 @@ function setBusy(value) {
   busy = value;
   document.body.classList.toggle('busy', value);
   $('login-button').disabled = value;
+  $('api-check-button').disabled = value;
   $('refresh').disabled = value;
 }
 function wipeReport() {
@@ -51,6 +52,64 @@ function wipeReport() {
     'low-stock-rows', 'recent-sales']) $(id).replaceChildren();
   $('export-csv').disabled = true;
 }
+function setHealthLink(base) {
+  const link = $('health-open-link');
+  if (!link) return;
+  if (!base) {
+    link.removeAttribute('href');
+    link.hidden = true;
+    return;
+  }
+  link.href = base + '/health';
+  link.hidden = false;
+}
+
+// Health is intentionally public/read-only. It never sends a username,
+// password, Authorization header or token from memory.
+async function probeHealth(base) {
+  try {
+    const response = await fetch(base + '/health', {
+      method: 'GET',
+      cache: 'no-store',
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
+      signal: AbortSignal.timeout(12000),
+      headers: {'Accept': 'application/json'}
+    });
+    if (!response.ok) return {ok:false, reason:'HTTP ' + response.status};
+    const body = await response.json().catch(() => null);
+    if (body?.status !== 'ok') return {ok:false, reason:'ไม่พบ status: ok'};
+    return {ok:true};
+  } catch (err) {
+    return {ok:false, reason:err?.name === 'TimeoutError' ?
+      'หมดเวลารอคำตอบ' : 'เบราว์เซอร์ปฏิเสธการเชื่อมต่อ (CORS/TLS/เครือข่าย)'};
+  }
+}
+
+async function diagnoseApi() {
+  if (busy) return;
+  const base = normalizeApiBase($('api-base').value);
+  if (!base) {
+    setHealthLink(null);
+    banner('โปรดกรอก HTTPS API Base ที่ถูกต้องก่อน', true);
+    return;
+  }
+  setHealthLink(base);
+  setBusy(true);
+  clearBanners();
+  try {
+    const result = await probeHealth(base);
+    if (result.ok) {
+      banner('GET /health ผ่านแล้ว (200/status: ok) แต่การเข้าสู่ระบบยังต้องผ่าน CORS preflight สำหรับ POST JSON และการตรวจสิทธิ์บน VPS');
+    } else {
+      banner('GET /health ผ่านเบราว์เซอร์ไม่สำเร็จ: ' + result.reason +
+        ' — เปิดลิงก์ Health Check ด้านล่าง หากเปิดได้แต่ตรวจจากหน้านี้ไม่ได้ ให้ตรวจ CORS ที่ VPS', true);
+    }
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function request(path, {method = 'GET', body, authenticated = true} = {}) {
   if (!endpoint) throw new Error('ยังไม่ได้กำหนด HTTPS API');
   const abort = AbortSignal.timeout(15000);
@@ -64,8 +123,11 @@ async function request(path, {method = 'GET', body, authenticated = true} = {}) 
       referrerPolicy:'no-referrer', signal:abort,
       ...(body === undefined ? {} : {body:JSON.stringify(body)})
     });
-  } catch {
-    throw new Error('เชื่อมต่อ VPS ไม่สำเร็จ ตรวจสอบ HTTPS, CORS และเครือข่าย');
+  } catch (cause) {
+    const err = new Error('เชื่อมต่อ VPS ไม่สำเร็จ ตรวจสอบ HTTPS, CORS และเครือข่าย');
+    err.kind = 'transport';
+    err.timeout = cause?.name === 'TimeoutError';
+    throw err;
   }
   let data = null;
   try { data = await response.json(); } catch { /* Non-JSON API response. */ }
@@ -225,6 +287,7 @@ async function login(event) {
     return;
   }
   endpoint = base;
+  setHealthLink(endpoint);
   const email = $('email').value.trim();
   const password = $('password').value;
   setBusy(true);
@@ -244,7 +307,15 @@ async function login(event) {
     store = null;
     wipeReport();
     authPanel(true);
-    banner(error.message,true);
+    if (error.kind === 'transport') {
+      const probe = await probeHealth(endpoint);
+      banner(probe.ok ?
+        'GET /health ผ่าน แต่ POST Login ถูกเบราว์เซอร์ปิดกั้นหรือไม่สำเร็จ: ให้ VPS ตรวจ OPTIONS /v1/auth/login และ CORS Origin https://nustanakritwithai.github.io' :
+        'เชื่อมต่อ VPS ไม่สำเร็จ: ' + probe.reason +
+        ' — ลองเปิด Health Check ในแท็บใหม่เพื่อตรวจใบรับรอง HTTPS จากนั้นให้ VPS ตรวจ CORS', true);
+    } else {
+      banner(error.message, true);
+    }
     connection('เชื่อมต่อไม่ได้',false);
   } finally {
     setBusy(false);
@@ -277,6 +348,7 @@ function exportDaily() {
 async function init() {
   $('footer-year').textContent = String(new Date().getFullYear());
   $('login-form').addEventListener('submit',login);
+  $('api-check-button').addEventListener('click', diagnoseApi);
   $('logout').addEventListener('click',logout);
   $('filters').addEventListener('submit',(event) => {
     event.preventDefault();
@@ -284,7 +356,12 @@ async function init() {
   });
   $('refresh').addEventListener('click',loadReport);
   $('export-csv').addEventListener('click',exportDaily);
-  if (endpoint) $('api-base').value = endpoint;
+  if (endpoint) {
+    $('api-base').value = endpoint;
+    setHealthLink(endpoint);
+  }
+  $('api-base').addEventListener('input', () =>
+    setHealthLink(normalizeApiBase($('api-base').value)));
   const now = bangkokDay();
   $('to-date').value = now;
   const earlier = new Date(Date.parse(now + 'T00:00:00+07:00') - 6 * 86400000);
