@@ -6,6 +6,8 @@
  * writes are verified by server-side roles; UI controls do not grant rights.
  */
 
+import {supportsDiscount} from './checkout.js';
+
 const PREFIX = 'ramagan.v1.session.';
 
 export function validateServerUrl(raw) {
@@ -85,7 +87,7 @@ export function createClient(serverUrl) {
       return result(async () => {
         if (this.table === 'ramagan_members') {
           const me = await request('GET', '/v1/me');
-          return [{store_id: me.store_id, role: me.role,
+          return [{store_id: me.store_id, role: me.role, capabilities: me.capabilities,
                    ramagan_stores: {
                      name: me.store.name,
                      sales_enabled: me.store.sales_enabled,
@@ -132,6 +134,20 @@ export function createClient(serverUrl) {
   return {
     base,
     health: () => result(() => request('GET', '/health')),
+    checkoutTransport: {
+      async capabilities(identity) {
+        const me = await request('GET', '/v1/me');
+        if (me.user?.id !== identity.cashier || me.store_id !== identity.store) {
+          throw new Error('บัญชีหรือร้านเปลี่ยนไป กรุณาเข้าสู่ระบบบัญชีเดิม');
+        }
+        return me.capabilities;
+      },
+      post: payload => request('POST', '/v1/sales', payload),
+      async lookup(id) {
+        try { return await request('GET', '/v1/sales/by-client/' + encodeURIComponent(id)); }
+        catch (error) { if (error.status === 404) return null; throw error; }
+      }
+    },
     auth: {
       async getUser() {
         if (!token) return {data: {user: null}, error: null};
@@ -175,7 +191,8 @@ export function createClient(serverUrl) {
           endpoint: '/v1/sales', payload: {
             client_sale_id: a.p_client_sale_id,
             items: a.p_items, payment_method: a.p_payment_method,
-            authorization_ref: a.p_authorization_ref
+            authorization_ref: a.p_authorization_ref,
+            discount_satang: a.p_discount_satang ?? 0
           }
         },
         ramagan_create_product: {
@@ -196,7 +213,18 @@ export function createClient(serverUrl) {
       };
       if (!routes[name]) return {data: null, error: new Error('Unknown action')};
       const r = routes[name];
-      return result(() => request('POST', r.endpoint, r.payload));
+      return result(async () => {
+        if (name === 'ramagan_checkout') {
+          if (!Number.isSafeInteger(r.payload.discount_satang) || r.payload.discount_satang < 0) {
+            throw new Error('Invalid discount');
+          }
+          if (r.payload.discount_satang > 0) {
+            const me = await request('GET', '/v1/me');
+            if (!supportsDiscount(me.capabilities)) throw new Error('เซิร์ฟเวอร์ยังไม่รองรับส่วนลดรุ่นนี้');
+          }
+        }
+        return request('POST', r.endpoint, r.payload);
+      });
     }
   };
 }
