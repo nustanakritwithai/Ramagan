@@ -73,26 +73,30 @@
       </form>
 
       <p id="report-message" class="notice" role="status" aria-live="polite" hidden></p>
+      <p id="discount-status" class="notice" role="status">รอตรวจสอบความสามารถรายงานส่วนลดจาก VPS</p>
       <div class="summary-grid" id="overview">
-        <article class="metric highlight"><div>ยอดขายบันทึก</div><strong id="metric-sales">—</strong><small>บาท ในช่วงเวลาที่เลือก</small></article>
+        <article class="metric"><div>ยอดก่อนส่วนลด (Gross)</div><strong id="metric-gross">—</strong><small>ราคาขายก่อนหักส่วนลดหน้าบิล</small></article>
+        <article class="metric"><div>ส่วนลดหน้าบิล</div><strong id="metric-discount">—</strong><small>เฉพาะส่วนลดที่ยืนยันโดย VPS</small></article>
+        <article class="metric highlight"><div>ยอดสุทธิ (Net)</div><strong id="metric-sales">—</strong><small>บาท ในช่วงเวลาที่เลือก</small></article>
         <article class="metric"><div>จำนวนบิล</div><strong id="metric-orders">—</strong><small>ธุรกรรมที่ยืนยันโดย VPS</small></article>
-        <article class="metric"><div>เงินสด</div><strong id="metric-cash">—</strong><small>ช่องทางที่บันทึกเป็นเงินสด</small></article>
-        <article class="metric"><div>โอน</div><strong id="metric-transfer">—</strong><small>ช่องทางที่บันทึกเป็นโอน</small></article>
+        <article class="metric"><div>เงินสดสุทธิ</div><strong id="metric-cash">—</strong><small>ช่องทางที่บันทึกเป็นเงินสด</small></article>
+        <article class="metric"><div>โอนสุทธิ</div><strong id="metric-transfer">—</strong><small>ช่องทางที่บันทึกเป็นโอน</small></article>
         <article class="metric"><div>ตัดสต็อก</div><strong id="metric-grams">—</strong><small>กรัมจากรายการขาย</small></article>
-        <article class="metric"><div>ยอดเฉลี่ย / บิล</div><strong id="metric-average">—</strong><small>บาทต่อธุรกรรม</small></article>
+        <article class="metric"><div>ยอดสุทธิเฉลี่ย / บิล</div><strong id="metric-average">—</strong><small>บาทต่อธุรกรรม</small></article>
       </div>
       <section id="daily-section" class="block">
-        <div class="block-heading"><div><h2>แนวโน้มยอดขายรายวัน</h2><p>ใช้วันที่ตามเวลา Asia/Bangkok</p></div><span id="period-label" class="chip">—</span></div>
-        <div id="daily-chart" class="daily-chart" aria-label="กราฟแท่งยอดขายรายวัน"></div>
+        <div class="block-heading"><div><h2>แนวโน้มยอดขายรายวัน</h2><p>ยอดสุทธิ · วันที่ตามเวลา Asia/Bangkok</p></div><span id="period-label" class="chip">—</span></div>
+        <div id="daily-chart" class="daily-chart" aria-label="กราฟแท่งยอดสุทธิรายวัน"></div>
+        <div class="table-scroll"><table><thead><tr><th>วันที่ (Bangkok)</th><th class="right">บิล</th><th class="right">ก่อนส่วนลด</th><th class="right">ส่วนลด</th><th class="right">สุทธิ</th></tr></thead><tbody id="daily-rows"></tbody></table></div>
       </section>
       <div class="two-col">
         <section id="products-section" class="block">
-          <div class="block-heading"><div><h2>สินค้าขายดี</h2><p>จากราคาที่บันทึกในรายการขายจริง</p></div></div>
-          <div class="table-scroll"><table><thead><tr><th>สินค้า</th><th class="right">ยอดขาย</th><th class="right">กรัมตัด</th></tr></thead><tbody id="top-products"></tbody></table></div>
+          <div class="block-heading"><div><h2>สินค้าขายดี</h2><p>สุทธิจากการกระจายส่วนลดโดย VPS เท่านั้น · API เดิมแสดงเฉพาะก่อนส่วนลด</p></div></div>
+          <div class="table-scroll"><table><thead><tr><th>สินค้า</th><th class="right">ก่อนส่วนลด</th><th class="right">ส่วนลดที่กระจาย</th><th class="right">สุทธิที่กระจาย</th><th class="right">กรัมตัด</th></tr></thead><tbody id="top-products"></tbody></table></div>
         </section>
         <section class="block">
-          <div class="block-heading"><div><h2>ยอดขายตามหมวดหมู่</h2><p>จำแนกจากหมวดสินค้าที่บันทึกไว้</p></div></div>
-          <div class="table-scroll"><table><thead><tr><th>หมวด</th><th class="right">ยอดขาย</th><th class="right">กรัมตัด</th></tr></thead><tbody id="top-categories"></tbody></table></div>
+          <div class="block-heading"><div><h2>ยอดขายตามหมวดหมู่</h2><p>สุทธิจากการกระจายส่วนลดโดย VPS เท่านั้น · API เดิมแสดงเฉพาะก่อนส่วนลด</p></div></div>
+          <div class="table-scroll"><table><thead><tr><th>หมวด</th><th class="right">ก่อนส่วนลด</th><th class="right">ส่วนลดที่กระจาย</th><th class="right">สุทธิที่กระจาย</th><th class="right">กรัมตัด</th></tr></thead><tbody id="top-categories"></tbody></table></div>
         </section>
       </div>
       <section id="low-section" class="block">
@@ -101,12 +105,13 @@
       </section>
       <section id="recent-section" class="block">
         <div class="block-heading"><div><h2>รายการขายล่าสุด</h2><p>แสดงสูงสุด 30 รายการภายในช่วงวันที่เลือก</p></div></div>
-        <div class="table-scroll"><table><thead><tr><th>วันเวลา</th><th>เลขรายการ</th><th>ชำระ</th><th class="right">จำนวนรายการ</th><th class="right">ยอดขาย</th></tr></thead><tbody id="recent-sales"></tbody></table></div>
+        <div class="table-scroll"><table><thead><tr><th>วันเวลา</th><th>เลขรายการ</th><th>ชำระ</th><th class="right">จำนวนรายการ</th><th class="right">ก่อนส่วนลด</th><th class="right">ส่วนลด</th><th class="right">สุทธิ</th></tr></thead><tbody id="recent-sales"></tbody></table></div>
       </section>
       <aside class="footnote">
-        <strong>ขอบเขตรายงาน V1:</strong> ยังไม่รวมโปรโมชั่น 5+2, ส่วนลดหน้าบิล และข้อมูลนับกะจาก Ramagan V0 ใน API กลาง
-        จึงไม่แสดงตัวเลขเหล่านั้นเป็นยอดจริงจนกว่าจะย้ายระบบครบ
-        ข้อมูลถูกดึงจาก VPS หลังเข้าสู่ระบบ ไม่ได้ฝังอยู่ใน GitHub Pages
+        <strong>ขอบเขตรายงาน:</strong> ส่วนลดแสดงเมื่อ VPS ยืนยัน contract v1 เท่านั้น ช่อง “—” หมายถึงไม่รองรับหรือไม่ทราบ ไม่ใช่ศูนย์
+        ยอดสุทธิรายสินค้าใช้การกระจายส่วนลดจาก VPS ไม่ได้คำนวณใหม่บนเบราว์เซอร์ อันดับ contract v1 เรียงตามยอดสุทธิที่กระจาย
+        โปรโมชั่น 5+2 และนับกะต้องตรวจสอบความสามารถแยกต่างหาก ข้อมูลมาจาก VPS หลังเข้าสู่ระบบเท่านั้น
+
       </aside>
     </section>
   </main>

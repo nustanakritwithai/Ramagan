@@ -9,3 +9,6 @@
 #api-check-button{margin-top:10px}
 #health-open-link{display:block;color:#98dded;font-size:.8rem;line-height:1.55;margin:10px 0 0;text-decoration:underline;text-underline-offset:3px;overflow-wrap:anywhere}
 #health-open-link[hidden]{display:none}
+
+.metric strong{overflow-wrap:anywhere}
+#daily-chart:empty{min-height:0}
