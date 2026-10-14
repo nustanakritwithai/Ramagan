@@ -2,7 +2,8 @@
 
 No mutation, no seeded/demo totals, and no unauthenticated export.
 Date ranges are interpreted in Asia/Bangkok, stored timestamps are UTC.
-Amounts are integer satang, stock quantities are integer milligrams.
+Amounts are integer satang, stock quantities are integer milligrams. Stored
+subtotals are gross, discounts are allocated receipt amounts, and totals are net.
 """
 from __future__ import annotations
 
@@ -38,9 +39,11 @@ def build_sales_report(db, store_id: str, start: date, end: date,
     for i in range((end - start).days + 1):
         day = (start + timedelta(days=i)).isoformat()
         days[day] = {"date": day, "total_satang": 0,
+                     "subtotal_satang": 0, "discount_satang": 0,
                      "sale_count": 0, "quantity_mg": 0}
     total_satang = 0
     subtotal_satang = 0
+    discount_satang = 0
     sold_mg = 0
     count = 0
     cash_satang = 0
@@ -52,6 +55,7 @@ def build_sales_report(db, store_id: str, start: date, end: date,
     try:
         cursor = db.execute("""
             SELECT s.id, s.created_at, s.total_satang, s.subtotal_satang,
+                   s.discount_satang,
                    s.payment_method, COUNT(sl.id) AS line_count,
                    COALESCE(SUM(sl.quantity_mg),0) AS quantity_mg
               FROM sales s LEFT JOIN sale_lines sl ON sl.sale_id = s.id
@@ -65,28 +69,37 @@ def build_sales_report(db, store_id: str, start: date, end: date,
             if day not in days:
                 continue
             amount = int(row["total_satang"])
+            subtotal = int(row["subtotal_satang"])
+            discount = int(row["discount_satang"])
             qty = int(row["quantity_mg"])
             count += 1
             total_satang += amount
-            subtotal_satang += int(row["subtotal_satang"])
+            subtotal_satang += subtotal
+            discount_satang += discount
             sold_mg += qty
             if row["payment_method"] == "cash":
                 cash_satang += amount
             elif row["payment_method"] == "transfer":
                 transfer_satang += amount
             days[day]["total_satang"] += amount
+            days[day]["subtotal_satang"] += subtotal
+            days[day]["discount_satang"] += discount
             days[day]["sale_count"] += 1
             days[day]["quantity_mg"] += qty
             if len(recent) < 30:
                 recent.append({
                     "id": row["id"], "created_at": row["created_at"],
-                    "total_satang": amount, "payment_method": row["payment_method"],
+                    "total_satang": amount, "subtotal_satang": subtotal,
+                    "discount_satang": discount,
+                    "payment_method": row["payment_method"],
                     "line_count": int(row["line_count"]), "quantity_mg": qty
                 })
 
         top_products = [dict(r) for r in db.execute("""
             SELECT p.sku, p.name, p.category,
                    COALESCE(SUM(sl.quantity_mg),0) AS quantity_mg,
+                   COALESCE(SUM(sl.line_subtotal_satang),0) AS subtotal_satang,
+                   COALESCE(SUM(sl.line_discount_satang),0) AS discount_satang,
                    COALESCE(SUM(sl.line_total_satang),0) AS total_satang,
                    COUNT(DISTINCT s.id) AS sale_count
               FROM sale_lines sl
@@ -102,6 +115,8 @@ def build_sales_report(db, store_id: str, start: date, end: date,
         top_categories = [dict(r) for r in db.execute("""
             SELECT p.category,
                    COALESCE(SUM(sl.quantity_mg),0) AS quantity_mg,
+                   COALESCE(SUM(sl.line_subtotal_satang),0) AS subtotal_satang,
+                   COALESCE(SUM(sl.line_discount_satang),0) AS discount_satang,
                    COALESCE(SUM(sl.line_total_satang),0) AS total_satang
               FROM sale_lines sl
               JOIN sales s ON s.id=sl.sale_id
@@ -132,6 +147,7 @@ def build_sales_report(db, store_id: str, start: date, end: date,
             "sale_count": count,
             "total_satang": total_satang,
             "subtotal_satang": subtotal_satang,
+            "discount_satang": discount_satang,
             "cash_satang": cash_satang,
             "transfer_satang": transfer_satang,
             "quantity_mg": sold_mg,
@@ -143,7 +159,8 @@ def build_sales_report(db, store_id: str, start: date, end: date,
         "low_stock": low_stock,
         "recent_sales": recent,
         "capabilities": {
-            "discounts": False, "promotions": False,
+            "discounts": True, "discount_contract_version": 1,
+            "promotions": False,
             "shift_reconciliation": False
         }
     }
