@@ -126,6 +126,7 @@ async function request(path, {method = 'GET', body, authenticated = true} = {}) 
   } catch (cause) {
     const err = new Error('เชื่อมต่อ VPS ไม่สำเร็จ ตรวจสอบ HTTPS, CORS และเครือข่าย');
     err.kind = 'transport';
+    err.endpoint = path.split('?')[0];
     err.timeout = cause?.name === 'TimeoutError';
     throw err;
   }
@@ -309,8 +310,16 @@ async function login(event) {
     authPanel(true);
     if (error.kind === 'transport') {
       const probe = await probeHealth(endpoint);
+      const operation = error.endpoint === '/v1/me' ?
+        'GET /v1/me (Authorization)' :
+        error.endpoint === '/v1/auth/login' ?
+          'POST /v1/auth/login (JSON)' : 'คำขอ API';
+      const preflight = error.endpoint === '/v1/me' ?
+        'OPTIONS /v1/me (Authorization)' :
+        'OPTIONS /v1/auth/login (Content-Type)';
       banner(probe.ok ?
-        'GET /health ผ่าน แต่ POST Login ถูกเบราว์เซอร์ปิดกั้นหรือไม่สำเร็จ: ให้ VPS ตรวจ OPTIONS /v1/auth/login และ CORS Origin https://nustanakritwithai.github.io' :
+        'GET /health ผ่าน แต่ ' + operation + ' ยังไม่สำเร็จ: ให้ VPS ตรวจ ' +
+          preflight + ' และ CORS Origin https://nustanakritwithai.github.io' :
         'เชื่อมต่อ VPS ไม่สำเร็จ: ' + probe.reason +
         ' — ลองเปิด Health Check ในแท็บใหม่เพื่อตรวจใบรับรอง HTTPS จากนั้นให้ VPS ตรวจ CORS', true);
     } else {
