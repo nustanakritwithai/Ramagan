@@ -21,18 +21,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Install locked frontend and DOM test dependencies
+        working-directory: v1
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Syntax + isolated tests
         run: |
           cd v1
           node --check src/main.js
           node --check src/backend-api.js
           node --check src/math.js
+          node --check src/checkout.js
           node --check public/sw.js
           npm test
-      - name: Dependency install for build smoke (release requires committed lockfile)
-        run: |
-          cd v1
-          npm install --ignore-scripts --no-audit --no-fund
       - name: Compile website and mobile assets
         run: |
           cd v1
