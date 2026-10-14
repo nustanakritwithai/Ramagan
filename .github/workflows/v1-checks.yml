@@ -44,7 +44,6 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     env:
-      RAMAGAN_DB_PATH: ${{ runner.temp }}/ramagan-phase2-bootstrap.sqlite3
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v4
@@ -72,6 +71,8 @@ jobs:
             if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
           }
       - name: Validate Python syntax and SQLite stock transactions
+        env:
+          RAMAGAN_DB_PATH: ${{ runner.temp }}/ramagan-phase2-bootstrap.sqlite3
         working-directory: backend/vps
         run: |
           python -m compileall -q .

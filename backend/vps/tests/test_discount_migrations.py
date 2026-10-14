@@ -2,6 +2,8 @@
 import contextlib
 import io
 import json
+import os
+import stat
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -286,6 +288,10 @@ class DiscountMigrationTests(unittest.TestCase):
     def test_fresh_init_version_constraints_and_second_init_noop(self):
         initialize_database(self.db, FRESH_SCHEMA)
         self.assertEqual(inspect_database(self.db)["status"], "READY")
+        with fixture_connection(self.db) as db:
+            self.assertEqual(db.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(self.db.stat().st_mode), 0o600)
         before = logical_snapshot(self.db)
         initialize_database(self.db, FRESH_SCHEMA)
         self.assertEqual(before, logical_snapshot(self.db))
@@ -299,6 +305,17 @@ class DiscountMigrationTests(unittest.TestCase):
                 with self.assertRaises(sqlite3.IntegrityError):
                     db.execute("INSERT INTO sale_lines VALUES(?,?,?,?,?,?,?,?)",
                                ("bad", "none", "none", 1, 1, gross, discount, net))
+
+    def test_existing_ready_factory_preserves_delete_journal_and_file(self):
+        self.fixture()
+        migrate_copy(self.db, confirmed_offline_copy=True)
+        with fixture_connection(self.db) as db:
+            self.assertEqual(db.execute("PRAGMA journal_mode").fetchone()[0], "delete")
+        before = self.db.read_bytes()
+        initialize_database(self.db, FRESH_SCHEMA)
+        self.assertEqual(before, self.db.read_bytes())
+        with fixture_connection(self.db) as db:
+            self.assertEqual(db.execute("PRAGMA journal_mode").fetchone()[0], "delete")
 
     def test_unversioned_v2_partial_future_and_missing_trigger_hold(self):
         initialize_database(self.db, FRESH_SCHEMA)

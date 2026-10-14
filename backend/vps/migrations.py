@@ -222,6 +222,13 @@ def initialize_database(path: str | Path, schema_sql: str) -> None:
     db = sqlite3.connect(target, timeout=20, isolation_level=None)
     try:
         db.execute("PRAGMA foreign_keys=ON")
+        # Preserve the original fresh-database WAL behavior. Existing READY or
+        # legacy databases return/raise above without changing their journal mode.
+        report = _assessment(db)
+        if report["status"] != "FRESH":
+            raise SchemaUpgradeRequired(report)
+        if db.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() != "wal":
+            raise sqlite3.DatabaseError("Fresh database could not enable WAL")
         db.execute("BEGIN IMMEDIATE")
         report = _assessment(db)
         if report["status"] != "FRESH":
