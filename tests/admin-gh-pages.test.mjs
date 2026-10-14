@@ -64,3 +64,17 @@ test('public HTML ships without embedded secrets or sales; reports require VPS',
   assert.doesNotMatch(script,/localStorage\.setItem\([^)]*token/);
   assert.doesNotMatch(script,/service_role|sb_secret_|supabase-js/);
 });
+
+test('Admin connection diagnostic is credential free and explains cross-origin login failures', () => {
+  const html=fs.readFileSync(new URL('../admin/index.html',import.meta.url),'utf8');
+  const script=fs.readFileSync(new URL('../admin/dashboard.js',import.meta.url),'utf8');
+  assert.match(html,/id="api-check-button"/);
+  assert.match(html,/id="health-open-link"/);
+  assert.match(script,/async function probeHealth/);
+  assert.match(script,/method: 'GET'/);
+  assert.match(script,/credentials: 'omit'/);
+  assert.match(script,/OPTIONS \/v1\/auth\/login/);
+  assert.match(script,/setHealthLink\(normalizeApiBase/);
+  assert.doesNotMatch(script,/sessionStorage\./);
+  assert.doesNotMatch(script,/localStorage\./);
+});
