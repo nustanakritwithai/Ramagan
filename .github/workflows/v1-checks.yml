@@ -58,12 +58,16 @@ jobs:
         run: |
           $parseTokens = $null
           $parseErrors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Join-Path (Get-Location) 'diagnose_staging.ps1'),
-            [ref]$parseTokens,
-            [ref]$parseErrors
-          ) | Out-Null
-          if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
+          foreach ($scriptName in @('diagnose_staging.ps1', 'check_admin_cors.ps1')) {
+            $parseTokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path (Get-Location) $scriptName),
+              [ref]$parseTokens,
+              [ref]$parseErrors
+            ) | Out-Null
+            if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
+          }
       - name: Validate Python syntax and SQLite stock transactions
         working-directory: backend/vps
         run: |
