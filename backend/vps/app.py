@@ -6,7 +6,6 @@ No live regulated sales until site/license compliance and QA are signed off.
 """
 import hashlib
 import hmac
-import json
 import os
 import re
 import secrets
@@ -21,7 +20,12 @@ from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictInt
+from discounts import (
+    DISCOUNT_CONTRACT_VERSION, MAX_SALE_SATANG, allocate_discount,
+    checkout_request_hash, legacy_checkout_request_hash,
+)
+from migrations import CURRENT_SCHEMA_VERSION, initialize_database
 from reports import build_sales_report
 
 APP_VERSION = "1.1.0-vps-preview"
@@ -93,8 +97,10 @@ CREATE TABLE IF NOT EXISTS sales (
   payment_method TEXT NOT NULL CHECK(payment_method IN ('cash','transfer')),
   authorization_ref TEXT,
   subtotal_satang INTEGER NOT NULL CHECK(subtotal_satang >= 0),
+  discount_satang INTEGER NOT NULL DEFAULT 0 CHECK(discount_satang >= 0),
   total_satang INTEGER NOT NULL CHECK(total_satang >= 0),
   created_at TEXT NOT NULL,
+  CHECK(subtotal_satang = discount_satang + total_satang),
   UNIQUE(store_id, client_sale_id)
 );
 CREATE TABLE IF NOT EXISTS sale_lines (
@@ -103,7 +109,10 @@ CREATE TABLE IF NOT EXISTS sale_lines (
   lot_id TEXT NOT NULL REFERENCES lots(id),
   quantity_mg INTEGER NOT NULL CHECK(quantity_mg > 0),
   unit_price_satang_per_gram INTEGER NOT NULL CHECK(unit_price_satang_per_gram >= 0),
+  line_subtotal_satang INTEGER NOT NULL DEFAULT 0 CHECK(line_subtotal_satang >= 0),
+  line_discount_satang INTEGER NOT NULL DEFAULT 0 CHECK(line_discount_satang >= 0),
   line_total_satang INTEGER NOT NULL CHECK(line_total_satang >= 0),
+  CHECK(line_subtotal_satang = line_discount_satang + line_total_satang),
   UNIQUE(sale_id, lot_id)
 );
 CREATE TABLE IF NOT EXISTS ledger_events (
@@ -152,13 +161,7 @@ def connect(path: str):
         db.close()
 
 def init_database(path: str) -> None:
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if not target.is_file():
-        target.touch(mode=0o600)
-    with connect(path) as db:
-        db.execute("PRAGMA journal_mode=WAL")
-        db.executescript(SCHEMA)
+    initialize_database(path, SCHEMA)
 
 def password_hash(password: str) -> str:
     if len(password) < 12 or len(password) > 128:
@@ -232,6 +235,7 @@ class SaleIn(BaseModel):
     items: list[SaleLineIn] = Field(min_length=1, max_length=50)
     payment_method: str
     authorization_ref: str | None = Field(default=None, max_length=120)
+    discount_satang: StrictInt = Field(default=0, ge=0, le=MAX_SALE_SATANG)
 
 def error(status: int, message: str):
     raise HTTPException(status_code=status, detail=message)
@@ -252,6 +256,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
     app = FastAPI(title="Ramagan POS Central API", version=APP_VERSION,
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.db_path = path
+    app.state.schema_version = CURRENT_SCHEMA_VERSION
     app.state.login_failures = {}
     app.add_middleware(CORSMiddleware, allow_origins=allowed,
                        allow_credentials=False,
@@ -340,6 +345,8 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
             "user": {"id": actor["id"], "email": actor["email"]},
             "store_id": actor["store_id"],
             "role": actor["role"],
+            "capabilities": {"discounts": True,
+                             "discount_contract_version": DISCOUNT_CONTRACT_VERSION},
             "store": {**dict(store),
                       "sales_enabled": bool(store["sales_enabled"]),
                       "requires_authorization": bool(store["requires_authorization"])}
@@ -435,25 +442,33 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
             {"lot_id": str(x.lot_id), "quantity_mg": x.quantity_mg}
             for x in payload.items
         ], key=lambda x: x["lot_id"])
-        request_hash = hashlib.sha256(json.dumps({
-            "items": items, "payment_method": payload.payment_method,
-            "authorization_ref": ref
-        }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        request_hash = checkout_request_hash(
+            items, payload.payment_method, ref, payload.discount_satang
+        )
+        legacy_hash = legacy_checkout_request_hash(items, payload.payment_method, ref)
         sid = uuid_str()
         with connect(path) as db:
             try:
                 db.execute("BEGIN IMMEDIATE")
                 existing = db.execute("""
-                  SELECT id,total_satang,request_hash,cashier_user_id FROM sales
+                  SELECT id,client_sale_id,subtotal_satang,discount_satang,
+                         total_satang,request_hash,cashier_user_id FROM sales
                    WHERE store_id=? AND client_sale_id=?
                 """, (actor["store_id"], str(payload.client_sale_id))).fetchone()
                 if existing:
                     if existing["cashier_user_id"] != actor["id"]:
                         error(403, "Checkout belongs to another cashier")
-                    if existing["request_hash"] != request_hash:
+                    matches = existing["request_hash"] == request_hash or (
+                        payload.discount_satang == 0 and existing["discount_satang"] == 0
+                        and existing["request_hash"] == legacy_hash
+                    )
+                    if not matches:
                         error(409, "Checkout ID reused with different payload")
                     db.rollback()
                     return {"sale_id": existing["id"],
+                            "client_sale_id": existing["client_sale_id"],
+                            "subtotal_satang": existing["subtotal_satang"],
+                            "discount_satang": existing["discount_satang"],
                             "total_satang": existing["total_satang"], "duplicate": True}
                 store = db.execute("""
                    SELECT sales_enabled,requires_authorization FROM stores WHERE id=?
@@ -462,7 +477,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
                     error(403, "Sales are not activated for this store")
                 if store["requires_authorization"] and not ref:
                     error(422, "Authorized document reference required")
-                total = 0
+                subtotal = 0
                 stamp = now_utc()
                 validated = []
                 # Preflight every line before inserting the immutable sale.
@@ -483,17 +498,31 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
                     if lot["quantity_mg"] < qty:
                         error(409, "Insufficient stock")
                     price = lot["price_satang_per_gram"]
+                    if type(price) is not int or not 0 <= price <= MAX_AMOUNT:
+                        error(422, "Invalid server price")
                     line_satang = (price * qty + 500) // 1000
-                    total += line_satang
+                    subtotal += line_satang
                     validated.append((item["lot_id"], qty, price, line_satang))
+                try:
+                    allocation = {
+                        line.lot_id: line for line in allocate_discount(
+                            [(lot_id, gross) for lot_id, _, _, gross in validated],
+                            payload.discount_satang,
+                        )
+                    }
+                except ValueError as exc:
+                    error(422, str(exc))
+                total = subtotal - payload.discount_satang
                 db.execute("""
                   INSERT INTO sales(id,store_id,client_sale_id,request_hash,cashier_user_id,
                                     payment_method,authorization_ref,subtotal_satang,
-                                    total_satang,created_at)
-                  VALUES(?,?,?,?,?,?,?,?,?,?)
+                                    discount_satang,total_satang,created_at)
+                  VALUES(?,?,?,?,?,?,?,?,?,?,?)
                 """, (sid, actor["store_id"], str(payload.client_sale_id), request_hash,
-                      actor["id"], payload.payment_method, ref or None, total, total, stamp))
+                      actor["id"], payload.payment_method, ref or None, subtotal,
+                      payload.discount_satang, total, stamp))
                 for lot_id, qty, price, line_satang in validated:
+                    amounts = allocation[lot_id]
                     changed = db.execute("""
                       UPDATE lot_balances SET quantity_mg=quantity_mg-?,updated_at=?
                        WHERE lot_id=? AND quantity_mg>=?
@@ -502,9 +531,11 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
                         error(409, "Concurrent stock change")
                     db.execute("""
                       INSERT INTO sale_lines(id,sale_id,lot_id,quantity_mg,
-                                             unit_price_satang_per_gram,line_total_satang)
-                      VALUES(?,?,?,?,?,?)
-                    """, (uuid_str(), sid, lot_id, qty, price, line_satang))
+                                             unit_price_satang_per_gram,line_subtotal_satang,
+                                             line_discount_satang,line_total_satang)
+                      VALUES(?,?,?,?,?,?,?,?)
+                    """, (uuid_str(), sid, lot_id, qty, price, amounts.subtotal_satang,
+                          amounts.discount_satang, amounts.total_satang))
                     db.execute("""
                       INSERT INTO ledger_events(id,store_id,lot_id,actor_user_id,
                                                 event_type,quantity_delta_mg,reason,
@@ -516,20 +547,26 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
             except Exception:
                 db.rollback()
                 raise
-        return {"sale_id": sid, "total_satang": total, "duplicate": False}
+        return {"sale_id": sid, "client_sale_id": str(payload.client_sale_id),
+                "subtotal_satang": subtotal, "discount_satang": payload.discount_satang,
+                "total_satang": total, "duplicate": False}
 
     @app.get("/v1/sales/by-client/{client_sale_id}")
     def sale_lookup(client_sale_id: uuid.UUID, actor: Annotated[dict, Depends(current)]):
         with connect(path) as db:
             row = db.execute("""
-              SELECT id,total_satang,cashier_user_id FROM sales
+              SELECT id,client_sale_id,subtotal_satang,discount_satang,
+                     total_satang,cashier_user_id FROM sales
                WHERE store_id=? AND client_sale_id=?
             """, (actor["store_id"], str(client_sale_id))).fetchone()
         if not row:
             error(404, "Sale not found")
         if row["cashier_user_id"] != actor["id"] and actor["role"] == "staff":
             error(403, "Not permitted to inspect this sale")
-        return {"id": row["id"], "total_satang": row["total_satang"]}
+        return {"id": row["id"], "client_sale_id": row["client_sale_id"],
+                "subtotal_satang": row["subtotal_satang"],
+                "discount_satang": row["discount_satang"],
+                "total_satang": row["total_satang"]}
 
     @app.get("/v1/admin/sales-report")
     def sales_report(
