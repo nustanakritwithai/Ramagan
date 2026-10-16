@@ -1,5 +1,6 @@
 import { createClient, validateServerUrl } from './backend-api.js';
-import { gramsToMilligrams, milligramsToGrams, lineTotalSatang, formatBaht, bahtToSatang } from './math.js';
+import { gramsToMilligrams, milligramsToGrams, lineTotalSatang, formatBaht, bahtToSatang, discountSatang, sumSatang } from './math.js';
+import {createCheckout, supportsDiscount} from './checkout.js';
 import './style.css';
 
 const root = document.getElementById('app');
@@ -7,9 +8,9 @@ const root = document.getElementById('app');
 // A change of VPS/domain does not require rebuilding the APK.
 const ADMIN_REPORT_URL = 'https://nustanakritwithai.github.io/Ramagan/admin/';
 const ENDPOINT_STORAGE = 'ramagan.v1.server.url';
-let apiUrl = validateServerUrl(
-  localStorage.getItem(ENDPOINT_STORAGE) || import.meta.env.VITE_RAMAGAN_API_URL || ''
-);
+let savedEndpoint = '';
+try { savedEndpoint = localStorage.getItem(ENDPOINT_STORAGE) || ''; } catch { /* checkout will fail closed if storage is unavailable */ }
+let apiUrl = validateServerUrl(savedEndpoint || import.meta.env.VITE_RAMAGAN_API_URL || '');
 let configured = Boolean(apiUrl);
 let api = configured ? createClient(apiUrl) : null;
 let setupError = '';
@@ -17,7 +18,7 @@ let setupError = '';
 const state = {
   user: null, store: null, role: null, lots: [], cart: new Map(),
   payment: 'cash', authRef: '', busy: false, message: '', error: false,
-  pendingId: null, lastSale: null, products: [], view: 'sales'
+  pendingId: null, checkout: null, pendingBlocked: false, capabilities: null, discount: '0', lastSale: null, products: [], view: 'sales'
 };
 
 function h(value) {
@@ -30,8 +31,32 @@ function setMessage(message, error = false) {
   state.error = error;
   render();
 }
-function storageKey() {
-  return 'ramagan.v1.pending.' + (state.store?.id || 'unassigned');
+function restorePending() {
+  state.pendingBlocked = false;
+  try {
+    const op = state.checkout?.read();
+    state.pendingId = op?.payload.client_sale_id || null;
+    if (op) {
+      state.cart = new Map(op.payload.items.map(x => [x.lot_id, x.quantity_mg]));
+      state.payment = op.payload.payment_method;
+      state.authRef = op.payload.authorization_ref || '';
+      state.discount = (BigInt(op.payload.discount_satang) / 100n).toString() + '.' + String(op.payload.discount_satang % 100).padStart(2, '0');
+    }
+    return op;
+  } catch (error) {
+    state.pendingBlocked = true;
+    state.pendingId = 'blocked';
+    state.message = error.message;
+    state.error = true;
+    return null;
+  }
+}
+function preview() {
+  try {
+    const subtotal = cartTotal();
+    const discount = discountSatang(state.discount, subtotal);
+    return {subtotal, discount, total: subtotal - discount};
+  } catch (error) { return {error: error.message}; }
 }
 function toBangkokDay(date) {
   return new Intl.DateTimeFormat('en-CA', {
@@ -100,7 +125,7 @@ function renderSetup() {
 }
 
 async function changeServer() {
-  if (state.pendingId) {
+  if (state.pendingId || state.busy) {
     return setMessage('ต้องตรวจสอบรายการขายค้างก่อนเปลี่ยนเซิร์ฟเวอร์', true);
   }
   if (api) await api.auth.signOut();
@@ -177,13 +202,15 @@ function cartItems() {
     .sort((a, b) => a.lot_id.localeCompare(b.lot_id));
 }
 function cartTotal() {
-  return cartItems().reduce((sum, item) => {
+  return sumSatang(cartItems().map((item) => {
     const lot = state.lots.find((l) => l.id === item.lot_id);
-    return sum + (lot ? lineTotalSatang(lot.price, item.quantity_mg) : 0);
-  }, 0);
+    if (!lot) throw new Error('ข้อมูล Lot ในรายการค้างไม่ครบ กรุณาตรวจสอบกับเซิร์ฟเวอร์');
+    return lineTotalSatang(lot.price, item.quantity_mg);
+  }));
 }
 function renderDashboard() {
   const live = Boolean(state.store.sales_enabled);
+  const totals = preview();
   const today = toBangkokDay(new Date());
   const cards = state.lots.map((lot) => {
     const expired = Boolean(lot.expires_on && lot.expires_on < today);
@@ -231,25 +258,30 @@ function renderDashboard() {
     !navigator.onLine ? '<div class="alert danger">ออฟไลน์: ยืนยันการขายไม่ได้ ข้อมูลสต็อกอาจไม่ล่าสุด</div>' : '',
     state.message ? '<div class="alert ' + (state.error ? 'danger' : '') + '">' + h(state.message) + '</div>' : '',
     state.lastSale ? '<div class="alert success">รายการล่าสุด ' + h(state.lastSale.sale_id) +
-      ' · รวม ' + h(formatBaht(Number(state.lastSale.total_satang))) + '</div>' : '',
+      ' · ยอดก่อนลด ' + h(formatBaht(state.lastSale.subtotal_satang)) +
+      ' · ส่วนลด ' + h(formatBaht(state.lastSale.discount_satang)) + ' · สุทธิยืนยันจากเซิร์ฟเวอร์ ' + h(formatBaht(state.lastSale.total_satang)) +
+      (state.lastSale.legacy_zero ? ' (เซิร์ฟเวอร์รุ่นเดิม: ไม่มีส่วนลด)' : '') + '</div>' : '',
     '<div class="section-title"><h2>สินค้าในสต็อก</h2><span class="muted">', state.lots.length, ' Lot</span></div>',
     '<div class="products">', cards, '</div></section>',
     '<aside class="cart-panel"><div class="section-title"><h2>ตะกร้าขาย</h2>',
     '<span>', cartItems().length, ' รายการ</span></div>',
     '<div class="cart-items">', rows, '</div>',
-    '<div class="cart-total"><span>ยอดประมาณ</span><strong>', h(formatBaht(cartTotal())), '</strong></div>',
+    '<label>ส่วนลดทั้งบิล (บาท) <input id="discount" type="text" inputmode="decimal" value="', h(state.discount), '" ', (state.busy || state.pendingId || !supportsDiscount(state.capabilities)) ? 'disabled' : '', ' /></label>',
+    !supportsDiscount(state.capabilities) ? '<p class="footnote">เซิร์ฟเวอร์ยังไม่ประกาศรองรับส่วนลด ใช้ได้เฉพาะส่วนลด 0 บาท</p>' : '',
+    '<div id="preview">', previewHtml(totals), '</div>',
+    '<p class="footnote">ยอดนี้เป็นประมาณการ ราคาบนเซิร์ฟเวอร์อาจเปลี่ยน ยอดสุดท้ายใช้ค่าที่เซิร์ฟเวอร์ยืนยันเท่านั้น</p>',
     '<label>การชำระเงิน <select id="payment" ', (state.busy || state.pendingId) ? 'disabled' : '', '>',
     '<option value="cash" ', state.payment === 'cash' ? 'selected' : '', '>เงินสด</option>',
     '<option value="transfer" ', state.payment === 'transfer' ? 'selected' : '', '>โอนเงิน</option></select></label>',
     '<label>รหัสอ้างอิงเอกสารที่ได้รับอนุญาต',
     '<input id="auth-ref" maxlength="120" value="', h(state.authRef), '" placeholder="รหัสเอกสาร (ไม่ใส่ชื่อผู้ป่วย)" ', (state.busy || state.pendingId) ? 'disabled' : '', ' /></label>',
     '<p class="footnote">การกรอกรหัสเอกสารไม่ใช่การตรวจสอบความถูกต้องของเอกสาร ต้องตรวจตามกระบวนการร้านที่ได้รับอนุญาต</p>',
-    state.pendingId ? '<div class="alert danger">มีรายการส่งขายที่ยังไม่ทราบผล ห้ามสร้างรายการใหม่จนกว่าจะตรวจสอบ</div>' : '',
+    state.pendingId ? '<div class="alert danger">มีรายการส่งขายที่ยังไม่ทราบผล ห้ามสร้างรายการใหม่จนกว่าจะตรวจสอบ' + (state.pendingBlocked ? '' : '<br />เลขอ้างอิง: ' + h(state.pendingId)) + '</div>' : '',
     '<div class="checkout-actions">',
     '<button id="checkout" class="primary" ', (!live || !navigator.onLine || state.busy ||
-      state.pendingId || !state.cart.size) ? 'disabled' : '', '>ยืนยันรายการผ่านเซิร์ฟเวอร์</button>',
-    state.pendingId ? '<button id="verify" class="ghost">ตรวจสอบรายการค้าง</button>' : '',
-    state.pendingId && state.cart.size ? '<button id="retry" class="ghost">ส่งรายการเดิมซ้ำด้วย ID เดิม</button>' : '',
+      state.pendingId || !state.cart.size || totals.error) ? 'disabled' : '', '>ยืนยันรายการผ่านเซิร์ฟเวอร์</button>',
+    state.pendingId && !state.pendingBlocked ? '<button id="verify" class="ghost" ' + (state.busy ? 'disabled' : '') + '>ตรวจสอบรายการค้าง</button>' : '',
+    state.pendingId && !state.pendingBlocked ? '<button id="retry" class="ghost" ' + (state.busy ? 'disabled' : '') + '>ส่งรายการเดิมซ้ำด้วย ID เดิม</button>' : '',
     '</div>',
     '<p class="footnote">ระบบจะถือว่าขายสำเร็จหลังเซิร์ฟเวอร์ยืนยันเท่านั้น</p>',
     '</aside></main>'
@@ -265,6 +297,7 @@ function renderDashboard() {
   root.querySelector('#refresh').addEventListener('click', refreshLots);
   root.querySelectorAll('[data-add]').forEach((button) => {
     button.addEventListener('click', () => {
+      if (state.busy || state.pendingId) return;
       try {
         const id = button.dataset.add;
         const input = root.querySelector('[data-qty="' + CSS.escape(id) + '"]');
@@ -280,19 +313,33 @@ function renderDashboard() {
   });
   root.querySelectorAll('[data-remove]').forEach((button) => {
     button.addEventListener('click', () => {
+      if (state.busy || state.pendingId) return;
       state.cart.delete(button.dataset.remove);
       render();
     });
   });
   root.querySelector('#payment').addEventListener('change', (event) => {
-    state.payment = event.target.value;
+    if (!state.busy && !state.pendingId) state.payment = event.target.value;
   });
   root.querySelector('#auth-ref').addEventListener('input', (event) => {
-    state.authRef = event.target.value;
+    if (!state.busy && !state.pendingId) state.authRef = event.target.value;
+  });
+  root.querySelector('#discount').addEventListener('input', event => {
+    if (state.busy || state.pendingId) return;
+    state.discount = event.target.value;
+    const totals = preview();
+    root.querySelector('#preview').innerHTML = previewHtml(totals);
+    root.querySelector('#checkout').disabled = !live || !navigator.onLine || !state.cart.size || Boolean(totals.error);
   });
   root.querySelector('#checkout').addEventListener('click', startCheckout);
   root.querySelector('#verify')?.addEventListener('click', verifyPending);
-  root.querySelector('#retry')?.addEventListener('click', () => sendCheckout(state.pendingId));
+  root.querySelector('#retry')?.addEventListener('click', () => runCheckout('retry'));
+}
+function previewHtml(totals) {
+  if (totals.error) return '<p class="alert danger">' + h(totals.error) + '</p>';
+  return '<div class="cart-total"><span>ยอดก่อนลด (ประมาณ)</span><strong>' + h(formatBaht(totals.subtotal)) +
+    '</strong></div><div class="cart-total"><span>ส่วนลด</span><strong>' + h(formatBaht(totals.discount)) +
+    '</strong></div><div class="cart-total"><span>สุทธิ (ประมาณ)</span><strong>' + h(formatBaht(totals.total)) + '</strong></div>';
 }
 function renderInventory() {
   const options = state.products.filter((p) => p.active).map((p) =>
@@ -413,8 +460,21 @@ async function loadProfile(user) {
   }
   state.store = { id: data[0].store_id, ...data[0].ramagan_stores };
   state.role = data[0].role;
-  state.pendingId = localStorage.getItem(storageKey());
+  state.capabilities = data[0].capabilities;
+  state.cart.clear();
+  state.discount = '0';
+  state.authRef = '';
+  state.payment = 'cash';
+  state.checkout = createCheckout({storage: localStorage,
+    identity: {api: api.base, store: state.store.id, cashier: user.id},
+    transport: api.checkoutTransport, uuid: () => crypto.randomUUID(),
+    lock: navigator.locks ? (key, task) => navigator.locks.request(key, {ifAvailable: true}, lock => {
+      if (!lock) throw new Error('รายการนี้กำลังตรวจสอบในอีกหน้าต่าง กรุณารอสักครู่');
+      return task();
+    }) : null
+  });
   state.message = '';
+  restorePending();
   await refreshLots();
 }
 async function refreshLots() {
@@ -443,8 +503,9 @@ async function refreshLots() {
       quantity_mg: Number(quantity || 0)
     };
   });
-  state.message = '';
+  if (!state.pendingBlocked) state.message = '';
   render();
+  return true;
 }
 async function startCheckout() {
   if (state.pendingId || state.busy || !state.cart.size) return;
@@ -454,68 +515,46 @@ async function startCheckout() {
   if (state.store.requires_authorization && !state.authRef.trim()) {
     return setMessage('ต้องระบุรหัสเอกสารที่ได้รับอนุญาต และตรวจสอบเอกสารจริงก่อน', true);
   }
-  state.pendingId = crypto.randomUUID();
-  localStorage.setItem(storageKey(), state.pendingId);
-  await sendCheckout(state.pendingId);
+  const totals = preview();
+  if (totals.error) return setMessage(totals.error, true);
+  await runCheckout('start', {items: cartItems(), payment_method: state.payment,
+    authorization_ref: state.authRef.trim() || null, discount_satang: totals.discount}, totals.subtotal);
 }
-async function sendCheckout(id) {
-  if (!id || !state.cart.size || !navigator.onLine || state.busy) return;
+async function runCheckout(action, payload, subtotal) {
+  if (state.busy || state.pendingBlocked || !navigator.onLine || !state.checkout) return;
   state.busy = true;
   render();
-  const { data, error } = await api.rpc('ramagan_checkout', {
-    p_store_id: state.store.id,
-    p_client_sale_id: id,
-    p_items: cartItems(),
-    p_payment_method: state.payment,
-    p_authorization_ref: state.authRef.trim() || null
-  });
-  state.busy = false;
-  if (error) {
-    // A definitive 400/401/403/422 from the authenticated API rejects the
-    // transaction; no sale was committed. Other errors may be timeouts or
-    // write conflicts: preserve the UUID until the operator verifies it.
-    if ([400, 401, 403, 422].includes(Number(error.status))) {
-      localStorage.removeItem(storageKey());
+  try {
+    const result = await state.checkout[action](payload, subtotal);
+    restorePending();
+    if (result?.sale) {
+      state.lastSale = result.sale;
+      // Clear the cart before any fallible refresh, never re-submit a completed bill.
+      state.cart.clear();
+      state.authRef = '';
+      state.discount = '0';
+      await state.checkout.acknowledge();
       state.pendingId = null;
-      return setMessage('เซิร์ฟเวอร์ปฏิเสธรายการ ไม่มีการตัดสต็อก: ' + error.message, true);
+      const fresh = await refreshLots();
+      const changed = result.sale.subtotal_satang !== result.op.preview_subtotal_satang;
+      state.message = 'เซิร์ฟเวอร์ยืนยันรายการแล้ว ไม่ตัดสต็อกซ้ำ' +
+        (changed ? ' · ราคาปัจจุบันต่างจากประมาณการ ใช้ยอดยืนยันที่แสดง' : '') +
+        (!fresh ? ' · รีเฟรชสต็อกไม่สำเร็จ กรุณารีเฟรชก่อนขายครั้งถัดไป' : '');
+      state.error = !fresh;
+    } else {
+      state.message = 'ยังไม่ทราบผลรายการ เก็บเลขอ้างอิงเดิมไว้ ตรวจสอบหรือส่งรายการเดิมซ้ำเท่านั้น' +
+        (result?.error ? ': ' + result.error.message : '');
+      state.error = true;
     }
-    return setMessage('ยังไม่ทราบผลจากเซิร์ฟเวอร์: ' + error.message +
-      ' — ตรวจสอบรายการค้างก่อนเริ่มขายใหม่ ห้ามสร้างเลขอ้างอิงใหม่เอง', true);
-  }
-  state.lastSale = data;
-  localStorage.removeItem(storageKey());
-  state.pendingId = null;
-  state.cart.clear();
-  state.authRef = '';
-  await refreshLots();
-  setMessage('เซิร์ฟเวอร์ยืนยันรายการขายเรียบร้อย', false);
+  } catch (error) {
+    restorePending();
+    state.message = error.message;
+    state.error = true;
+  } finally { state.busy = false; render(); }
 }
-async function verifyPending() {
-  if (!state.pendingId || !navigator.onLine) return;
-  state.busy = true;
-  render();
-  const { data, error } = await api.from('ramagan_sales')
-    .select('id, total_satang').eq('store_id', state.store.id)
-    .eq('client_sale_id', state.pendingId).maybeSingle();
-  state.busy = false;
-  if (error) return setMessage('ตรวจสอบรายการค้างไม่สำเร็จ: ' + error.message, true);
-  if (data) {
-    state.lastSale = { sale_id: data.id, total_satang: data.total_satang };
-    state.cart.clear();
-    state.authRef = '';
-    state.message = 'พบรายการที่เซิร์ฟเวอร์ยืนยันแล้ว ไม่ได้ตัดสต็อกซ้ำ';
-    state.pendingId = null;
-    localStorage.removeItem(storageKey());
-    state.error = false;
-    await refreshLots();
-    return setMessage('ตรวจพบรายการที่บันทึกสำเร็จแล้ว: ไม่ตัดสต็อกซ้ำ', false);
-  }
-  state.error = true;
-  // A timed-out request could still be committing. Never clear the idempotency
-  // key merely because a single read did not find a sale yet.
-  setMessage('ยังไม่พบผลรายการ อาจกำลังประมวลผล ห้ามสร้างรายการใหม่: ส่งซ้ำด้วย ID เดิม หรือติดต่อผู้จัดการตรวจสอบ', true);
-}
+async function verifyPending() { await runCheckout('verify'); }
 async function logout() {
+  if (state.busy) return;
   await api.auth.signOut();
   state.user = null;
   state.store = null;
@@ -527,8 +566,21 @@ async function logout() {
   state.message = '';
   state.lastSale = null;
   state.pendingId = null;
+  state.checkout = null;
+  state.pendingBlocked = false;
+  state.discount = '0';
   render();
 }
+window.addEventListener('storage', event => {
+  if (state.checkout && (event.key?.startsWith(state.checkout.key) || event.key === null)) {
+    const hadPending = state.pendingId;
+    const op = restorePending();
+    if (!op && (hadPending || event.key?.endsWith('.completed'))) {
+      state.cart.clear(); state.discount = '0'; state.authRef = '';
+    }
+    render();
+  }
+});
 window.addEventListener('online', () => {
   if (state.store) refreshLots();
   else render();
