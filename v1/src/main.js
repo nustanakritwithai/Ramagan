@@ -1018,6 +1018,7 @@ async function loadProfile(user,{current:sessionCurrent=()=>true,role:expectedRo
     restoreInventoryPending();
     state.saleVoid=createSaleVoid({storage:localStorage,
       identity:{api:client.base,store:state.store.id,actor:user.id},transport:client.saleVoidTransport,
+      allowRedactedCosts:usesRedactedCosts(state.role,state.capabilities),
       uuid:()=>crypto.randomUUID(),lock:navigator.locks?(key,task)=>navigator.locks.request(key,{ifAvailable:true},held=>{
         if(!held)throw new Error('อีกหน้าต่างกำลังตรวจสอบคำขอยกเลิก');
         if(!profileCurrent())throw new Error('การปลดล็อกเปลี่ยนแล้ว ต้องเก็บคำขอเดิมไว้');return task();

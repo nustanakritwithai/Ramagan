@@ -340,8 +340,15 @@ class SaleVoidTests(unittest.TestCase):
                 self.assertEqual(response.headers["cache-control"], "no-store")
                 self.assertEqual(response.json()["reason"], payload["reason"])
                 before = self.state()
-                lookup = wire.get("/v1/sale-voids/by-client/" + payload["client_void_id"], headers=self.headers["owner"])
+                lookup = wire.get("/v1/sale-voids/by-client/" + payload["client_void_id"], headers=self.headers["manager"])
                 self.assertEqual(lookup.json(), {**response.json(), "duplicate": True})
+                owner_lookup = wire.get("/v1/sale-voids/by-client/" + payload["client_void_id"], headers=self.headers["owner"])
+                self.assertEqual(owner_lookup.status_code, 200, owner_lookup.text)
+                self.assertEqual(owner_lookup.json()["restored_items"][0]["inventory_delta_satang"], 333)
+                projected_owner = {**owner_lookup.json(), "restored_items": [
+                    {key: value for key, value in item.items() if key != "inventory_delta_satang"}
+                    for item in owner_lookup.json()["restored_items"]]}
+                self.assertEqual(projected_owner, lookup.json())
                 self.assertEqual(wire.get("/v1/sales/" + sale["sale_id"], headers=self.headers["staff"]).json()["status"], "voided")
                 self.assertEqual(wire.post("/v1/stocktakes", headers=self.headers["owner"], json=stale).status_code, 409)
                 self.unchanged(before)

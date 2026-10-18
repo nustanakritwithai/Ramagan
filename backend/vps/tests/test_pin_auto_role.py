@@ -41,7 +41,7 @@ class AutomaticRolePinTests(unittest.TestCase):
             self.assertTrue(profile["capabilities"]["auto_role_pin"])
             self.assertEqual(profile["capabilities"]["auto_role_pin_contract_version"], 1)
             report = self.client.get("/v1/admin/sales-report", headers=headers)
-            self.assertEqual(report.status_code, 403 if role == "staff" else 200)
+            self.assertEqual(report.status_code, 200 if role == "owner" else 403)
         self.assertEqual(len(actors), 3)
         self.assertNotIn(self.owner_id, actors)
         self.assertEqual(before, self.role_rows())

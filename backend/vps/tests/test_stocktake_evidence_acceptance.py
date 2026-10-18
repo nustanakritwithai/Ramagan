@@ -654,7 +654,7 @@ class StocktakeEvidenceAcceptanceTests(unittest.TestCase):
         self.enable_fixture()
         sale = self.client.post("/v1/sales", headers=self.headers["staff"], json=self.sale_payload(lots))
         self.assertEqual(sale.status_code, 200, sale.text)
-        for actor in ("owner", "manager"):
+        for actor in ("owner",):
             report = self.client.get("/v1/admin/sales-report", headers=self.headers[actor])
             self.assertEqual(report.status_code, 200, report.text)
             summary = report.json()["summary"]
@@ -668,6 +668,7 @@ class StocktakeEvidenceAcceptanceTests(unittest.TestCase):
                 self.assertEqual(sum(row["subtotal_satang"] for row in rows), 30000)
                 self.assertEqual(sum(row["discount_satang"] for row in rows), 100)
                 self.assertEqual(sum(row["total_satang"] for row in rows), 29900)
+        self.assertEqual(self.client.get("/v1/admin/sales-report", headers=self.headers["manager"]).status_code, 403)
         self.assertEqual(self.client.get("/v1/admin/sales-report", headers=self.headers["staff"]).status_code, 403)
 
     def test_strict_split_types_bounds_methods_and_sum_reject_without_business_mutation(self):

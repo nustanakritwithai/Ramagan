@@ -62,3 +62,28 @@ test('Redacted intake still rejects wrong UUID or quantity and preserves the pen
   f.transport.reconcile=async p=>({status:'completed',result:{...f.response(p),client_receive_id:'wrong'}});
   const result=await f.op().start(f.payload);assert(result.pending);assert.equal(f.op().read().status,'pending');
 });
+
+test('Manager reload purges legacy confirmed intake and count result costs while preserving exact frozen intents',async()=>{
+  const f=intake({legacyCost:1234});await f.op().start(f.payload);
+  const stored=JSON.parse(f.map.get(f.key));stored.result.cost_satang_per_gram=1234;
+  stored.result.inventory_value_satang=1234;f.map.set(f.key,JSON.stringify(stored));
+  const frozen=structuredClone(stored.payload),read=f.op().read();
+  assert.deepEqual(read.payload,frozen);assert.deepEqual(read.result,withoutPrivateCosts(stored.result));
+  assert.deepEqual(JSON.parse(f.map.get(f.key)),read);
+  const lookup=await f.op().verify();assert.deepEqual(lookup.op.result,read.result);
+  assert.deepEqual(lookup.result,read.result);await f.op().acknowledge();assert.equal(f.op().read(),null);
+
+  const id='55555555-5555-4555-8555-555555555555',lot='44444444-4444-4444-8444-444444444444';
+  const payload={client_stocktake_id:id,shift_label:'synthetic',reason:'',
+    items:[{lot_id:lot,expected_revision:3,counted_quantity_mg:1000}]};
+  const result={id,client_stocktake_id:id,actor_user_id:f.identity.actor,shift_label:'synthetic',reason:'',duplicate:false,
+    items:[{lot_id:lot,counted_quantity_mg:1000,system_quantity_mg:2000,variance_mg:-1000,
+      stock_revision_before:3,stock_revision_after:4,inventory_delta_satang:-1234,cost_satang_per_gram:1234}]};
+  const key=inventoryPendingKey(f.identity,'stocktake');
+  f.map.set(key,JSON.stringify({version:1,kind:'stocktake',status:'confirmed',uncertain:true,
+    identity:f.identity,payload,result}));
+  const op=createInventoryOperation({storage:{getItem:k=>f.map.get(k)??null,setItem:(k,v)=>f.map.set(k,v),removeItem:k=>f.map.delete(k)},
+    identity:f.identity,kind:'stocktake',transport:{},lock:(_,task)=>task(),allowRedactedCosts:true});
+  const count=op.read();assert.deepEqual(count.payload,payload);assert.deepEqual(count.result,withoutPrivateCosts(result));
+  assert.deepEqual(JSON.parse(f.map.get(key)),count);assert.deepEqual((await op.verify()).op.result,count.result);
+});

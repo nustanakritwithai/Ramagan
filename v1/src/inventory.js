@@ -118,7 +118,16 @@ export function createInventoryOperation({storage, identity, kind, transport, uu
   function read() {
     const raw = storage.getItem(key);
     if (!raw) return null;
-    return validate(JSON.parse(raw));
+    const stored = JSON.parse(raw);
+    const op = validate(allowRedactedCosts && stored?.result ?
+      {...stored, result: withoutPrivateCosts(stored.result)} : stored);
+    const text = JSON.stringify(op);
+    if (allowRedactedCosts && text !== raw) {
+      if (storage.getItem(key) !== raw) fail('รายการสต็อกค้างเปลี่ยนไป ให้ตรวจสอบรายการเดิม');
+      storage.setItem(key, text);
+      if (storage.getItem(key) !== text) fail('บันทึกรายการสต็อกเดิมไม่ได้ ต้องตรวจสอบรายการเดิม');
+    }
+    return op;
   }
   function persist(op) {
     validate(op);
