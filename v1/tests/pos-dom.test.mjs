@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {webcrypto} from 'node:crypto';
 import {JSDOM, VirtualConsole} from 'jsdom';
+import {fakeIndexedDB} from './fake-idb.mjs';
 
 // Offline integration of real main.js, REST bridge, math and checkout modules.
 // Only browser services and HTTP responses are synthetic; this is not layout,
@@ -15,7 +16,8 @@ const product = '44444444-4444-4444-8444-444444444444';
 const lot2 = '55555555-5555-4555-8555-555555555555';
 const countId = '66666666-6666-4666-8666-666666666666';
 const inventoryCaps = {discounts: true, discount_contract_version: 1, inventory_costs: true,
-  cost_contract_version: 1, stocktakes: true, stocktake_contract_version: 1,
+  cost_contract_version: 1, stocktakes: true, stocktake_contract_version: 2,
+  stocktake_evidence:true,evidence_contract_version:1,split_payments:true,payment_contract_version:1,
   optional_document_references: true, document_contract_version: 1};
 function inventoryFixture(changes = {}) {
   const products = [{id: product, sku: 'MOCK', name: 'Mock stock', category: 'fixture',
@@ -28,7 +30,7 @@ function inventoryFixture(changes = {}) {
       expires_on: '2000-01-01', stock_revision: 0, cost_satang_per_gram: null, inventory_value_satang: null}];
   return fixture({capabilities: inventoryCaps, inventory: {products, lots, summary: {quantity_mg: 11000,
     known_inventory_value_satang: 0, inventory_value_satang: null, unknown_cost_lot_count: 1}},
-    receipts: [], countPosts: [], productPosts: [], history: [], ...changes});
+    receipts: [], countPosts: [], productPosts: [], history: [], uploads:[], idb:fakeIndexedDB(), ...changes});
 }
 const mainURL = new URL('../src/main.js', import.meta.url);
 const source = (await readFile(mainURL, 'utf8'))
@@ -53,6 +55,7 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
     url: 'https://pos.example.test/Ramagan/v1/', virtualConsole
   });
   const w = dom.window;
+  Object.defineProperty(w,'indexedDB',{value:f.idb||fakeIndexedDB()});
   if (snapshot) {
     for (const [k, v] of snapshot.local) w.localStorage.setItem(k, v);
     for (const [k, v] of snapshot.session) w.sessionStorage.setItem(k, v);
@@ -79,7 +82,15 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
       if (f.failCatalog) { status = 503; data = {detail: 'mock refresh failure'}; }
       else data = {products: f.inventory?.products || [], lots: [{id: lot, lot_code: 'MOCK-1', sku: 'MOCK',
         name: 'Mock stock', price_satang_per_gram: 20000, active: true,
-        product_active: true, quantity_mg: 10000}]};
+        product_active: true, quantity_mg: f.catalogQuantity ?? 10000}]};
+    } else if (path.startsWith('/v1/stocktake-evidence/') && options.method==='POST') {
+      const upload=path.split('/').at(-1);f.uploads.push({id:upload,body:options.body,query:parsed.search});
+      if(f.failUpload)throw new TypeError('mock lost upload response');
+      data={evidence_id:upload,client_upload_id:upload,client_stocktake_id:parsed.searchParams.get('client_stocktake_id'),
+        lot_id:parsed.searchParams.get('lot_id'),mime:'image/jpeg',byte_size:4,width:1,height:1,sha256:'fixture',duplicate:false,created_at:'2026-10-18T01:00:00Z'};
+    } else if(path.startsWith('/v1/stocktake-evidence/')&&options.method==='GET'){
+      f.photoReads ||= [];f.photoReads.push({url,authorization:options.headers.Authorization});
+      return new Response(new Blob(['jpeg'],{type:'image/jpeg'}),{status:200,headers:{'Content-Type':'image/jpeg','Cache-Control':'no-store'}});
     } else if (path === '/v1/inventory') data = f.inventory;
     else if (path === '/v1/stocktakes' && options.method !== 'POST') data = {stocktakes: f.history};
     else if (path === '/v1/products' && options.method === 'POST') {
@@ -102,7 +113,8 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
           const row = f.inventory.lots.find(l => l.id === x.lot_id);
           return {lot_id: x.lot_id, lot_code: row.lot_code, system_quantity_mg: row.quantity_mg,
             counted_quantity_mg: x.counted_quantity_mg, variance_mg: x.counted_quantity_mg - row.quantity_mg,
-            stock_revision_before: x.expected_revision, stock_revision_after: x.expected_revision + 1};
+            stock_revision_before: x.expected_revision, stock_revision_after: x.expected_revision + 1,
+            evidence:x.evidence_id?{evidence_id:x.evidence_id}:null};
         })};
     } else if (path.startsWith('/v1/stocktakes/by-client/')) {
       f.historyRequests = (f.historyRequests || 0) + 1;
@@ -120,7 +132,8 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
       if (f.failPost) throw new TypeError('Mock network interruption');
       f.committed ||= {sale_id: 'mock-sale', client_sale_id: p.client_sale_id,
         subtotal_satang: f.subtotal, discount_satang: p.discount_satang,
-        total_satang: f.subtotal - p.discount_satang};
+        total_satang: f.subtotal - p.discount_satang,
+        ...(p.payment_method==='split'?{payment_method:'split',payments:p.payments}:{})};
       data = f.committed;
     } else if (path.startsWith('/v1/sales/by-client/')) {
       data = f.committed;
@@ -138,12 +151,19 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
   const app = {
     q: s => w.document.querySelector(s), text: () => w.document.body.textContent,
     click(s) { const n = this.q(s); assert(n, `Missing ${s}`); n.click(); },
+    menu(s) {
+      for(let i=0;i<4&&!this.q(s);i++)this.click('#pos-back');
+      this.click(s);
+    },
+    eventClick(s) {this.q(s).dispatchEvent(new w.Event('click',{bubbles:true}));},
+    key(value) {w.document.dispatchEvent(new w.KeyboardEvent('keydown',{key:value,bubbles:true}));},
     input(s, value, event = 'input') {
       const n = this.q(s); assert(n, `Missing ${s}`); n.value = value;
       n.dispatchEvent(new w.Event(event, {bubbles: true}));
     },
     submit(s) { this.q(s).dispatchEvent(new w.Event('submit', {bubbles: true, cancelable: true})); },
     check(s, checked = true) { const node = this.q(s); node.checked = checked; node.dispatchEvent(new w.Event('change', {bubbles: true})); },
+    photo(s,blob=new Blob(['jpeg'],{type:'image/jpeg'})){const n=this.q(s);Object.defineProperty(n,'files',{value:[blob],configurable:true});n.dispatchEvent(new w.Event('change',{bubbles:true}));},
     snapshot: () => ({local: Object.entries(w.localStorage), session: Object.entries(w.sessionStorage)}),
     setLocal: (key, value) => w.localStorage.setItem(key, value),
     close() {
@@ -154,14 +174,16 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
       assert.deepEqual(errors, [], 'Unhandled DOM errors');
     }
   };
-  await until(() => app.q(configured ? (signedIn ? '[data-add]' : '#login-form') : '#server-form'));
+  await until(() => app.q(configured ? (signedIn ? '[data-add], #checkout' : '#login-form') : '#server-form'));
   return app;
 }
 function fillCart(app, discount = '0') {
-  app.click('[data-add]'); app.input('#auth-ref', 'MOCK-DOC'); app.input('#discount', discount);
+  if(app.q('#pos-back')&&!app.q('[data-add]'))app.click('#pos-back');
+  app.click('[data-add]');app.input('#quantity-input','1');app.click('#quantity-confirm');app.click('#open-ticket');
+  app.input('#discount',discount);app.click('#ticket-pay');app.input('#cash-received','1000000');app.input('#auth-ref','MOCK-DOC');
 }
 function assertLocked(app) {
-  for (const s of ['[data-add]', '[data-remove]', '#discount', '#payment', '#auth-ref', '#checkout']) {
+  for (const s of ['[data-payment=cash]', '[data-payment=transfer]', '#auth-ref', '#checkout']) {
     assert.equal(app.q(s)?.disabled, true, `${s} must be locked`);
   }
 }
@@ -182,15 +204,16 @@ test('discount UI validates invalid, zero, decimal and full-bill amounts', async
   const f = fixture(), app = await boot(f);
   try {
     fillCart(app);
+    app.click('#pos-back');
     for (const v of ['-1', '0.001', '200.01', 'not-money', '1e2']) {
-      app.input('#discount', v); assert.equal(app.q('#checkout').disabled, true, v);
+      app.input('#discount', v); assert.equal(app.q('#ticket-pay').disabled, true, v);
       assert(app.q('#preview .danger'));
     }
     for (const v of ['0', '1', '175.50', '200']) {
-      app.input('#discount', v); assert.equal(app.q('#checkout').disabled, false, v);
+      app.input('#discount', v); assert.equal(app.q('#ticket-pay').disabled, false, v);
     }
     assert.match(app.q('#preview').textContent, /0\.00/);
-    app.click('#checkout'); await until(() => app.q('.success'));
+    app.click('#ticket-pay');app.click('#checkout'); await until(() => app.q('.success'));
     assert.equal(f.posts[0].discount_satang, 20000); assert.equal(f.committed.total_satang, 0);
     assert.equal(app.q('#retry'), null);
   } finally { app.close(); }
@@ -201,27 +224,27 @@ test('pending bill locks edits, restores on restart, retries frozen payload and 
   const f = fixture({failPost: true, holdPost: new Promise(resolve => { release = resolve; })});
   let app = await boot(f);
   try {
-    fillCart(app, '175.50'); app.input('#payment', 'transfer', 'change'); app.click('#checkout');
+    fillCart(app, '175.50'); app.click('[data-payment=transfer]'); app.click('#checkout');
     await until(() => f.posts.length === 1); assertLocked(app);
     release(); f.holdPost = null;
     await until(() => app.q('#retry') && !app.q('#retry').disabled); assertLocked(app);
     const saved = app.snapshot(), pending = saved.local.find(([k]) => k.startsWith('ramagan.v1.pending.v2.'));
     assert(pending); assert(!pending[1].includes('offline-test-token'));
     app.close(); app = null; app = await boot(f, saved);
-    assert.equal(app.q('#discount').value, '175.50'); assert.equal(app.q('#payment').value, 'transfer');
+    app.click('#open-ticket');assert.equal(app.q('#discount').value, '175.50');assert.equal(app.q('#discount').disabled,true);app.click('#ticket-pay'); assert(app.q('[data-payment=transfer]').classList.contains('selected'));
     assert.equal(app.q('#auth-ref').value, 'MOCK-DOC'); assertLocked(app);
     // Synthetic events bypassing disabled controls still cannot alter intent.
-    app.input('#discount', '0'); app.input('#payment', 'cash', 'change'); app.input('#auth-ref', 'CHANGED');
+    app.eventClick('[data-payment=cash]'); app.input('#auth-ref', 'CHANGED');
     f.failPost = false; f.failCatalog = true; f.subtotal = 21000;
     app.click('#retry'); await until(() => app.q('.success') && !app.q('#retry'));
     assert.equal(f.posts.length, 2); assert.deepEqual(f.posts[1], f.posts[0]);
     assert.equal(f.posts[1].discount_satang, 17550);
     assert.match(app.q('.success').textContent, /210\.00/); assert.match(app.q('.success').textContent, /34\.50/);
     assert.match(app.text(), /ราคาปัจจุบันต่างจากประมาณการ/); assert.match(app.text(), /รีเฟรชสต็อกไม่สำเร็จ/);
-    assert.equal(app.q('#discount').value, '0'); assert.equal(app.q('#checkout').disabled, true);
+    assert.equal(app.q('#catalog-pay').disabled, true);
     assert.equal(app.q('[data-remove]'), null);
     assert(!app.snapshot().local.some(([k]) => k.startsWith('ramagan.v1.pending.v2.') && !k.endsWith('.completed')));
-    app.click('#checkout'); app.click('#refresh'); await until(() => /mock refresh failure/.test(app.text()));
+    app.click('#catalog-pay'); app.click('#refresh'); await until(() => /mock refresh failure/.test(app.text()));
     assert.equal(f.posts.length, 2, 'Refresh must not resubmit a completed bill');
   } finally { app?.close(); }
 });
@@ -229,8 +252,8 @@ test('pending bill locks edits, restores on restart, retries frozen payload and 
 test('legacy capability disables discount input but supports zero-discount checkout', async () => {
   const f = fixture({capabilities: false}), app = await boot(f);
   try {
-    fillCart(app); assert.equal(app.q('#discount').disabled, true); assert.match(app.text(), /ใช้ได้เฉพาะส่วนลด 0 บาท/);
-    app.click('#checkout'); await until(() => app.q('.success')); assert.equal(f.posts[0].discount_satang, 0);
+    fillCart(app);app.click('#pos-back'); assert.equal(app.q('#discount').disabled, true); assert.match(app.text(), /ใช้ได้เฉพาะส่วนลด 0 บาท/);
+    app.click('#ticket-pay');app.click('#checkout'); await until(() => app.q('.success')); assert.equal(f.posts[0].discount_satang, 0);
   } finally { app.close(); }
 });
 
@@ -238,11 +261,12 @@ test('owner and manager see inventory and reports; cashier sees sales only', asy
   for (const role of ['owner', 'manager', 'cashier']) {
     const f = fixture({role}), app = await boot(f);
     try {
+      app.click('#pos-back');
       assert.equal(Boolean(app.q('#open-inventory')), role !== 'cashier', role);
       assert.equal(Boolean(app.q('.admin-link')), role !== 'cashier', role);
       if (role !== 'cashier') {
-        app.click('#open-inventory'); assert(app.q('#new-product')); assert(app.q('#receive-lot'));
-        app.click('#open-sales'); assert(app.q('#discount'));
+        app.menu('#open-inventory'); assert(app.q('#new-product')); assert(app.q('#receive-lot'));
+        app.click('#open-sales'); assert(app.q('[data-add]'));
       }
       assert.equal(f.posts.length, 0);
     } finally { app.close(); }
@@ -255,15 +279,18 @@ function fillReceipt(app, document = '') {
   app.input('#receive-lot [name=supplier_document_ref]', document);
   app.input('#receive-lot [name=qty]', '5000.001');
 }
-function fillCount(app, quantity = '0') {
+async function fillCount(app, quantity = '0') {
   app.input('#count-reason', 'นับก่อนเข้ากะ');
   app.input('[data-count="' + lot + '"]', quantity);
+  await until(()=>!/กำลังบันทึก/.test(app.q('#count-validation').textContent));
+  app.photo('[data-photo="'+lot+'"]');
+  await until(()=>/อัปโหลดรูปแล้ว/.test(app.text()));
   app.check('#count-confirm');
 }
 test('manager cost/intake UI preserves unknown versus zero, optional documents and 100000g intake bound', async () => {
   const f = inventoryFixture(), app = await boot(f);
   try {
-    app.click('#open-inventory'); assert.match(app.text(), /ยังไม่ทราบต้นทุน/);
+    app.menu('#open-inventory'); assert.match(app.text(), /ยังไม่ทราบต้นทุน/);
     assert.match(app.text(), /ส่วนที่ทราบต้นทุน/); assert.match(app.text(), /ค่าเริ่มต้นสินค้า:.*0\.00/);
     for (const [value, expected] of [['', null], ['0', 0], ['175.50', 17550]]) {
       app.input('#new-product [name=sku]', 'QA'); app.input('#new-product [name=name]', 'Synthetic');
@@ -287,12 +314,12 @@ test('manager cost/intake UI preserves unknown versus zero, optional documents a
 test('stocktake shows inactive/expired lots, selected zero counts and original revision, then clears draft', async () => {
   const f = inventoryFixture(), app = await boot(f);
   try {
-    app.click('#open-stocktake'); assert.match(app.text(), /หมดอายุ/);
+    app.menu('#open-stocktake'); assert.match(app.text(), /หมดอายุ/);
     assert.equal(app.q('[data-count="' + lot2 + '"]').disabled, false);
-    fillCount(app); assert.match(app.q('[data-variance="' + lot + '"]').textContent, /−10/);
+    await fillCount(app); assert.match(app.q('[data-variance="' + lot + '"]').textContent, /−10/);
     assert.equal(app.q('#confirm-count').disabled, false);
     app.submit('#stocktake-form'); await until(() => /ยืนยันการนับและบันทึกประวัติแล้ว/.test(app.text()));
-    assert.deepEqual(f.countPosts[0].items, [{lot_id: lot, expected_revision: 2, counted_quantity_mg: 0}]);
+    assert.equal(f.countPosts[0].items.length,1);assert.equal(f.countPosts[0].items[0].expected_revision,2);assert.equal(f.countPosts[0].items[0].counted_quantity_mg,0);assert.match(f.countPosts[0].items[0].evidence_id,/^[a-f0-9-]{36}$/);
     assert.equal(app.q('[data-count="' + lot + '"]').value, '');
     assert.equal(app.q('#confirm-count').disabled, true); assert.equal(f.posts.length, 0);
   } finally { app.close(); }
@@ -300,15 +327,15 @@ test('stocktake shows inactive/expired lots, selected zero counts and original r
 test('lost stocktake response blocks all new mutations and authoritative stale reconciliation permits recount', async () => {
   const f = inventoryFixture({failCount: true}), app = await boot(f);
   try {
-    app.click('#open-stocktake'); fillCount(app, '9'); app.submit('#stocktake-form');
+    app.menu('#open-stocktake'); await fillCount(app, '9'); app.submit('#stocktake-form');
     await until(() => app.q('[data-inventory-verify]') && !app.q('[data-inventory-verify]').disabled);
     assert.equal(f.countPosts.length, 1);
-    app.click('#open-sales'); fillCart(app); assert.equal(app.q('#checkout').disabled, true);
-    app.click('#checkout'); assert.equal(f.posts.length, 0);
-    app.click('#open-inventory'); assert.equal(app.q('#new-product button').disabled, true);
+    app.click('#open-sales'); assert.equal(app.q('[data-add]').disabled, true);
+    app.click('[data-add]'); assert.equal(f.posts.length, 0);
+    app.menu('#open-inventory'); assert.equal(app.q('#new-product button').disabled, true);
     assert.equal(app.q('#receive-lot button').disabled, true);
     app.submit('#new-product'); app.submit('#receive-lot'); assert.equal(f.productPosts.length, 0); assert.equal(f.receipts.length, 0);
-    app.click('#open-stocktake'); assert.equal(app.q('#confirm-count').disabled, true);
+    app.menu('#open-stocktake'); assert.equal(app.q('#confirm-count').disabled, true);
     f.rejectCount = true; app.click('[data-inventory-verify="stocktake"]');
     await until(() => /Stock changed; reload and recount/.test(app.text()) && !app.q('[data-inventory-verify]'));
     assert.equal(f.countPosts.length, 1); assert.equal(app.q('[data-count="' + lot + '"]').value, '');
@@ -318,7 +345,7 @@ test('lost stocktake response blocks all new mutations and authoritative stale r
 test('lost receipt retries frozen UUID without implicit cancellation; explicit verify safely cancels absent receipt', async () => {
   const f = inventoryFixture({failReceipt: true}), app = await boot(f);
   try {
-    app.click('#open-inventory'); fillReceipt(app); app.submit('#receive-lot');
+    app.menu('#open-inventory'); fillReceipt(app); app.submit('#receive-lot');
     await until(() => app.q('[data-inventory-retry="receive"]') && !app.q('[data-inventory-retry="receive"]').disabled);
     assert.equal(f.receiptReconciliations || 0, 0);
     app.click('[data-inventory-retry="receive"]');
@@ -326,7 +353,7 @@ test('lost receipt retries frozen UUID without implicit cancellation; explicit v
     assert.deepEqual(f.receipts[0], f.receipts[1]); assert.equal(f.receiptReconciliations || 0, 0);
     assert.match(app.q('[data-inventory-verify="receive"]').textContent, /ยกเลิกถ้ายังไม่บันทึก/);
     app.click('[data-inventory-verify="receive"]');
-    await until(() => !app.q('[data-inventory-verify="receive"]'));
+    await until(() => !app.q('[data-inventory-verify="receive"]')&&!app.q('#receive-lot button').disabled);
     assert.equal(f.receiptReconciliations, 1); assert.equal(app.q('#receive-lot button').disabled, false);
   } finally { app.close(); }
 });
@@ -334,8 +361,8 @@ test('unresolved checkout locks intake/product/count, and fresh storage guard ca
   const f = inventoryFixture({failPost: true}), app = await boot(f);
   try {
     fillCart(app); app.click('#checkout'); await until(() => app.q('#retry') && !app.q('#retry').disabled);
-    app.click('#open-inventory'); assert.equal(app.q('#receive-lot button').disabled, true); assert.equal(app.q('#new-product button').disabled, true);
-    app.click('#open-stocktake'); assert.equal(app.q('[data-count="' + lot + '"]').disabled, true);
+    app.menu('#open-inventory'); assert.equal(app.q('#receive-lot button').disabled, true); assert.equal(app.q('#new-product button').disabled, true);
+    app.menu('#open-stocktake'); assert.equal(app.q('[data-count="' + lot + '"]').disabled, true);
   } finally { app.close(); }
   const g = inventoryFixture(), next = await boot(g);
   try {
@@ -353,7 +380,7 @@ test('history shows per-lot offsetting variances without changing current draft 
       {lot_id: lot2, lot_code: 'EXPIRED', system_quantity_mg: 1000, counted_quantity_mg: 2000, variance_mg: 1000}]};
   const f = inventoryFixture({historyDetail, history: [{...historyDetail, line_count: 2, variance_mg: 0}]}), app = await boot(f);
   try {
-    app.click('#open-stocktake'); fillCount(app, '8.001');
+    app.menu('#open-stocktake'); await fillCount(app, '8.001');
     const before = app.snapshot(); app.click('[data-history]');
     await until(() => app.q('.stocktake-detail'));
     assert.match(app.q('.stocktake-detail').textContent, /counter@example.test/);
@@ -364,15 +391,16 @@ test('history shows per-lot offsetting variances without changing current draft 
 });
 test('old contract keeps intake document required; staff never receives cost/count controls; optional sale ref honors store flag', async () => {
   const old = inventoryFixture({capabilities: {...inventoryCaps, optional_document_references: false}}), app = await boot(old);
-  try { app.click('#open-inventory'); assert.equal(app.q('[name=supplier_document_ref]').required, true); }
+  try { app.menu('#open-inventory'); assert.equal(app.q('[name=supplier_document_ref]').required, true); }
   finally { app.close(); }
   const staff = inventoryFixture({role: 'staff'}), other = await boot(staff);
-  try { assert.equal(other.q('#open-stocktake'), null); assert.equal(other.q('#open-inventory'), null); assert(!/ต้นทุน/.test(other.text())); }
+  try { other.click('#pos-back');assert.equal(other.q('#open-stocktake'), null); assert.equal(other.q('#open-inventory'), null); assert(!/ต้นทุน/.test(other.text())); }
   finally { other.close(); }
   const noDoc = inventoryFixture({requiresAuthorization: false}), sale = await boot(noDoc);
   try {
+    fillCart(sale);
     assert.match(sale.q('#auth-ref').closest('label').textContent, /ถ้ามี/);
-    sale.click('[data-add]'); sale.click('#checkout'); await until(() => sale.q('.success'));
+    sale.input('#auth-ref',''); sale.click('#checkout'); await until(() => sale.q('.success'));
     assert.equal(noDoc.posts[0].authorization_ref, null);
   } finally { sale.close(); }
 });
@@ -383,9 +411,99 @@ test('history detail arriving after logout cannot render the prior tenant', asyn
       actor_user_id: user, line_count: 1, variance_mg: 0, reason: 'old'}],
     historyDetail: {client_stocktake_id: countId, shift_label: 'PRIVATE OLD TENANT', items: []}}), app = await boot(f);
   try {
-    app.click('#open-stocktake'); app.click('[data-history]'); await until(() => f.historyRequests === 1);
+    app.menu('#open-stocktake'); app.click('[data-history]'); await until(() => f.historyRequests === 1);
     app.click('#logout'); await until(() => app.q('#login-form'));
     release(); await new Promise(resolve => setTimeout(resolve, 30));
     assert.equal(app.q('.stocktake-detail'), null); assert(!/PRIVATE OLD TENANT/.test(app.text()));
   } finally { release(); app.close(); }
+});
+test('equal physical/system count is valid with a photo, and a missing reason is visibly explained',async()=>{
+  const f=inventoryFixture(),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');app.input('[data-count="'+lot+'"]','10');
+    await until(()=>!app.q('#count-validation').textContent.includes('กำลังบันทึก'));
+    app.photo('[data-photo="'+lot+'"]');await until(()=>/อัปโหลดรูปแล้ว/.test(app.text()));app.check('#count-confirm');
+    assert.equal(app.q('#confirm-count').disabled,true);assert.match(app.q('#count-validation').textContent,/เหตุผล/);
+    app.input('#count-reason','นับเท่ากับระบบ');await until(()=>!app.q('#confirm-count').disabled);
+    assert.equal(app.q('[data-variance="'+lot+'"]').textContent,'0 กรัม');
+    app.submit('#stocktake-form');await until(()=>/เซิร์ฟเวอร์ยืนยันการนับและบันทึกประวัติแล้ว/.test(app.text()));
+    assert.equal(f.countPosts[0].items[0].counted_quantity_mg,10000);assert(f.countPosts[0].items[0].evidence_id);
+  }finally{app.close();}
+});
+test('photo draft restores across restart, retries exact upload UUID/bytes and does not block unsent sales',async()=>{
+  const f=inventoryFixture({failUpload:true});let app=await boot(f);
+  try{
+    app.menu('#open-stocktake');app.input('#count-reason','fixture');app.input('[data-count="'+lot+'"]','10');
+    await until(()=>!app.q('#count-validation').textContent.includes('กำลังบันทึก'));
+    app.photo('[data-photo="'+lot+'"]');await until(()=>app.q('[data-photo-upload]')&&!app.q('[data-photo-upload]').disabled);
+    const id=f.uploads[0].id,bytes=await f.uploads[0].body.text(),snapshot=app.snapshot();
+    assert(!snapshot.local.some(([key])=>key.startsWith('ramagan.v1.inventory.v1.')));
+    app.close();app=null;app=await boot(f,snapshot);app.menu('#open-stocktake');
+    assert.equal(app.q('[data-count="'+lot+'"]').value,'10');f.failUpload=false;
+    app.click('[data-photo-upload]');await until(()=>/อัปโหลดรูปแล้ว/.test(app.text()));
+    assert.equal(f.uploads[1].id,id);assert.equal(await f.uploads[1].body.text(),bytes);
+    app.input('[data-count="'+lot+'"]','9');await until(()=>!app.q('.scale-preview'));
+    assert.equal(app.q('#confirm-count').disabled,true);assert.match(app.q('#count-validation').textContent,/รูป|เครื่องชั่ง/);
+    app.click('#open-sales');fillCart(app);assert.equal(app.q('#checkout').disabled,false);
+  }finally{app?.close();}
+});
+test('four POS views support blank-first decimal keypad, cancel, edit/remove and one atomic split bill',async()=>{
+  const f=inventoryFixture(),app=await boot(f);
+  try{
+    assert.equal(app.q('#pos-menu'),null);assert.equal(app.q('#pos-back').getAttribute('aria-expanded'),'false');
+    app.click('#pos-back');assert(app.q('#pos-menu'));assert.equal(app.q('#pos-back').getAttribute('aria-expanded'),'true');
+    app.click('[data-add]');assert.equal(app.q('#pos-menu'),null);assert.equal(app.q('.pos-bottom'),null);assert.equal(app.q('#quantity-input').value,'');
+    app.click('[data-key="2"]');assert.equal(app.q('#quantity-input').value,'2');app.click('#quantity-cancel');
+    assert.match(app.q('#open-ticket').textContent,/0/);
+    app.click('[data-add]');for(const key of ['.','1','2','5'])app.click('[data-key="'+key+'"]');
+    assert.equal(app.q('#quantity-input').value,'0.125');app.click('#quantity-confirm');assert.match(app.q('#catalog-pay').textContent,/25\.00/);
+    app.click('#open-ticket');app.click('[data-edit]');app.click('[data-key="2"]');assert.equal(app.q('#quantity-input').value,'2');
+    app.click('#quantity-confirm');app.click('#open-ticket');app.click('[data-remove]');assert.match(app.q('#open-ticket').textContent,/0/);
+    app.click('#ticket-more');fillCart(app,'1');app.click('[data-payment=split]');
+    assert.equal(app.q('#payment'),null);assert.equal(app.q('#pos-menu'),null);
+    app.input('#split-cash','100');app.input('#split-transfer','99');app.input('#cash-received','200');
+    assert.match(app.q('#change').textContent,/100\.00/);assert.equal(app.q('#checkout').disabled,false);
+    app.click('#checkout');await until(()=>app.q('.success'));
+    assert.equal(f.posts.length,1);assert.equal(f.posts[0].payment_method,'split');
+    assert.deepEqual(f.posts[0].payments,[{payment_method:'cash',amount_satang:10000},{payment_method:'transfer',amount_satang:9900}]);
+    assert.equal(f.posts[0].cash_received,undefined);assert.equal(f.posts[0].items.length,1);
+  }finally{app.close();}
+});
+test('replacing a valid photo immediately blocks confirm before IndexedDB work and requires a new confirmation',async()=>{
+  const f=inventoryFixture(),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');await fillCount(app,'10');assert.equal(app.q('#confirm-count').disabled,false);
+    app.photo('[data-photo="'+lot+'"]',new Blob(['replacement'],{type:'image/jpeg'}));
+    assert.equal(app.q('#confirm-count').disabled,true);app.submit('#stocktake-form');assert.equal(f.countPosts.length,0);
+    await until(()=>f.uploads.length===2&&!app.q('[data-photo="'+lot+'"]').disabled);
+    assert.equal(app.q('#count-confirm').checked,false);assert.equal(app.q('#confirm-count').disabled,true);
+  }finally{app.close();}
+});
+test('history photos use authenticated private Blob requests and legacy lines are visibly marked',async()=>{
+  const f=inventoryFixture({history:[{id:countId,client_stocktake_id:countId,created_at:'2026-10-18T01:00:00Z',shift_label:'Fixture',actor_user_id:user,line_count:2,variance_mg:0,reason:'Count'}],
+    historyDetail:{id:countId,client_stocktake_id:countId,created_at:'2026-10-18T01:00:00Z',shift_label:'Fixture',actor_user_id:user,reason:'Count',items:[
+      {lot_code:'MOCK-1',system_quantity_mg:1000,counted_quantity_mg:1000,variance_mg:0,evidence:{evidence_id:countId}},
+      {lot_code:'LEGACY',system_quantity_mg:1000,counted_quantity_mg:1000,variance_mg:0,evidence:null}]}}),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');app.click('[data-history]');await until(()=>app.q('[data-history-photo]'));
+    assert.match(app.text(),/ไม่มีรูปย้อนหลัง/);app.click('[data-history-photo]');await until(()=>app.q('.stocktake-detail img'));
+    assert.equal(f.photoReads.length,1);assert.equal(f.photoReads[0].authorization,'Bearer offline-test-token');
+    assert(!f.photoReads[0].url.includes('?'));assert.match(app.q('.stocktake-detail img').src,/^blob:/);
+    const blob=app.q('.stocktake-detail img').src;
+    app.click('[data-photo-view]');assert.equal(app.q('#evidence-viewer').getAttribute('aria-modal'),'true');
+    assert.equal(app.q('#evidence-viewer img').src,blob);app.key('Escape');assert.equal(app.q('#evidence-viewer'),null);
+    app.click('[data-photo-view]');app.click('#close-evidence-viewer');assert.equal(app.q('#evidence-viewer'),null);
+    assert.equal(f.photoReads.length,1,'Opening an already-fetched photo must not create another API request');
+    assert(!JSON.stringify(app.snapshot().local).includes('offline-test-token'));
+  }finally{app.close();}
+});
+test('cumulative same-Lot quantity cannot exceed 1000 grams before creating a checkout intent',async()=>{
+  const f=inventoryFixture({catalogQuantity:2000000}),app=await boot(f);
+  try{
+    app.click('[data-add]');app.input('#quantity-input','1000');assert.equal(app.q('#quantity-confirm').disabled,false);
+    app.click('#quantity-confirm');app.click('[data-add]');app.input('#quantity-input','0.001');
+    assert.equal(app.q('#quantity-confirm').disabled,true);assert.match(app.q('#quantity-error').textContent,/1,000/);
+    app.click('#quantity-confirm');assert.equal(f.posts.length,0);
+    assert(!app.snapshot().local.some(([key])=>key.startsWith('ramagan.v1.pending.v2.')));
+  }finally{app.close();}
 });

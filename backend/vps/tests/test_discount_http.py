@@ -148,7 +148,8 @@ class DiscountHttpAcceptanceTests(unittest.TestCase):
                         "id": transfer.json()["sale_id"],
                         "client_sale_id": transfer_request["client_sale_id"],
                         "subtotal_satang": 30000, "discount_satang": 17550,
-                        "total_satang": 12450})
+                        "total_satang": 12450, "payment_method": "transfer",
+                        "payments": [{"payment_method": "transfer", "amount_satang": 12450}]})
                     self.assertEqual(client.post("/v1/sales", headers=headers["staff"],
                         json={**transfer_request, "discount_satang": 100}).status_code, 409)
                     self.assertEqual(client.post("/v1/sales", headers=headers["staff"],
@@ -180,7 +181,7 @@ class DiscountHttpAcceptanceTests(unittest.TestCase):
                     self.assertEqual(caps, {"discounts": True, "discount_contract_version": 1,
                                             "promotions": False, "shift_reconciliation": False, **cost_capabilities()})
                     with connect(db_path) as db:
-                        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
+                        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 4)
                         sql = tuple(db.execute(
                             "SELECT sum(subtotal_satang),sum(discount_satang),sum(total_satang) "
                             "FROM sales WHERE store_id=?", (store,)).fetchone())

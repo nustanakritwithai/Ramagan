@@ -51,7 +51,7 @@ jobs:
       - name: Save exact website build for review
         uses: actions/upload-artifact@v4
         with:
-          name: ramagan-v1-web-cost-stock-TEST
+          name: ramagan-v1-web-evidence-split-TEST
           path: |
             v1/dist/
             BUILD_COMMIT.txt

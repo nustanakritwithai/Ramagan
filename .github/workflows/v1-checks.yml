@@ -27,11 +27,7 @@ jobs:
       - name: Syntax + isolated tests
         run: |
           cd v1
-          node --check src/main.js
-          node --check src/backend-api.js
-          node --check src/math.js
-          node --check src/checkout.js
-          node --check src/inventory.js
+          for source in src/*.js; do node --check "$source"; done
           node --check public/sw.js
           npm test
       - name: Compile website and mobile assets

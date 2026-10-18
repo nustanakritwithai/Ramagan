@@ -1,14 +1,16 @@
 # Ramagan V1 Central API — Windows VPS deployment
 
-> Phase 2 discount candidate: see [DISCOUNT_PHASE2_HANDOFF.md](DISCOUNT_PHASE2_HANDOFF.md).
-> Existing databases require the explicit schema-version-2 offline-copy migration
-> rehearsal; the app will refuse to auto-upgrade legacy storage. A future approved
-> release needs app.py, discounts.py, migrations.py and reports.py together.
-> Earlier CORS/report deployment steps alone do not install this candidate.
-> The VPS remains unchanged and actual sales must remain disabled.
+> This branch adds schema 4: private stocktake photographs and split payments.
+> See [STOCKTAKE_EVIDENCE_CONTRACT.md](STOCKTAKE_EVIDENCE_CONTRACT.md) and
+> [STOCKTAKE_EVIDENCE_HANDOFF.md](STOCKTAKE_EVIDENCE_HANDOFF.md).
+> The app refuses to auto-upgrade an existing database. Rehearse on a private
+> offline copy and verify backup/restore before requesting the service change.
+> Source capabilities do not establish what is installed; inspect `/health` and
+> authenticated `/v1/me` on the actual API. Migrations preserve existing sales and
+> document flags; new stores still default to sales disabled.
 
 
-**TEST / DRAFT only. Not cleared for live regulated retail.**
+**Source candidate. Installing this release requires separate deployment approval.**
 
 Architecture: Python FastAPI, single-authoritative SQLite WAL database, HTTPS
 reverse proxy, shared Vite website and Android Capacitor app. No Supabase.

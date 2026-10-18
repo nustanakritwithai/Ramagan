@@ -66,6 +66,14 @@ def build_sales_report(db, store_id: str, start: date, end: date,
     # Transaction-consistent read snapshot for all report sections.
     db.execute("BEGIN")
     try:
+        payment_rows = {}
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sale_payments'").fetchone():
+            for row in db.execute("""SELECT p.sale_id,p.payment_method,p.amount_satang
+                FROM sale_payments p JOIN sales s ON s.id=p.sale_id
+                WHERE s.store_id=? AND s.created_at>=? AND s.created_at<?
+                ORDER BY p.sale_id,p.payment_method""", (store_id, lower, upper)):
+                payment_rows.setdefault(row["sale_id"], []).append({
+                    "payment_method": row["payment_method"], "amount_satang": row["amount_satang"]})
         cursor = db.execute("""
             SELECT s.id, s.created_at, s.total_satang, s.subtotal_satang,
                    s.discount_satang,
@@ -96,10 +104,19 @@ def build_sales_report(db, store_id: str, start: date, end: date,
             sold_mg += qty
             known_cost_satang += known_cost
             unknown_cost_line_count += missing_cost
-            if row["payment_method"] == "cash":
-                cash_satang += amount
-            elif row["payment_method"] == "transfer":
-                transfer_satang += amount
+            payments = payment_rows.get(row["id"])
+            if payments is None and row["payment_method"] in ("cash", "transfer"):
+                payments = [{"payment_method": row["payment_method"], "amount_satang": amount}]
+            if (not payments or sum(p["amount_satang"] for p in payments) != amount or
+                    (row["payment_method"] == "split" and
+                     ([p["payment_method"] for p in payments] != ["cash", "transfer"] or
+                      any(type(p["amount_satang"]) is not int or p["amount_satang"] <= 0 for p in payments)))):
+                raise ValueError("Recorded sale payment allocations are inconsistent")
+            for payment in payments:
+                if payment["payment_method"] == "cash":
+                    cash_satang += payment["amount_satang"]
+                elif payment["payment_method"] == "transfer":
+                    transfer_satang += payment["amount_satang"]
             days[day]["total_satang"] += amount
             days[day]["subtotal_satang"] += subtotal
             days[day]["discount_satang"] += discount
@@ -113,6 +130,7 @@ def build_sales_report(db, store_id: str, start: date, end: date,
                     "total_satang": amount, "subtotal_satang": subtotal,
                     "discount_satang": discount,
                     "payment_method": row["payment_method"],
+                    "payments": payments,
                     "line_count": int(row["line_count"]), "quantity_mg": qty,
                     "known_cost_satang": known_cost,
                     "unknown_cost_line_count": missing_cost
@@ -190,7 +208,10 @@ def build_sales_report(db, store_id: str, start: date, end: date,
         "capabilities": {
             "discounts": True, "discount_contract_version": 1,
             "inventory_costs": True, "cost_contract_version": 1,
-            "stocktakes": True, "stocktake_contract_version": 1,
+            "stocktakes": True, "stocktake_contract_version": 2,
+            "stocktake_evidence": True, "evidence_contract_version": 1,
+            "split_payments": True, "payment_contract_version": 1,
+            "sale_reconciliation": True, "sale_reconciliation_contract_version": 1,
             "promotions": False,
             "shift_reconciliation": False
         }

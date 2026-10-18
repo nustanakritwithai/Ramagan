@@ -11,6 +11,7 @@ import threading
 import time
 import unittest
 import uuid
+from evidence_fixture import upload_photo
 from zoneinfo import ZoneInfo
 
 _bootstrap=tempfile.TemporaryDirectory(prefix="cost-http-import-")
@@ -58,8 +59,8 @@ class CostStockHttpTests(unittest.TestCase):
                     self.assertTrue(me["capabilities"]["optional_document_references"])
                     self.assertFalse(me["store"]["requires_authorization"])
                     health=client.get("/health").json()
-                    self.assertEqual(health["schema_version"],3)
-                    self.assertEqual(health["version"],"1.2.0-vps-preview")
+                    self.assertEqual(health["schema_version"],4)
+                    self.assertEqual(health["version"],"1.3.0-vps-preview")
                     product=client.post("/v1/products",headers=headers["owner"],json={"sku":"WIRE","name":"SYNTHETIC","category":"fixture","price_satang_per_gram":10000,"default_cost_satang_per_gram":4000})
                     self.assertEqual(product.status_code,200)
                     pid=product.json()["product_id"]
@@ -99,6 +100,7 @@ class CostStockHttpTests(unittest.TestCase):
                     self.assertEqual((row["quantity_mg"],row["stock_revision"],row["cost_satang_per_gram"]),(9000,1,4000))
                     self.assertEqual(inventory.json()["summary"]["inventory_value_satang"],36000)
                     count={"client_stocktake_id":str(uuid.uuid4()),"shift_label":"Morning","reason":"Physical count fixture","items":[{"lot_id":lot,"expected_revision":1,"counted_quantity_mg":8500}]}
+                    count["items"][0]["evidence_id"]=upload_photo(client,headers["owner"],lot,count["client_stocktake_id"])["evidence_id"]
                     count_result=client.post("/v1/stocktakes",headers=headers["owner"],json=count)
                     self.assertEqual(count_result.status_code,200,count_result.text)
                     saved=count_result.json()
@@ -126,6 +128,7 @@ class CostStockHttpTests(unittest.TestCase):
                     self.assertFalse(rejected.json()["committed"])
                     self.assertEqual(client.post("/v1/stocktakes",headers=headers["owner"],json=stale).status_code,409)
                     fresh={**stale,"client_stocktake_id":str(uuid.uuid4()),"items":[{**stale["items"][0],"expected_revision":2}]}
+                    fresh["items"][0]["evidence_id"]=upload_photo(client,headers["owner"],lot,fresh["client_stocktake_id"])["evidence_id"]
                     pending=client.post("/v1/stocktakes/reconcile",headers=headers["owner"],json=fresh)
                     self.assertEqual(pending.status_code,200)
                     self.assertEqual(pending.json()["status"],"pending")

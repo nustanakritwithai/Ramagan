@@ -6,9 +6,10 @@ from typing import Annotated
 
 from fastapi import Depends
 from pydantic import BaseModel, Field, StrictInt
+from stocktake_evidence import METADATA_COLUMNS, metadata as evidence_metadata
 
 COST_CONTRACT_VERSION = 1
-STOCKTAKE_CONTRACT_VERSION = 1
+STOCKTAKE_CONTRACT_VERSION = 2
 COST_STOCK_TABLES = frozenset({"receive_requests", "receive_rejections", "stocktakes", "stocktake_lines", "stocktake_rejections"})
 COST_STOCK_TRIGGERS = frozenset({
     "receive_requests_no_update", "receive_requests_no_delete",
@@ -102,7 +103,10 @@ BEGIN SELECT RAISE(ABORT, 'Immutable intake cost'); END;
 
 def capabilities() -> dict:
     return {"inventory_costs": True, "cost_contract_version": COST_CONTRACT_VERSION,
-            "stocktakes": True, "stocktake_contract_version": STOCKTAKE_CONTRACT_VERSION}
+            "stocktakes": True, "stocktake_contract_version": STOCKTAKE_CONTRACT_VERSION,
+            "stocktake_evidence": True, "evidence_contract_version": 1,
+            "split_payments": True, "payment_contract_version": 1,
+            "sale_reconciliation": True, "sale_reconciliation_contract_version": 1}
 
 
 def inventory_value(cost: int | None, quantity_mg: int) -> int | None:
@@ -166,6 +170,7 @@ class StocktakeLineIn(BaseModel):
     lot_id: uuid.UUID
     expected_revision: StrictInt = Field(ge=0, le=9_000_000_000_000_000_000)
     counted_quantity_mg: StrictInt = Field(ge=0, le=100_000_000)
+    evidence_id: uuid.UUID | None = None  # Legacy completed retries remain valid.
 
 
 class StocktakeIn(BaseModel):
@@ -180,10 +185,15 @@ def stocktake_result(db, header, *, duplicate: bool) -> dict:
     result = {key: header[key] for key in fields}
     result["duplicate"] = duplicate
     result["items"] = [dict(row) for row in db.execute("""
-        SELECT lot_id,lot_code,system_quantity_mg,counted_quantity_mg,variance_mg,
+        SELECT id,lot_id,lot_code,system_quantity_mg,counted_quantity_mg,variance_mg,
                stock_revision_before,stock_revision_after,inventory_delta_satang
           FROM stocktake_lines WHERE stocktake_id=? ORDER BY lot_id
     """, (header["id"],))]
+    for item in result["items"]:
+        row = db.execute("SELECT " + ",".join("e." + name for name in METADATA_COLUMNS.split(",")) +
+            " FROM stocktake_line_evidence l JOIN stocktake_evidence e ON e.id=l.evidence_id "
+            "WHERE l.stocktake_line_id=?", (item.pop("id"),)).fetchone()
+        item["evidence"] = evidence_metadata(row) if row else None
     return result
 
 
@@ -192,11 +202,33 @@ def prepare_stocktake(payload: StocktakeIn, error) -> tuple:
     if not shift or not reason:
         error(422, "Shift label and reason are required")
     items = sorted([{"lot_id": str(line.lot_id), "expected_revision": line.expected_revision,
-                     "counted_quantity_mg": line.counted_quantity_mg} for line in payload.items],
+                     "counted_quantity_mg": line.counted_quantity_mg,
+                     **({"evidence_id": str(line.evidence_id)} if line.evidence_id else {})} for line in payload.items],
                    key=lambda line: line["lot_id"])
     if len({line["lot_id"] for line in items}) != len(items):
         error(422, "Duplicate lot in one stocktake")
     return shift, reason, items, canonical_hash({"shift_label": shift, "reason": reason, "items": items})
+
+
+def validate_evidence(db, items, actor, client_id, error):
+    for item in items:
+        if not item.get("evidence_id"):
+            error(422, "Scale photo evidence required for every counted lot")
+        row = db.execute("SELECT rowid,sha256,byte_size FROM stocktake_evidence WHERE id=? AND store_id=? AND actor_user_id=? "
+            "AND lot_id=? AND client_stocktake_id=?", (item["evidence_id"], actor["store_id"], actor["id"],
+            item["lot_id"], client_id)).fetchone()
+        if not row:
+            error(422, "Evidence does not match this count, lot and actor")
+        digest = hashlib.sha256()
+        length = 0
+        with db.blobopen("stocktake_evidence", "image_blob", row["rowid"], readonly=True) as blob:
+            while chunk := blob.read(65536):
+                digest.update(chunk)
+                length += len(chunk)
+        if length != row["byte_size"] or digest.hexdigest() != row["sha256"]:
+            error(503, "Evidence integrity check failed")
+        if db.execute("SELECT stocktake_line_id FROM stocktake_line_evidence WHERE evidence_id=?", (item["evidence_id"],)).fetchone():
+            error(409, "Evidence already linked to a completed count")
 
 
 def register_stock_routes(app, path, connect, current, require_manager, error, now_utc, uuid_str):
@@ -245,6 +277,7 @@ def register_stock_routes(app, path, connect, current, require_manager, error, n
                     after_value = inventory_value(lot["cost_satang_per_gram"], item["counted_quantity_mg"])
                     delta_value = None if before_value is None else after_value - before_value
                     validated.append((item, lot, delta_value))
+                validate_evidence(db, items, actor, str(payload.client_stocktake_id), error)
                 sid, stamp = uuid_str(), now_utc()
                 db.execute("""INSERT INTO stocktakes(id,store_id,client_stocktake_id,request_hash,
                     shift_label,reason,actor_user_id,actor_email,created_at) VALUES(?,?,?,?,?,?,?,?,?)""",
@@ -263,12 +296,15 @@ def register_stock_routes(app, path, connect, current, require_manager, error, n
                             event_type,quantity_delta_mg,reason,created_at) VALUES(?,?,?,?,?,?,?,?)""",
                             (event, actor["store_id"], item["lot_id"], actor["id"], "ADJUST", delta,
                              "Physical count · " + shift + " · " + reason, stamp))
+                    line_id = uuid_str()
                     db.execute("""INSERT INTO stocktake_lines(id,stocktake_id,lot_id,lot_code,
                         system_quantity_mg,counted_quantity_mg,variance_mg,stock_revision_before,
                         stock_revision_after,inventory_delta_satang,ledger_event_id)
-                        VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (uuid_str(), sid, item["lot_id"], lot["lot_code"],
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (line_id, sid, item["lot_id"], lot["lot_code"],
                         lot["quantity_mg"], item["counted_quantity_mg"], delta, lot["stock_revision"],
                         lot["stock_revision"] + 1, delta_value, event))
+                    db.execute("INSERT INTO stocktake_line_evidence(stocktake_line_id,evidence_id) VALUES(?,?)",
+                               (line_id, item["evidence_id"]))
                 header = db.execute("SELECT * FROM stocktakes WHERE id=?", (sid,)).fetchone()
                 result = stocktake_result(db, header, duplicate=False)
                 db.commit()
@@ -308,6 +344,7 @@ def register_stock_routes(app, path, connect, current, require_manager, error, n
                     if row is None or row["stock_revision"] != item["expected_revision"]:
                         stale = True
                 if not stale:
+                    validate_evidence(db, items, actor, client_id, error)
                     db.rollback()
                     return {"status": "pending", "client_stocktake_id": client_id}
                 result = {"status": "rejected", "client_stocktake_id": client_id, "code": "STOCK_CHANGED",

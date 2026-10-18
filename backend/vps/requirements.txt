@@ -2,3 +2,4 @@ fastapi==0.128.2
 uvicorn==0.40.0
 httpx==0.28.1
 tzdata==2025.2
+Pillow==13.0.0

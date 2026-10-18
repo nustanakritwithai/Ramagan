@@ -14,8 +14,9 @@ import sqlite3
 from typing import Callable
 import uuid
 from cost_stock import COST_STOCK_TABLES, COST_STOCK_TRIGGERS, EXTRA_SCHEMA
+from schema_v4 import SCHEMA_V4, TABLES_V4, TRIGGERS_V4, INDEXES_V4
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 APP_TABLES = frozenset({"stores", "users", "sessions", "products", "lots",
                        "lot_balances", "sales", "sale_lines", "ledger_events"})
 IMMUTABLE_TRIGGERS = frozenset({"ledger_no_update", "ledger_no_delete",
@@ -71,8 +72,38 @@ def _snapshot(db: sqlite3.Connection) -> dict:
         "columns": {t: _columns(db, t) for t in tables},
         "foreign_keys": {t: list(db.execute("PRAGMA foreign_key_list(" + _quote(t) + ")")) for t in tables},
         "indexes": {t: sorted(list(db.execute("PRAGMA index_list(" + _quote(t) + ")")), key=repr) for t in tables},
-        "rows": {t: sorted(list(db.execute("SELECT * FROM " + _quote(t))), key=repr) for t in tables},
+        "rows": {t: _projected_rows(db, t, _columns(db, t)) for t in tables},
     }
+
+
+def _projected_rows(db, table, columns):
+    """Bounded BLOB fingerprints: never retain all photo bytes in a snapshot."""
+    fields = ",".join("CASE WHEN typeof(" + _quote(c) + ")='blob' THEN NULL ELSE " + _quote(c) + " END" for c in columns)
+    flags = ",".join("typeof(" + _quote(c) + ")='blob'" for c in columns)
+    # All app tables use rowid. Unknown WITHOUT ROWID operator tables use their PK.
+    info = list(db.execute("PRAGMA table_info(" + _quote(table) + ")"))
+    table_sql = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()[0]
+    without_rowid = bool(re.search(r"WITHOUT\s+ROWID", table_sql, re.I))
+    keys = [r[1] for r in sorted(info, key=lambda row: row[5]) if r[5]] if without_rowid else ["rowid"]
+    key_fields = ",".join(_quote(key) for key in keys)
+    rows = []
+    for record in db.execute("SELECT " + key_fields + "," + fields + "," + flags + " FROM " + _quote(table)):
+        key_values = tuple(record[:len(keys)])
+        values = list(record[len(keys):len(keys) + len(columns)])
+        blob_flags = record[len(keys) + len(columns):]
+        where = " AND ".join(_quote(key) + "=?" for key in keys)
+        for index, is_blob in enumerate(blob_flags):
+            if not is_blob:
+                continue
+            length = db.execute("SELECT length(" + _quote(columns[index]) + ") FROM " + _quote(table) + " WHERE " + where, key_values).fetchone()[0]
+            digest = hashlib.sha256()
+            for offset in range(0, length, 65536):
+                chunk = db.execute("SELECT substr(" + _quote(columns[index]) + ",?,65536) FROM " + _quote(table) + " WHERE " + where,
+                                   (offset + 1, *key_values)).fetchone()[0]
+                digest.update(chunk)
+            values[index] = ("sqlite_blob_sha256", length, digest.hexdigest())
+        rows.append(tuple(values))
+    return sorted(rows, key=repr)
 
 
 def _integrity_issues(db: sqlite3.Connection) -> list[str]:
@@ -201,6 +232,73 @@ def _cost_schema_objects() -> dict:
         db.close()
 
 
+@lru_cache(maxsize=1)
+def _v4_schema_objects():
+    db = sqlite3.connect(":memory:")
+    try:
+        db.executescript(SCHEMA_V4)
+        return {(row[0], row[1]): row[3] for row in _objects(db)}
+    finally:
+        db.close()
+
+
+def _v4_issues(db):
+    issues = []
+    objects = {(row[0], row[1]): row[3] for row in _objects(db)}
+    normalize = lambda value: re.sub(r"\s+", "", value or "").lower().replace("ifnotexists", "")
+    for key, expected in _v4_schema_objects().items():
+        if normalize(objects.get(key)) != normalize(expected):
+            issues.append("Unexpected evidence/payment schema object: " + key[1])
+    sales_sql = objects.get(("table", "sales"), "")
+    if not re.search(r"payment_method\s+IN\s*\(\s*'cash'\s*,\s*'transfer'\s*,\s*'split'\s*\)", sales_sql, re.I):
+        issues.append("Sales payment CHECK does not support split truthfully")
+    bad_payments = db.execute("""SELECT count(*) FROM sales s WHERE
+        (EXISTS(SELECT 1 FROM sale_payments p WHERE p.sale_id=s.id) AND
+         s.total_satang<>(SELECT sum(p.amount_satang) FROM sale_payments p WHERE p.sale_id=s.id)) OR
+        (s.payment_method='split' AND ((SELECT count(*) FROM sale_payments p WHERE p.sale_id=s.id)<>2 OR
+         EXISTS(SELECT 1 FROM sale_payments p WHERE p.sale_id=s.id AND p.amount_satang<=0))) OR
+        (s.payment_method<>'split' AND EXISTS(SELECT 1 FROM sale_payments p WHERE p.sale_id=s.id AND p.payment_method<>s.payment_method))
+    """).fetchone()[0]
+    if bad_payments:
+        issues.append("Recorded payment allocations do not match sales")
+    for rowid, length, expected_hash in db.execute("SELECT rowid,byte_size,sha256 FROM stocktake_evidence"):
+        digest = hashlib.sha256()
+        actual_length = 0
+        with db.blobopen("stocktake_evidence", "image_blob", rowid, readonly=True) as blob:
+            while chunk := blob.read(65536):
+                actual_length += len(chunk)
+                digest.update(chunk)
+        if actual_length != length or digest.hexdigest() != expected_hash:
+            issues.append("Evidence digest integrity failed")
+            break
+    return issues
+
+
+def _upgrade_sales_check(db, failure_hook):
+    original = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='sales'").fetchone()[0]
+    pattern = r"CHECK\s*\(\s*payment_method\s+IN\s*\(\s*'cash'\s*,\s*'transfer'\s*\)\s*\)"
+    updated, count = re.subn(pattern, "CHECK(payment_method IN ('cash','transfer','split'))", original, flags=re.I)
+    if count != 1:
+        raise SchemaUpgradeRequired({"status": "HOLD", "issues": ["Exact historical cash/transfer CHECK not found"]})
+    updated, count = re.subn(r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"sales"|`sales`|\[sales\]|sales)(?=\s*\()',
+                            "CREATE TABLE __ramagan_sales_v4", updated, count=1, flags=re.I)
+    if count != 1:
+        raise SchemaUpgradeRequired({"status": "HOLD", "issues": ["Sales table SQL cannot be safely rebuilt"]})
+    attachments = list(db.execute("SELECT sql FROM sqlite_master WHERE tbl_name='sales' "
+                                 "AND type IN ('trigger','index') AND sql IS NOT NULL ORDER BY rowid"))
+    columns = ",".join(_quote(name) for name in _columns(db, "sales"))
+    db.execute(updated)
+    db.execute("INSERT INTO __ramagan_sales_v4(" + columns + ") SELECT " + columns + " FROM sales")
+    if failure_hook:
+        failure_hook("after_sales_copy")
+    db.execute("DROP TABLE sales")
+    db.execute("ALTER TABLE __ramagan_sales_v4 RENAME TO sales")
+    for row in attachments:
+        db.execute(row[0])
+    if failure_hook:
+        failure_hook("after_sales_rebuild")
+
+
 def _assessment(db: sqlite3.Connection) -> dict:
     version = db.execute("PRAGMA user_version").fetchone()[0]
     tables = set(_tables(db))
@@ -226,11 +324,11 @@ def _assessment(db: sqlite3.Connection) -> dict:
     triggers = {r[1] for r in _objects(db) if r[0] == "trigger"}
     if not IMMUTABLE_TRIGGERS.issubset(triggers):
         report["issues"].append("Required immutable triggers are missing")
-    if version not in (0, 1, 2, CURRENT_SCHEMA_VERSION):
+    if version not in (0, 1, 2, 3, CURRENT_SCHEMA_VERSION):
         report["issues"].append("Unsupported schema version")
     if version >= 2 and not all_new:
         report["issues"].append("Versioned schema lacks discount fields")
-    if version == CURRENT_SCHEMA_VERSION and (not all_cost or not COST_STOCK_TRIGGERS.issubset(triggers)):
+    if version >= 3 and (not all_cost or not COST_STOCK_TRIGGERS.issubset(triggers)):
         report["issues"].append("Schema version 3 lacks cost/stocktake fields or immutable triggers")
     try:
         report["issues"].extend(_integrity_issues(db))
@@ -242,14 +340,23 @@ def _assessment(db: sqlite3.Connection) -> dict:
             report["issues"].extend(_v2_schema_issues(db))
         if all_cost:
             report["issues"].extend(_v3_issues(db))
+        any_v4 = bool(tables & TABLES_V4)
+        all_v4 = TABLES_V4.issubset(tables)
+        if any_v4 and not all_v4:
+            report["issues"].append("Partial evidence/payment schema")
+        if all_v4:
+            report["issues"].extend(_v4_issues(db))
+        elif version == 4:
+            report["issues"].append("Schema version 4 lacks evidence/payment tables")
     except sqlite3.DatabaseError:
         report["issues"].append("Schema cannot satisfy the required money proof")
-    report["classification"] = "cost_stock_v3" if all_cost else ("discount_v2" if all_new else "legacy")
+    report["classification"] = "evidence_payments_v4" if tables.issuperset(TABLES_V4) else ("cost_stock_v3" if all_cost else ("discount_v2" if all_new else "legacy"))
     report["table_counts"] = {t: db.execute("SELECT count(*) FROM " + _quote(t)).fetchone()[0] for t in sorted(tables)}
     if not report["issues"]:
-        if all_new and all_cost and version == CURRENT_SCHEMA_VERSION:
+        if all_new and all_cost and tables.issuperset(TABLES_V4) and version == CURRENT_SCHEMA_VERSION:
             report["status"] = "READY"
-        elif (none_new and not any_cost and version in (0, 1)) or (all_new and not any_cost and version == 2):
+        elif ((none_new and not any_cost and version in (0, 1)) or (all_new and not any_cost and version == 2) or
+              (all_new and all_cost and not tables.intersection(TABLES_V4) and version == 3)):
             report["status"] = "UPGRADE_REQUIRED"
             report["issues"] = ["Schema upgrade requires explicit backed-up offline-copy migration"]
         else:
@@ -338,13 +445,15 @@ def _copy_guard(path: Path, confirmed: bool) -> None:
 def _preservation_issues(db: sqlite3.Connection, before: dict) -> list[str]:
     after = _snapshot(db)
     issues = []
-    if not set(before["rows"]).issubset(after["rows"]) or set(after["rows"]) - set(before["rows"]) - COST_STOCK_TABLES:
+    if not set(before["rows"]).issubset(after["rows"]) or set(after["rows"]) - set(before["rows"]) - COST_STOCK_TABLES - TABLES_V4:
         issues.append("Original table set changed unexpectedly")
     original_objects = {(r[0], r[1]): r for r in before["objects"]}
     current_objects = {(r[0], r[1]): r for r in after["objects"]}
     allowed_new = ({("table", name) for name in COST_STOCK_TABLES} |
                    {("trigger", name) for name in COST_STOCK_TRIGGERS} |
                    {("index", "stocktakes_store_created")})
+    allowed_new |= ({("table", name) for name in TABLES_V4} | {("trigger", name) for name in TRIGGERS_V4} |
+                    {("index", name) for name in INDEXES_V4})
     if not set(original_objects).issubset(current_objects) or set(current_objects) - set(original_objects) - allowed_new:
         issues.append("Original schema object set changed unexpectedly")
     for key, original in original_objects.items():
@@ -352,8 +461,7 @@ def _preservation_issues(db: sqlite3.Connection, before: dict) -> list[str]:
             issues.append("Original trigger/index/view/other-table SQL changed")
             break
     for table, columns in before["columns"].items():
-        projection = ",".join(_quote(c) for c in columns)
-        rows = sorted(list(db.execute("SELECT " + projection + " FROM " + _quote(table))), key=repr)
+        rows = _projected_rows(db, table, columns)
         if repr(rows) != repr(before["rows"][table]):
             issues.append("Original row fields changed in " + table)
         if after["foreign_keys"][table] != before["foreign_keys"][table] or after["indexes"][table] != before["indexes"][table]:
@@ -369,6 +477,10 @@ def migrate_copy(path: str | Path, *, confirmed_offline_copy: bool = False,
     _copy_guard(target, confirmed_offline_copy)
     db = _open(target, readonly=False)
     try:
+        db.execute("PRAGMA foreign_keys=OFF")
+        db.execute("PRAGMA legacy_alter_table=ON")
+        if db.execute("PRAGMA foreign_keys").fetchone()[0] != 0:
+            raise RuntimeError("Offline rebuild could not disable foreign keys before BEGIN")
         db.execute("BEGIN IMMEDIATE")
         before = _snapshot(db)
         if _expected_snapshot is not None and before != _expected_snapshot:
@@ -400,29 +512,38 @@ def migrate_copy(path: str | Path, *, confirmed_offline_copy: bool = False,
                 failure_hook("after_backfill")
             db.execute("ALTER TABLE sale_lines ADD COLUMN line_discount_satang INTEGER NOT NULL DEFAULT 0 "
                        "CHECK(line_discount_satang >= 0 AND line_subtotal_satang = line_total_satang + line_discount_satang)")
-        for table, name in (("products", "default_cost_satang_per_gram"), ("lots", "cost_satang_per_gram"),
-                            ("sale_lines", "unit_cost_satang_per_gram")):
-            db.execute("ALTER TABLE " + table + " ADD COLUMN " + name + " INTEGER CHECK(" + name +
-                " IS NULL OR (typeof(" + name + ")='integer' AND " + name + " BETWEEN 0 AND 100000000))")
-        db.execute("ALTER TABLE sale_lines ADD COLUMN line_cost_satang INTEGER CHECK("
-            "(line_cost_satang IS NULL AND unit_cost_satang_per_gram IS NULL) OR "
-            "(typeof(line_cost_satang)='integer' AND line_cost_satang>=0 AND unit_cost_satang_per_gram IS NOT NULL))")
-        db.execute("ALTER TABLE lot_balances ADD COLUMN stock_revision INTEGER NOT NULL DEFAULT 0 "
-                   "CHECK(typeof(stock_revision)='integer' AND stock_revision BETWEEN 0 AND 9000000000000000000)")
-        if failure_hook:
-            failure_hook("after_cost_ddl")
-        for statement in _schema_statements(EXTRA_SCHEMA):
+        if report["classification"] in ("legacy", "discount_v2"):
+            for table, name in (("products", "default_cost_satang_per_gram"), ("lots", "cost_satang_per_gram"),
+                                ("sale_lines", "unit_cost_satang_per_gram")):
+                db.execute("ALTER TABLE " + table + " ADD COLUMN " + name + " INTEGER CHECK(" + name +
+                    " IS NULL OR (typeof(" + name + ")='integer' AND " + name + " BETWEEN 0 AND 100000000))")
+            db.execute("ALTER TABLE sale_lines ADD COLUMN line_cost_satang INTEGER CHECK("
+                "(line_cost_satang IS NULL AND unit_cost_satang_per_gram IS NULL) OR "
+                "(typeof(line_cost_satang)='integer' AND line_cost_satang>=0 AND unit_cost_satang_per_gram IS NOT NULL))")
+            db.execute("ALTER TABLE lot_balances ADD COLUMN stock_revision INTEGER NOT NULL DEFAULT 0 "
+                       "CHECK(typeof(stock_revision)='integer' AND stock_revision BETWEEN 0 AND 9000000000000000000)")
+            if failure_hook:
+                failure_hook("after_cost_ddl")
+            for statement in _schema_statements(EXTRA_SCHEMA):
+                db.execute(statement)
+            if failure_hook:
+                failure_hook("after_cost_tables")
+        _upgrade_sales_check(db, failure_hook)
+        for statement in _schema_statements(SCHEMA_V4):
             db.execute(statement)
         if failure_hook:
-            failure_hook("after_cost_tables")
+            failure_hook("after_evidence_ddl")
         issues = (_preservation_issues(db, before) + _integrity_issues(db) +
-                  _money_issues(db, v2=True) + _v2_schema_issues(db) + _v3_issues(db))
+                  _money_issues(db, v2=True) + _v2_schema_issues(db) + _v3_issues(db) + _v4_issues(db))
         if issues:
             raise SchemaUpgradeRequired({"status": "HOLD", "issues": issues})
         db.execute(f"PRAGMA user_version={CURRENT_SCHEMA_VERSION}")
         if failure_hook:
             failure_hook("after_version")
         db.commit()
+        db.execute("PRAGMA foreign_keys=ON")
+        if db.execute("PRAGMA foreign_keys").fetchone()[0] != 1 or list(db.execute("PRAGMA foreign_key_check")):
+            raise RuntimeError("Offline foreign key proof failed after commit")
         return {"status": "PASS", "changed": True, "schema_version": CURRENT_SCHEMA_VERSION,
                 "original_fields_preserved": True, "immutable_triggers_preserved": True,
                 "foreign_keys": "PASS", "integrity": "PASS", "historical_costs": "UNKNOWN_PRESERVED",
@@ -431,6 +552,10 @@ def migrate_copy(path: str | Path, *, confirmed_offline_copy: bool = False,
         db.rollback()
         raise
     finally:
+        if db.in_transaction:
+            db.rollback()
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute("PRAGMA legacy_alter_table=OFF")
         db.close()
 
 
@@ -452,10 +577,14 @@ def _verified_copy(source: Path, destination: Path) -> dict:
         dst = sqlite3.connect(destination, isolation_level=None)
         try:
             src.execute("BEGIN")
+            source_report = _assessment(src)
+            if source_report["status"] == "HOLD":
+                raise SchemaUpgradeRequired(source_report)
             expected = _snapshot(src)
             src.backup(dst)
             actual = _snapshot(dst)
-            issues = _integrity_issues(dst)
+            target_report = _assessment(dst)
+            issues = _integrity_issues(dst) + (target_report["issues"] if target_report["status"] == "HOLD" else [])
             if actual != expected or issues:
                 raise SchemaUpgradeRequired({"status": "HOLD", "issues": issues or ["Backup schema/rows/version differ from source snapshot"]})
             return expected
@@ -491,7 +620,7 @@ def backup_and_migrate_copy(path: str | Path, backup_directory: str | Path, *,
     if report["status"] != "UPGRADE_REQUIRED":
         raise SchemaUpgradeRequired(report)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    backup = directory / ("ramagan-before-v3-" + uuid.uuid4().hex + ".sqlite3")
+    backup = directory / ("ramagan-before-v4-" + uuid.uuid4().hex + ".sqlite3")
     expected = _verified_copy(target, backup)
     clone = directory / ("restore-proof-" + uuid.uuid4().hex + ".sqlite3")
     try:
