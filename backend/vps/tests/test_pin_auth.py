@@ -197,7 +197,7 @@ class SharedRolePinTests(unittest.TestCase):
             statuses = list(pool.map(attempt, range(8)))
         self.assertEqual(sorted(statuses), [401] * 5 + [429] * 3)
         with connect(self.path) as db:
-            self.assertEqual([r[0] for r in db.execute("SELECT fail_count FROM device_auth_limits WHERE kind IN ('store_role','device_role','device')")], [5, 5, 5])
+            self.assertEqual([r[0] for r in db.execute("SELECT fail_count FROM device_auth_limits WHERE (kind='store_role' AND role<>'') OR kind IN ('device_role','device')")], [5, 5, 5])
 
     def test_success_for_another_role_cannot_reset_owner_guessing_budget(self):
         first, second = self.enroll(), self.enroll("Second")
@@ -247,7 +247,7 @@ class SharedRolePinTests(unittest.TestCase):
         with connect(self.path) as db:
             db.execute("UPDATE users SET role='owner' WHERE id=?", (uid,))
         self.assertEqual(self.client.get("/v1/me", headers=headers).status_code, 401)
-        self.assertEqual(self.unlock(device, "staff").status_code, 401)
+        self.assertEqual(self.unlock(device, "staff").status_code, 409)
 
     def test_other_store_owner_cannot_revoke_device_and_credential_expires_at_ninety_days(self):
         device = self.enroll()
