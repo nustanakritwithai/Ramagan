@@ -28,6 +28,15 @@ export function money(satang) {
   const [whole, fraction] = fixedUnits(satang).split('.');
   return '฿' + new Intl.NumberFormat('th-TH').format(BigInt(whole)) + '.' + fraction;
 }
+// Profit may be negative after a discount; costs and revenue remain nonnegative.
+export function profitMoney(satang) {
+  if (!Number.isSafeInteger(satang)) return '—';
+  return (satang < 0 ? '−' : '') + money(Math.abs(satang));
+}
+export function signedFixedUnits(value, digits = 2) {
+  if (!Number.isSafeInteger(value)) return '—';
+  return (value < 0 ? '-' : '') + fixedUnits(Math.abs(value), digits);
+}
 export function grams(mg) {
   const value = mg;
   if (!isAmount(value)) return '—';
@@ -75,6 +84,9 @@ export function escapeCsvCell(value) {
 export function supportsDiscounts(capabilities) {
   return capabilities?.discounts === true && capabilities?.discount_contract_version === 1;
 }
+export function supportsInventoryCosts(capabilities) {
+  return capabilities?.inventory_costs === true && capabilities?.cost_contract_version === 1;
+}
 function requireAmount(value) {
   if (!isAmount(value)) throw new Error('ข้อมูลรายงานไม่ครบหรือจำนวนเงินไม่ถูกต้อง กรุณาตรวจสอบ VPS');
   return value;
@@ -96,6 +108,33 @@ function moneyRow(row, supported, legacyGross = false) {
     net: supported ? row.total_satang : null
   };
 }
+function costRow(row, supported) {
+  const unavailable = {cost:null, knownCost:null, profit:null, costComplete:null, unknownCostLines:null};
+  if (!supported) return {...row, ...unavailable};
+  requireAmount(row.known_cost_satang);
+  requireAmount(row.unknown_cost_line_count);
+  if (typeof row.cost_complete !== 'boolean' || row.cost_complete !== (row.unknown_cost_line_count === 0)) {
+    throw new Error('สถานะความครบถ้วนต้นทุนจาก VPS ไม่ตรงกับจำนวนรายการที่ไม่ทราบต้นทุน');
+  }
+  if (row.cost_complete) {
+    requireAmount(row.cost_satang);
+    requireAmount(row.total_satang);
+    if (row.cost_satang !== row.known_cost_satang || !Number.isSafeInteger(row.gross_profit_satang)
+        || BigInt(row.total_satang) - BigInt(row.cost_satang) !== BigInt(row.gross_profit_satang)) {
+      throw new Error('ต้นทุนหรือกำไรขั้นต้นหลังส่วนลดไม่ตรงกับยอดสุทธิจาก VPS');
+    }
+  } else if (row.cost_satang !== null || row.gross_profit_satang !== null) {
+    throw new Error('ต้นทุนไม่ครบ: VPS ต้องไม่สรุปต้นทุนรวมหรือกำไรจากข้อมูลบางส่วน');
+  }
+  return {...row, cost:row.cost_satang, knownCost:row.known_cost_satang,
+    profit:row.gross_profit_satang, costComplete:row.cost_complete,
+    unknownCostLines:row.unknown_cost_line_count};
+}
+export function costCoverage(row) {
+  if (row?.costComplete === null || row?.costComplete === undefined) return 'ยังไม่รองรับต้นทุน contract v1';
+  return row.costComplete ? 'ต้นทุนครบ' :
+    'ไม่ทราบต้นทุน ' + row.unknownCostLines + ' บรรทัด · ต้นทุนที่ทราบ ' + money(row.knownCost);
+}
 // Validate an entire response before rendering anything. Never partially replace
 // a previous snapshot with new totals or infer zero from absent fields.
 export function prepareReport(data) {
@@ -105,12 +144,15 @@ export function prepareReport(data) {
     if (!Array.isArray(data[key])) throw new Error('ข้อมูลรายงานไม่ครบจาก VPS: ' + key);
   }
   const supported = supportsDiscounts(data.capabilities);
-  const summary = moneyRow(data.summary, supported);
+  // Profit is defined against confirmed net revenue, so both contracts must be known.
+  const costsSupported = supported && supportsInventoryCosts(data.capabilities);
+  const prepareRow = (row, legacyGross = false) => costRow(moneyRow(row, supported, legacyGross), costsSupported);
+  const summary = prepareRow(data.summary);
   for (const key of ['sale_count','cash_satang','transfer_satang','quantity_mg','average_satang']) requireAmount(summary[key]);
   const daily = data.daily.map(row => {
     requireAmount(row.sale_count); requireAmount(row.quantity_mg);
     if (typeof row.date !== 'string' || row.date < data.period.from || row.date > data.period.to) throw new Error('วันที่รายงานไม่ตรงกับช่วงที่เลือก');
-    return moneyRow(row, supported);
+    return prepareRow(row);
   });
   const expectedDays = (Date.parse(data.period.to) - Date.parse(data.period.from)) / 86400000 + 1;
   if (daily.length !== expectedDays || new Set(daily.map(row => row.date)).size !== expectedDays) throw new Error('รายวันไม่ครบหรือมีวันที่ซ้ำจาก VPS');
@@ -121,17 +163,27 @@ export function prepareReport(data) {
       if (daily.reduce((sum,row) => sum + BigInt(row[key]), 0n) !== BigInt(summary[key])) throw new Error('ยอดรายวันไม่ตรงกับยอดรวมจาก VPS');
     }
   }
-  return {...data, supported, summary, daily,
-    top_products: data.top_products.map(row => moneyRow(row, supported, true)),
-    top_categories: data.top_categories.map(row => moneyRow(row, supported, true)),
-    recent_sales: data.recent_sales.map(row => moneyRow(row, supported))
+  if (costsSupported) {
+    for (const key of ['known_cost_satang', 'unknown_cost_line_count']) {
+      if (daily.reduce((sum,row) => sum + BigInt(row[key]), 0n) !== BigInt(summary[key])) {
+        throw new Error('ต้นทุนหรือจำนวนรายการที่ไม่ทราบต้นทุนรายวันไม่ตรงกับยอดรวมจาก VPS');
+      }
+    }
+  }
+  return {...data, supported, costsSupported, summary, daily,
+    top_products: data.top_products.map(row => prepareRow(row, true)),
+    top_categories: data.top_categories.map(row => prepareRow(row, true)),
+    recent_sales: data.recent_sales.map(row => prepareRow(row))
   };
 }
 export function dailyCsv(report) {
-  const headings = ['วันที่ (Asia/Bangkok)', 'จำนวนบิล', 'ก่อนส่วนลด (บาท)', 'ส่วนลด (บาท)', 'สุทธิ (บาท)', 'ตัดสต็อก (กรัม)', 'สถานะส่วนลด'];
+  const headings = ['วันที่ (Asia/Bangkok)', 'จำนวนบิล', 'ก่อนส่วนลด (บาท)', 'ส่วนลด (บาท)', 'สุทธิ (บาท)', 'ตัดสต็อก (กรัม)', 'สถานะส่วนลด',
+    'ต้นทุนที่ทราบ (บาท)', 'ต้นทุนขายรวม (บาท)', 'กำไรขั้นต้นหลังส่วนลด (บาท)', 'บรรทัดไม่ทราบต้นทุน', 'สถานะต้นทุน'];
   const lines = [headings];
   const supported = supportsDiscounts(report?.capabilities);
+  const costsSupported = supported && supportsInventoryCosts(report?.capabilities);
   for (const d of report?.daily || []) {
+    const costs = costRow(d, costsSupported);
     lines.push([
       d.date,
       isAmount(d.sale_count) ? d.sale_count : '—',
@@ -139,7 +191,9 @@ export function dailyCsv(report) {
       supported ? fixedUnits(d.discount_satang) : '—',
       supported ? fixedUnits(d.total_satang) : '—',
       fixedUnits(d.quantity_mg, 3),
-      supported ? 'contract v1' : 'ไม่รองรับ / ไม่ทราบ'
+      supported ? 'contract v1' : 'ไม่รองรับ / ไม่ทราบ',
+      fixedUnits(costs.knownCost), fixedUnits(costs.cost), signedFixedUnits(costs.profit),
+      costs.unknownCostLines ?? '—', costCoverage(costs)
     ]);
   }
   return '\ufeff' + lines.map((line) => line.map(escapeCsvCell).join(',')).join('\r\n');

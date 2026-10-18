@@ -1,6 +1,6 @@
 import {
   normalizeApiBase, isReportRole, money, grams, gramsToMgAllowZero,
-  bangkokDay, verifyPeriod, dailyCsv, prepareReport
+  bangkokDay, verifyPeriod, dailyCsv, prepareReport, profitMoney, costCoverage
 } from './lib.js';
 
 const $ = (id) => document.getElementById(id);
@@ -47,13 +47,14 @@ function setBusy(value) {
 function wipeReport() {
   report = null;
   for (const id of ['metric-gross', 'metric-discount', 'metric-sales', 'metric-orders', 'metric-cash',
-    'metric-transfer', 'metric-grams', 'metric-average', 'period-label']) {
+    'metric-transfer', 'metric-grams', 'metric-average', 'metric-known-cost', 'metric-cost', 'metric-profit', 'period-label']) {
     $(id).textContent = '—';
   }
   for (const id of ['daily-chart', 'daily-rows', 'top-products', 'top-categories',
     'low-stock-rows', 'recent-sales']) $(id).replaceChildren();
   $('export-csv').disabled = true;
   $('discount-status').textContent = 'ยังไม่มีรายงานที่ยืนยันจาก VPS';
+  $('cost-status').textContent = 'ยังไม่มีรายงานต้นทุนที่ยืนยันจาก VPS';
 }
 function setHealthLink(base) {
   const link = $('health-open-link');
@@ -223,6 +224,13 @@ function formatTime(value) {
     hour:'2-digit', minute:'2-digit'
   }).format(d);
 }
+function costColumns(row) {
+  return [
+    {value:currency(row.cost),right:true},
+    {value:profitMoney(row.profit),right:true},
+    {value:costCoverage(row)}
+  ];
+}
 function renderReport(value) {
   const summary = value.summary;
   $('metric-gross').textContent = currency(summary.gross);
@@ -236,25 +244,33 @@ function renderReport(value) {
   $('metric-transfer').textContent = currency(value.supported ? summary.transfer_satang : null);
   $('metric-grams').textContent = quantity(summary.quantity_mg);
   $('metric-average').textContent = currency(value.supported ? summary.average_satang : null);
+  $('metric-known-cost').textContent = currency(summary.knownCost);
+  $('metric-cost').textContent = currency(summary.cost);
+  $('metric-profit').textContent = profitMoney(summary.profit);
+  $('cost-status').textContent = !value.costsSupported ?
+    'VPS ยังไม่ยืนยัน inventory_costs / cost contract v1 พร้อมยอดสุทธิ discount contract v1 · ต้นทุนและกำไรแสดง —' :
+    summary.costComplete ?
+      'ต้นทุนครบ · กำไรขั้นต้นหลังส่วนลด = ยอดสุทธิ − ต้นทุนขายที่บันทึกตอนขาย · ไม่รวมค่าใช้จ่ายอื่นหรือผลปรับยอดนับสต็อก' :
+      costCoverage(summary) + ' · ต้นทุนขายรวมและกำไรแสดง — เพราะข้อมูลประวัติไม่ครบ';
   $('period-label').textContent = String(value.period.from) + ' ถึง ' + String(value.period.to);
   showDaily(value.daily);
   rows('daily-rows', value.daily, x => [
     {value:x.date}, {value:x.sale_count,right:true},
     {value:currency(x.gross),right:true}, {value:currency(x.discount),right:true},
-    {value:currency(x.net),right:true}
+    {value:currency(x.net),right:true}, ...costColumns(x)
   ]);
   rows('top-products', value.top_products, (x) => [
     {value:String(x.name) + ' · ' + String(x.sku)},
     {value:currency(x.gross),right:true},
     {value:currency(x.discount),right:true},
     {value:currency(x.net),right:true},
-    {value:quantity(x.quantity_mg),right:true}
+    {value:quantity(x.quantity_mg),right:true}, ...costColumns(x)
   ]);
   rows('top-categories', value.top_categories, (x) => [
     {value:x.category}, {value:currency(x.gross),right:true},
     {value:currency(x.discount),right:true},
     {value:currency(x.net),right:true},
-    {value:quantity(x.quantity_mg),right:true}
+    {value:quantity(x.quantity_mg),right:true}, ...costColumns(x)
   ]);
   rows('low-stock-rows', value.low_stock, (x) => [
     {value:String(x.name) + ' · ' + String(x.sku)},
@@ -268,7 +284,7 @@ function renderReport(value) {
     {value:String(x.line_count),right:true},
     {value:currency(x.gross),right:true},
     {value:currency(x.discount),right:true},
-    {value:currency(x.net),right:true}
+    {value:currency(x.net),right:true}, ...costColumns(x)
   ]);
   $('export-csv').disabled = false;
 }

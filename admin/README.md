@@ -107,6 +107,35 @@ Money display and CSV use integer/BigInt formatting without floating money
 arithmetic. CSV includes gross, discount, net and explicit capability status.
 No data, token or user-entered API destination is persisted.
 
+## Cost and gross profit contract (schema 3 branch; deployment required)
+
+Cost reporting requires `capabilities.inventory_costs === true` and
+`capabilities.cost_contract_version === 1`, together with the supported discount
+contract for authoritative net revenue. The report capability governs its own
+snapshot. Older schema 2 reports continue to show gross/discount/net; cost and
+profit stay `—` without assuming a zero cost.
+
+Every summary, daily, product/category ranking and recent-sale row supplies
+`known_cost_satang`, `cost_satang`, `gross_profit_satang`,
+`unknown_cost_line_count`, and boolean `cost_complete`. Known costs come from
+immutable sale-line snapshots, not a product's current default cost. Complete
+costs equal the known subtotal; gross profit equals net revenue minus cost and
+may be negative after a discount. Explicit zero cost is known zero.
+
+If any included line has unknown historical cost, total cost and gross profit
+must both be null. The page shows the number of unknown lines and the known
+cost subtotal separately; it never presents partial cost as full profit. Empty
+groups have explicit zero cost/profit. Daily known costs and unknown-line counts
+must reconcile with the summary before anything is rendered. Missing or invalid
+fields in a claimed supported contract fail closed and clear stale figures/CSV.
+
+Daily CSV includes known cost, complete cost, signed gross profit, unknown-line
+count and coverage status. Profit excludes other operating expenses and stocktake
+inventory gains/losses. This branch does not enable promotions, restart services,
+migrate a live database or deploy GitHub Pages by itself.
+
+    node --test tests/admin-gh-pages.test.mjs tests/admin-costs.test.mjs
+
 ### Offline QA
 
     node --check admin/lib.js
