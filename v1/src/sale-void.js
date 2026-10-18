@@ -49,21 +49,30 @@ export function createSaleVoid({storage,identity,transport,uuid,lock,allowRedact
     if(op.status==='confirmed')op={...op,result:validateVoid(op.result,op,allowRedactedCosts)};
     return op;
   }
-  const read=()=>{
+  const read=()=>{const raw=storage.getItem(key);return raw===null?null:validate(JSON.parse(raw));};
+  function cleanupLocked(){
     const raw=storage.getItem(key);
     if(raw===null)return null;
     const op=validate(JSON.parse(raw)),clean=JSON.stringify(op);
     // An older confirmed result may contain Owner financial fields. A lower
-    // role must neither display them nor leave them in its durable cache.
+    // role sees a projection in RAM. Purge its durable result only while owning
+    // the same WebLock used by every operation on this slot.
     if(allowRedactedCosts===true&&op.status==='confirmed'&&clean!==raw){
-      if(storage.getItem(key)!==raw)fail('รายการค้างเปลี่ยนไป กรุณาตรวจสอบรายการเดิม');
       storage.setItem(key,clean);
       if(storage.getItem(key)!==clean)fail('บันทึกเลขยกเลิกไม่ได้ จึงยังไม่ส่งคำขอ');
     }
     return op;
-  };
+  }
   function persist(op){op=validate(op);const raw=JSON.stringify(op);storage.setItem(key,raw);if(storage.getItem(key)!==raw)fail('บันทึกเลขยกเลิกไม่ได้ จึงยังไม่ส่งคำขอ');return JSON.parse(raw);}
-  function exclusive(task){if(!lock)fail('อุปกรณ์นี้ยังล็อกรายการอย่างปลอดภัยไม่ได้');return lock(key,task);}
+  function exclusive(task){if(!lock)fail('อุปกรณ์นี้ยังล็อกรายการอย่างปลอดภัยไม่ได้');return lock(key,()=>{cleanupLocked();return task();});}
+  async function sanitize(){
+    const raw=storage.getItem(key);
+    if(raw===null)return null;
+    const stored=JSON.parse(raw),op=validate(stored);
+    if(!(allowRedactedCosts===true&&stored.status==='confirmed'&&
+        JSON.stringify(stored.result)!==JSON.stringify(op.result)))return op;
+    return exclusive(()=>read());
+  }
   async function capabilities(){if(!supportsSaleVoids(await transport.capabilities(identity)))fail('API ยังไม่รองรับการยกเลิกใบเสร็จรุ่นนี้');}
   function confirmed(data,op){const result=validateVoid(data,op,allowRedactedCosts);return {result,op:persist({...op,status:'confirmed',result})};}
   async function lookup(op){
@@ -85,7 +94,7 @@ export function createSaleVoid({storage,identity,transport,uuid,lock,allowRedact
       return {pending:true,error,op:sending};
     }
   }
-  return {key,read,
+  return {key,read,sanitize,
     start:(receipt,reason)=>exclusive(async()=>{
       if(read())fail('มีคำขอยกเลิกค้าง ต้องตรวจสอบรายการเดิมก่อน');
       if(receipt.status==='voided')fail('ใบเสร็จนี้ยกเลิกแล้ว');

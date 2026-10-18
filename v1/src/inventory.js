@@ -112,25 +112,31 @@ export function createInventoryOperation({storage, identity, kind, transport, uu
       fail('รายการสต็อกค้างไม่ถูกต้องหรือเป็นของบัญชีอื่น ให้ผู้จัดการตรวจสอบ');
     }
     validatePayload(kind, op.payload);
-    if (op.status === 'confirmed') validateResult(kind, op.result, op, allowRedactedCosts);
+    if (op.status === 'confirmed') op = {...op, result: validateResult(kind,
+      allowRedactedCosts === true ? withoutPrivateCosts(op.result) : op.result, op, allowRedactedCosts)};
     return op;
   }
   function read() {
     const raw = storage.getItem(key);
     if (!raw) return null;
-    const stored = JSON.parse(raw);
-    const op = validate(allowRedactedCosts && stored?.result ?
-      {...stored, result: withoutPrivateCosts(stored.result)} : stored);
-    const text = JSON.stringify(op);
-    if (allowRedactedCosts && text !== raw) {
-      if (storage.getItem(key) !== raw) fail('รายการสต็อกค้างเปลี่ยนไป ให้ตรวจสอบรายการเดิม');
-      storage.setItem(key, text);
-      if (storage.getItem(key) !== text) fail('บันทึกรายการสต็อกเดิมไม่ได้ ต้องตรวจสอบรายการเดิม');
-    }
-    return op;
+    // Synchronous display reads never write: check-then-set is not an atomic
+    // cross-tab CAS and could overwrite another tab's newer frozen intent.
+    return validate(JSON.parse(raw));
+  }
+  function needsCleanup(stored, projected) {
+    return allowRedactedCosts === true && stored?.status === 'confirmed' &&
+      JSON.stringify(stored.result) !== JSON.stringify(projected.result);
+  }
+  function sanitizeLocked() {
+    // Only invoked while holding the SAME operation lock as start/retry/ack.
+    // Re-read here; never write the stale value observed before lock acquisition.
+    const raw = storage.getItem(key);
+    if (!raw) return null;
+    const stored = JSON.parse(raw), projected = validate(stored);
+    return needsCleanup(stored, projected) ? persist(projected) : projected;
   }
   function persist(op) {
-    validate(op);
+    op = validate(op);
     const text = JSON.stringify(op);
     storage.setItem(key, text);
     if (storage.getItem(key) !== text) fail('บันทึกเลขอ้างอิงสต็อกไม่ได้ จึงยังไม่ส่งรายการ');
@@ -138,7 +144,7 @@ export function createInventoryOperation({storage, identity, kind, transport, uu
   }
   function exclusive(task) {
     if (!lock) fail('เบราว์เซอร์นี้ไม่รองรับการล็อกรายการอย่างปลอดภัย');
-    return lock(key, task);
+    return lock(key, async () => { sanitizeLocked(); return task(); });
   }
   async function capabilities() {
     const c = await transport.capabilities(identity);
@@ -190,6 +196,13 @@ export function createInventoryOperation({storage, identity, kind, transport, uu
   }
   return {key,
     read: () => { const op = read(); observed = storage.getItem(completedKey); return op; },
+    sanitize: async () => {
+      const raw = storage.getItem(key);
+      if (!raw) return null;
+      const stored = JSON.parse(raw), projected = validate(stored);
+      if (!needsCleanup(stored, projected)) return projected;
+      return exclusive(() => read());
+    },
     start: payload => exclusive(async () => {
       if (storage.getItem(completedKey) !== observed) fail('อีกหน้าต่างบันทึกสต็อกแล้ว กรุณารีโหลดยอดระบบ');
       if (read()) fail('มีรายการสต็อกค้าง ต้องตรวจสอบรายการเดิมก่อน');

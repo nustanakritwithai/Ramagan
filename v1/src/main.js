@@ -1015,7 +1015,6 @@ async function loadProfile(user,{current:sessionCurrent=()=>true,role:expectedRo
       kind, transport: client.inventoryTransport(kind), uuid: () => crypto.randomUUID(), lock,
       allowRedactedCosts:usesRedactedCosts(state.role,state.capabilities)
     });
-    restoreInventoryPending();
     state.saleVoid=createSaleVoid({storage:localStorage,
       identity:{api:client.base,store:state.store.id,actor:user.id},transport:client.saleVoidTransport,
       allowRedactedCosts:usesRedactedCosts(state.role,state.capabilities),
@@ -1023,6 +1022,13 @@ async function loadProfile(user,{current:sessionCurrent=()=>true,role:expectedRo
         if(!held)throw new Error('อีกหน้าต่างกำลังตรวจสอบคำขอยกเลิก');
         if(!profileCurrent())throw new Error('การปลดล็อกเปลี่ยนแล้ว ต้องเก็บคำขอเดิมไว้');return task();
       }):null});
+    if(usesRedactedCosts(state.role,state.capabilities)){
+      for(const controller of [state.receive,state.stocktake,state.saleVoid]){
+        await controller.sanitize();
+        if(!profileCurrent())return;
+      }
+    }
+    restoreInventoryPending();
   }
   state.message = '';
   restorePending();

@@ -36,8 +36,8 @@ function intake({redacted=true,fail=false,legacyCost=null}={}){
   const transport={capabilities:async()=>({inventory_costs:true,cost_contract_version:1,cost_privacy_contract_version:1,can_view_costs:false}),
     post:async p=>{posts.push(structuredClone(p));if(sendingFails)throw Error('synthetic lost response');return response(p);},
     reconcile:async p=>({status:'completed',result:response(p)})};
-  const op=()=>createInventoryOperation({storage,identity,kind:'receive',transport,uuid:()=>id,lock:(_,task)=>task(),allowRedactedCosts:redacted});
-  return {op,map,posts,payload,identity,key:inventoryPendingKey(identity,'receive'),response,transport,release:()=>{sendingFails=false;}};
+  const op=(extra={})=>createInventoryOperation({storage,identity,kind:'receive',transport,uuid:()=>id,lock:(_,task)=>task(),allowRedactedCosts:redacted,...extra});
+  return {op,map,storage,posts,payload,identity,key:inventoryPendingKey(identity,'receive'),response,transport,release:()=>{sendingFails=false;}};
 }
 
 test('Manager redacted intake confirms and persists no cost while Owner validation still requires authoritative cost',async()=>{
@@ -63,12 +63,14 @@ test('Redacted intake still rejects wrong UUID or quantity and preserves the pen
   const result=await f.op().start(f.payload);assert(result.pending);assert.equal(f.op().read().status,'pending');
 });
 
-test('Manager reload purges legacy confirmed intake and count result costs while preserving exact frozen intents',async()=>{
+test('Manager reload reads legacy result costs only in RAM and purges under operation lock preserving exact frozen intents',async()=>{
   const f=intake({legacyCost:1234});await f.op().start(f.payload);
   const stored=JSON.parse(f.map.get(f.key));stored.result.cost_satang_per_gram=1234;
   stored.result.inventory_value_satang=1234;f.map.set(f.key,JSON.stringify(stored));
-  const frozen=structuredClone(stored.payload),read=f.op().read();
+  const raw=f.map.get(f.key),controller=f.op(),frozen=structuredClone(stored.payload),read=controller.read();
   assert.deepEqual(read.payload,frozen);assert.deepEqual(read.result,withoutPrivateCosts(stored.result));
+  assert.equal(f.map.get(f.key),raw,'Synchronous display read must not mutate cross-tab storage');
+  await controller.sanitize();
   assert.deepEqual(JSON.parse(f.map.get(f.key)),read);
   const lookup=await f.op().verify();assert.deepEqual(lookup.op.result,read.result);
   assert.deepEqual(lookup.result,read.result);await f.op().acknowledge();assert.equal(f.op().read(),null);
@@ -84,6 +86,52 @@ test('Manager reload purges legacy confirmed intake and count result costs while
     identity:f.identity,payload,result}));
   const op=createInventoryOperation({storage:{getItem:k=>f.map.get(k)??null,setItem:(k,v)=>f.map.set(k,v),removeItem:k=>f.map.delete(k)},
     identity:f.identity,kind:'stocktake',transport:{},lock:(_,task)=>task(),allowRedactedCosts:true});
-  const count=op.read();assert.deepEqual(count.payload,payload);assert.deepEqual(count.result,withoutPrivateCosts(result));
+  const countRaw=f.map.get(key),count=op.read();assert.deepEqual(count.payload,payload);assert.deepEqual(count.result,withoutPrivateCosts(result));
+  assert.equal(f.map.get(key),countRaw);await op.sanitize();
   assert.deepEqual(JSON.parse(f.map.get(key)),count);assert.deepEqual((await op.verify()).op.result,count.result);
+});
+
+test('Inventory cleanup rereads the current frozen intent under the operation lock and cannot overwrite a newer tab UUID',async()=>{
+  const f=intake({legacyCost:1234});await f.op().start(f.payload);
+  const old=JSON.parse(f.map.get(f.key));old.result.cost_satang_per_gram=1234;f.map.set(f.key,JSON.stringify(old));
+  let release,held=false,locks=0,writes=0;const gate=new Promise(resolve=>{release=resolve;});
+  const originalSet=f.storage.setItem;
+  f.storage.setItem=(key,value)=>{assert.equal(held,true,'Cleanup write requires held operation lock');writes++;originalSet(key,value);};
+  const op=f.op({lock:async(key,task)=>{assert.equal(key,f.key);locks++;await gate;held=true;try{return await task();}finally{held=false;}}});
+  const waiting=op.sanitize();assert.equal(locks,1);assert.equal(writes,0);
+  const newer={...old,status:'pending',payload:{...old.payload,client_receive_id:'66666666-6666-4666-8666-666666666666'}};
+  delete newer.result;const newerRaw=JSON.stringify(newer);f.map.set(f.key,newerRaw);
+  release();const current=await waiting;
+  assert.equal(current.payload.client_receive_id,newer.payload.client_receive_id);
+  assert.equal(f.map.get(f.key),newerRaw);assert.equal(writes,0);assert.equal(f.posts.length,1);
+});
+
+test('Inventory sanitize needs no lock when no legacy confirmed result needs cleanup and refuses unsafe cleanup',async()=>{
+  const f=intake({legacyCost:1234}),noLock=f.op({lock:null});
+  assert.equal(await noLock.sanitize(),null);
+  await f.op().start(f.payload);const cleanRaw=f.map.get(f.key);
+  assert.deepEqual(await noLock.sanitize(),JSON.parse(cleanRaw));assert.equal(f.map.get(f.key),cleanRaw);
+  const old=JSON.parse(cleanRaw);old.result.cost_satang_per_gram=1234;const oldRaw=JSON.stringify(old);f.map.set(f.key,oldRaw);
+  assert.equal(Object.hasOwn(noLock.read().result,'cost_satang_per_gram'),false);assert.equal(f.map.get(f.key),oldRaw);
+  await assert.rejects(noLock.sanitize(),/ล็อก/);assert.equal(f.map.get(f.key),oldRaw);
+  await assert.rejects(f.op({lock:async()=>{throw Error('operation lock held by another tab');}}).sanitize(),/another tab/);
+  assert.equal(f.map.get(f.key),oldRaw);
+  f.storage.setItem=()=>{throw Error('synthetic storage failure');};
+  await assert.rejects(f.op().sanitize(),/storage failure/);assert.equal(f.map.get(f.key),oldRaw);
+});
+
+test('Inventory retry verify and acknowledge scrub legacy results inside their existing lock without changing frozen payloads',async()=>{
+  for(const action of ['retry','verify','acknowledge']){
+    const f=intake({legacyCost:1234});await f.op().start(f.payload);
+    const old=JSON.parse(f.map.get(f.key));old.result.cost_satang_per_gram=1234;f.map.set(f.key,JSON.stringify(old));
+    let held=false,locks=0;const originalSet=f.storage.setItem;
+    f.storage.setItem=(key,value)=>{assert.equal(held,true);originalSet(key,value);};
+    const op=f.op({lock:async(_,task)=>{locks++;held=true;try{return await task();}finally{held=false;}}});
+    const found=await op[action]();assert.equal(locks,1);assert.equal(f.posts.length,1);
+    if(action==='acknowledge')assert.equal(f.map.has(f.key),false);
+    else{
+      assert.deepEqual(found.op.payload,old.payload);assert.deepEqual(JSON.parse(f.map.get(f.key)).payload,old.payload);
+      assert.equal(Object.hasOwn(JSON.parse(f.map.get(f.key)).result,'cost_satang_per_gram'),false);
+    }
+  }
 });
