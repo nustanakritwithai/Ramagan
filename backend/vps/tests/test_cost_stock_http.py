@@ -59,8 +59,8 @@ class CostStockHttpTests(unittest.TestCase):
                     self.assertTrue(me["capabilities"]["optional_document_references"])
                     self.assertFalse(me["store"]["requires_authorization"])
                     health=client.get("/health").json()
-                    self.assertEqual(health["schema_version"],4)
-                    self.assertEqual(health["version"],"1.3.0-vps-preview")
+                    self.assertEqual(health["schema_version"],5)
+                    self.assertEqual(health["version"],"1.4.0-vps-preview")
                     product=client.post("/v1/products",headers=headers["owner"],json={"sku":"WIRE","name":"SYNTHETIC","category":"fixture","price_satang_per_gram":10000,"default_cost_satang_per_gram":4000})
                     self.assertEqual(product.status_code,200)
                     pid=product.json()["product_id"]

@@ -29,7 +29,10 @@ from discounts import (
 from migrations import CURRENT_SCHEMA_VERSION, initialize_database
 from reports import build_sales_report
 from schema_v4 import SCHEMA_V4
+from schema_v5 import SCHEMA_V5
+from pin_auth import DeviceAuth, capabilities as pin_capabilities
 from payments import PaymentIn, normalize_payments, recorded_payments, split_request_hash
+from receipts import capabilities as receipt_capabilities, register_receipt_routes
 from stocktake_evidence import register_evidence_routes
 from cost_stock import (
     COST_CONTRACT_VERSION, STOCKTAKE_CONTRACT_VERSION, EXTRA_SCHEMA,
@@ -37,7 +40,7 @@ from cost_stock import (
     product_rows, register_stock_routes,
 )
 
-APP_VERSION = "1.3.0-vps-preview"
+APP_VERSION = "1.4.0-vps-preview"
 BKK = ZoneInfo("Asia/Bangkok")
 ROLES = ("owner", "manager", "staff")
 DEFAULT_PATH = str(Path.home() / "Ramagan" / "data" / "ramagan.sqlite3")
@@ -155,7 +158,7 @@ BEGIN SELECT RAISE(ABORT, 'Immutable sale lines'); END;
 CREATE INDEX IF NOT EXISTS sales_store_created ON sales(store_id,created_at);
 CREATE INDEX IF NOT EXISTS ledger_store_lot_created ON ledger_events(store_id,lot_id,created_at);
 CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions(user_id);
-""" + EXTRA_SCHEMA + SCHEMA_V4
+""" + EXTRA_SCHEMA + SCHEMA_V4 + SCHEMA_V5
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -292,7 +295,8 @@ def require_manager(actor: dict):
     if actor["role"] not in ("owner", "manager"):
         error(403, "Owner or manager permission required")
 
-def create_app(db_path: str | None = None, origins: list[str] | None = None) -> FastAPI:
+def create_app(db_path: str | None = None, origins: list[str] | None = None,
+               pin_pepper: str | bytes | None = None) -> FastAPI:
     path = str(db_path or os.environ.get("RAMAGAN_DB_PATH") or DEFAULT_PATH)
     init_database(path)
     allowed = origins if origins is not None else [
@@ -306,6 +310,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
     app.state.db_path = path
     app.state.schema_version = CURRENT_SCHEMA_VERSION
     app.state.login_failures = {}
+    device_auth = DeviceAuth(path, connect, verify_password, pin_pepper)
     app.add_middleware(CORSMiddleware, allow_origins=allowed,
                        allow_credentials=False,
                        allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
@@ -325,11 +330,15 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
             error(401, "Invalid session")
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         with connect(path) as db:
+            db.execute("BEGIN")
             row = db.execute("""
               SELECT u.id,u.store_id,u.email,u.role,u.is_active,s.expires_at
                 FROM sessions s JOIN users u ON u.id=s.user_id
                WHERE s.token_hash=? AND s.revoked=0
             """, (token_hash,)).fetchone()
+            if row and not device_auth.valid_session(db, token_hash, row, int(time.time())):
+                row = None
+            db.rollback()
         if not row or not row["is_active"] or row["expires_at"] <= int(time.time()):
             error(401, "Session expired or revoked")
         return dict(row)
@@ -346,7 +355,8 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
                 "discount_contract_version": DISCOUNT_CONTRACT_VERSION,
                 "cost_contract_version": COST_CONTRACT_VERSION,
                 "stocktake_contract_version": STOCKTAKE_CONTRACT_VERSION,
-                "evidence_contract_version": 1, "payment_contract_version": 1}
+                "evidence_contract_version": 1, "payment_contract_version": 1,
+                **pin_capabilities(device_auth.enabled)}
 
     @app.post("/v1/auth/login")
     def login(payload: LoginIn, request: Request):
@@ -401,7 +411,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
             "capabilities": {"discounts": True,
                              "discount_contract_version": DISCOUNT_CONTRACT_VERSION,
                              "optional_document_references": True, "document_contract_version": 1,
-                             **cost_capabilities()},
+                             **cost_capabilities(), **receipt_capabilities(), **pin_capabilities(device_auth.enabled)},
             "store": {**dict(store),
                       "sales_enabled": bool(store["sales_enabled"]),
                       "requires_authorization": bool(store["requires_authorization"])}
@@ -413,7 +423,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
             products = product_rows(db, actor["store_id"],
                                     include_cost=actor["role"] in ("owner", "manager"))
             lots = [dict(r) for r in db.execute("""
-             SELECT l.id,l.lot_code,l.expires_on,l.active,
+             SELECT l.id,l.product_id,l.lot_code,l.expires_on,l.active,
                     p.name,p.sku,p.price_satang_per_gram,p.active AS product_active,
                     b.quantity_mg
                FROM lots l
@@ -778,6 +788,8 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
 
     register_stock_routes(app, path, connect, current, require_manager, error, now_utc, uuid_str)
     register_evidence_routes(app, path, connect, current, require_manager, error, now_utc, uuid_str)
+    register_receipt_routes(app, path, connect, current, error)
+    device_auth.register(app, current)
     return app
 
 app = create_app()

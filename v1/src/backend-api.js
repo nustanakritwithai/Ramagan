@@ -2,7 +2,7 @@
  * Keeps the existing V1 screens compatible with the new self-hosted FastAPI.
  * No Supabase SDK, token, database key or service role is required.
  *
- * Login tokens are kept in sessionStorage (not localStorage). All remote API
+ * Password tokens use sessionStorage; unlocked PIN tokens remain in memory. All remote API
  * writes are verified by server-side roles; UI controls do not grant rights.
  */
 
@@ -37,10 +37,16 @@ export function createClient(serverUrl) {
   const base = validateServerUrl(serverUrl);
   if (!base) throw new Error('ต้องระบุ URL HTTPS ของ Ramagan API');
   const sessionKey = PREFIX + base;
-  let token = sessionStorage.getItem(sessionKey) || '';
+  let token = '';
+  try { token=sessionStorage.getItem(sessionKey)||''; } catch { /* fail closed */ }
+  let memoryPinSession=false;
+  let authGeneration=0;
   const listeners = [];
+  const changedAuth=()=>{const error=new Error('บัญชีหรือการปลดล็อกเปลี่ยนแล้ว กรุณาตรวจสอบรายการเดิม');error.status=401;error.code='AUTH_CONTEXT_CHANGED';return error;};
+  const clearSession=()=>{token='';memoryPinSession=false;++authGeneration;try{sessionStorage.removeItem(sessionKey);return true;}catch{return false;}};
 
-  const request = async (method, endpoint, payload, raw = false, responseKind = 'json') => {
+  const request = async (method, endpoint, payload, raw = false, responseKind = 'json', sendAuth = true) => {
+    const sentToken=sendAuth?token:'',generation=authGeneration;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20000);
     try {
@@ -53,14 +59,19 @@ export function createClient(serverUrl) {
         headers: {
           'Accept': 'application/json',
           ...(payload === undefined ? {} : {'Content-Type': raw ? payload.type : 'application/json'}),
-          ...(token ? {'Authorization': 'Bearer ' + token} : {})
+          ...(sentToken ? {'Authorization': 'Bearer ' + sentToken} : {})
         },
         ...(payload === undefined ? {} : {body: raw ? payload : JSON.stringify(payload)})
       });
-      if (res.ok && responseKind === 'blob') return res.blob();
+      if(sendAuth&&sentToken&&(generation!==authGeneration||sentToken!==token))throw changedAuth();
+      if (res.ok && responseKind === 'blob') {const blob=await res.blob();if(sendAuth&&sentToken&&(generation!==authGeneration||sentToken!==token))throw changedAuth();return blob;}
       let data;
       try { data = await res.json(); } catch { data = null; }
+      if(sendAuth&&sentToken&&(generation!==authGeneration||sentToken!==token))throw changedAuth();
       if (!res.ok) {
+        if(res.status===401&&memoryPinSession&&sentToken&&generation===authGeneration){
+          clearSession();for(const fn of listeners)fn('PIN_LOCKED');
+        }
         const msg = typeof data?.detail === 'string' ? data.detail :
           'HTTP ' + res.status;
         const error = new Error(msg);
@@ -116,7 +127,7 @@ export function createClient(serverUrl) {
             }));
           }
           return catalog.lots.map(l => ({
-            id: l.id, lot_code: l.lot_code, expires_on: l.expires_on, active: !!l.active,
+            id: l.id, product_id:l.product_id, lot_code: l.lot_code, expires_on: l.expires_on, active: !!l.active,
             ramagan_products: {
               name: l.name, sku: l.sku,
               price_satang_per_gram: l.price_satang_per_gram,
@@ -144,6 +155,11 @@ export function createClient(serverUrl) {
   return {
     base,
     health: () => result(() => request('GET', '/health')),
+    receipts: filters => result(() => {
+      const query=new URLSearchParams(Object.entries(filters || {}).filter(([,value])=>value!==undefined&&value!==null&&value!==''));
+      return request('GET','/v1/sales?'+query.toString());
+    }),
+    receipt: id => result(() => request('GET','/v1/sales/'+encodeURIComponent(id))),
     inventory: () => result(() => request('GET', '/v1/inventory')),
     stocktakes: () => result(() => request('GET', '/v1/stocktakes')),
     stocktake: id => result(() => request('GET', '/v1/stocktakes/by-client/' + encodeURIComponent(id))),
@@ -184,6 +200,25 @@ export function createClient(serverUrl) {
       }
     },
     auth: {
+      isPinSession:()=>memoryPinSession,
+      forgetSession:clearSession,
+      deviceStatus: device_credential => result(()=>request('POST','/v1/auth/device/status',{device_credential},false,'json',false)),
+      enrollDevice: payload => result(()=>request('POST','/v1/auth/device/enroll',payload)),
+      revokeDevice: payload => result(()=>request('POST','/v1/auth/device/revoke',payload)),
+      changePins: payload => result(()=>request('POST','/v1/auth/device/pins',payload)),
+      async unlockDevice(payload){
+        return result(async()=>{
+          if(!clearSession())throw new Error('ลบ session เดิมไม่ได้ จึงยังไม่ปลดล็อก PIN');const generation=authGeneration;
+          const data=await request('POST','/v1/auth/device/unlock',payload,false,'json',false);
+          if(generation!==authGeneration)throw changedAuth();
+          if(typeof data?.token!=='string'||data.token.length<32||data.token.length>256||data.auth_method!=='shared_role_pin'||!data.user?.id||!Number.isSafeInteger(data.expires_at))throw new Error('คำตอบปลดล็อกไม่ครบ');
+          sessionStorage.removeItem(sessionKey);token=data.token;memoryPinSession=true;return data;
+        });
+      },
+      async lockDevice(){
+        const response=memoryPinSession?result(()=>request('POST','/v1/auth/device/lock',{})):Promise.resolve({data:{ok:true},error:null});
+        clearSession();return response;
+      },
       async getUser() {
         if (!token) return {data: {user: null}, error: null};
         const check = await result(() => request('GET', '/v1/me'));
@@ -196,18 +231,21 @@ export function createClient(serverUrl) {
         }
         return {data: {user: check.data.user}, error: null};
       },
-      async signInWithPassword({email, password}) {
-        const login = await result(() => request('POST', '/v1/auth/login', {email,password}));
+      async signInWithPassword({email, password, memoryOnly=false}) {
+        if(!clearSession())return {data:null,error:new Error('ลบ session เดิมไม่ได้ กรุณาตรวจพื้นที่จัดเก็บ')};const generation=authGeneration;
+        const login = await result(() => request('POST', '/v1/auth/login', {email,password},false,'json',false));
         if (login.error) return login;
+        if(generation!==authGeneration)return {data:null,error:changedAuth()};
         token = login.data.token;
-        sessionStorage.setItem(sessionKey, token);
+        memoryPinSession=false;
+        try{if(!memoryOnly)sessionStorage.setItem(sessionKey, token);}catch(error){token='';++authGeneration;return {data:null,error};}
         return {data: {user: login.data.user}, error: null};
       },
       async signOut() {
-        await result(() => request('POST', '/v1/auth/logout', {}));
-        token = '';
-        sessionStorage.removeItem(sessionKey);
+        const response=result(() => request('POST', '/v1/auth/logout', {}));
+        clearSession();
         for (const fn of listeners) fn('SIGNED_OUT');
+        await response;
         return {error: null};
       },
       onAuthStateChange(callback) {

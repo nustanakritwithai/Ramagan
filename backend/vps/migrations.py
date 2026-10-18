@@ -15,8 +15,9 @@ from typing import Callable
 import uuid
 from cost_stock import COST_STOCK_TABLES, COST_STOCK_TRIGGERS, EXTRA_SCHEMA
 from schema_v4 import SCHEMA_V4, TABLES_V4, TRIGGERS_V4, INDEXES_V4
+from schema_v5 import SCHEMA_V5, TABLES_V5, TRIGGERS_V5, INDEXES_V5
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 APP_TABLES = frozenset({"stores", "users", "sessions", "products", "lots",
                        "lot_balances", "sales", "sale_lines", "ledger_events"})
 IMMUTABLE_TRIGGERS = frozenset({"ledger_no_update", "ledger_no_delete",
@@ -274,6 +275,36 @@ def _v4_issues(db):
     return issues
 
 
+@lru_cache(maxsize=1)
+def _v5_schema_objects():
+    db = sqlite3.connect(":memory:")
+    try:
+        db.executescript(SCHEMA_V5)
+        return {(row[0], row[1]): row[3] for row in _objects(db)}
+    finally:
+        db.close()
+
+
+def _v5_issues(db):
+    issues = []
+    objects = {(row[0], row[1]): row[3] for row in _objects(db)}
+    normalize = lambda value: re.sub(r"\s+", "", value or "").lower().replace("ifnotexists", "")
+    for key, expected in _v5_schema_objects().items():
+        if normalize(objects.get(key)) != normalize(expected):
+            issues.append("Unexpected device authentication schema object: " + key[1])
+    if db.execute("""SELECT count(*) FROM device_auth_roles r JOIN users u ON u.id=r.actor_user_id
+        WHERE r.store_id<>u.store_id OR r.role<>u.role
+           OR u.password_hash NOT LIKE 'unusable-pin-role-v1$%'""").fetchone()[0]:
+        issues.append("Shared-role actor mapping is inconsistent")
+    if db.execute("SELECT count(*) FROM (SELECT store_id FROM device_auth_roles GROUP BY store_id HAVING count(*)<>3)").fetchone()[0]:
+        issues.append("Partial shared-role PIN enrollment")
+    for (value,) in db.execute("SELECT pin_hash FROM device_auth_roles"):
+        if not re.fullmatch(r"pin-scrypt-v1\$[0-9a-f]{32}\$[0-9a-f]{64}", value):
+            issues.append("Invalid PIN verifier format")
+            break
+    return issues
+
+
 def _upgrade_sales_check(db, failure_hook):
     original = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='sales'").fetchone()[0]
     pattern = r"CHECK\s*\(\s*payment_method\s+IN\s*\(\s*'cash'\s*,\s*'transfer'\s*\)\s*\)"
@@ -324,7 +355,7 @@ def _assessment(db: sqlite3.Connection) -> dict:
     triggers = {r[1] for r in _objects(db) if r[0] == "trigger"}
     if not IMMUTABLE_TRIGGERS.issubset(triggers):
         report["issues"].append("Required immutable triggers are missing")
-    if version not in (0, 1, 2, 3, CURRENT_SCHEMA_VERSION):
+    if version not in (0, 1, 2, 3, 4, CURRENT_SCHEMA_VERSION):
         report["issues"].append("Unsupported schema version")
     if version >= 2 and not all_new:
         report["issues"].append("Versioned schema lacks discount fields")
@@ -346,17 +377,26 @@ def _assessment(db: sqlite3.Connection) -> dict:
             report["issues"].append("Partial evidence/payment schema")
         if all_v4:
             report["issues"].extend(_v4_issues(db))
-        elif version == 4:
+        elif version >= 4:
             report["issues"].append("Schema version 4 lacks evidence/payment tables")
+        any_v5 = bool(tables & TABLES_V5)
+        all_v5 = TABLES_V5.issubset(tables)
+        if any_v5 and not all_v5:
+            report["issues"].append("Partial device authentication schema")
+        if all_v5:
+            report["issues"].extend(_v5_issues(db))
+        elif version >= 5:
+            report["issues"].append("Schema version 5 lacks device authentication tables")
     except sqlite3.DatabaseError:
         report["issues"].append("Schema cannot satisfy the required money proof")
-    report["classification"] = "evidence_payments_v4" if tables.issuperset(TABLES_V4) else ("cost_stock_v3" if all_cost else ("discount_v2" if all_new else "legacy"))
+    report["classification"] = "device_auth_v5" if tables.issuperset(TABLES_V5) else ("evidence_payments_v4" if tables.issuperset(TABLES_V4) else ("cost_stock_v3" if all_cost else ("discount_v2" if all_new else "legacy")))
     report["table_counts"] = {t: db.execute("SELECT count(*) FROM " + _quote(t)).fetchone()[0] for t in sorted(tables)}
     if not report["issues"]:
-        if all_new and all_cost and tables.issuperset(TABLES_V4) and version == CURRENT_SCHEMA_VERSION:
+        if all_new and all_cost and tables.issuperset(TABLES_V4 | TABLES_V5) and version == CURRENT_SCHEMA_VERSION:
             report["status"] = "READY"
         elif ((none_new and not any_cost and version in (0, 1)) or (all_new and not any_cost and version == 2) or
-              (all_new and all_cost and not tables.intersection(TABLES_V4) and version == 3)):
+              (all_new and all_cost and not tables.intersection(TABLES_V4 | TABLES_V5) and version == 3) or
+              (all_new and all_cost and tables.issuperset(TABLES_V4) and not tables.intersection(TABLES_V5) and version == 4)):
             report["status"] = "UPGRADE_REQUIRED"
             report["issues"] = ["Schema upgrade requires explicit backed-up offline-copy migration"]
         else:
@@ -445,7 +485,7 @@ def _copy_guard(path: Path, confirmed: bool) -> None:
 def _preservation_issues(db: sqlite3.Connection, before: dict) -> list[str]:
     after = _snapshot(db)
     issues = []
-    if not set(before["rows"]).issubset(after["rows"]) or set(after["rows"]) - set(before["rows"]) - COST_STOCK_TABLES - TABLES_V4:
+    if not set(before["rows"]).issubset(after["rows"]) or set(after["rows"]) - set(before["rows"]) - COST_STOCK_TABLES - TABLES_V4 - TABLES_V5:
         issues.append("Original table set changed unexpectedly")
     original_objects = {(r[0], r[1]): r for r in before["objects"]}
     current_objects = {(r[0], r[1]): r for r in after["objects"]}
@@ -454,6 +494,8 @@ def _preservation_issues(db: sqlite3.Connection, before: dict) -> list[str]:
                    {("index", "stocktakes_store_created")})
     allowed_new |= ({("table", name) for name in TABLES_V4} | {("trigger", name) for name in TRIGGERS_V4} |
                     {("index", name) for name in INDEXES_V4})
+    allowed_new |= ({("table", name) for name in TABLES_V5} | {("trigger", name) for name in TRIGGERS_V5} |
+                    {("index", name) for name in INDEXES_V5})
     if not set(original_objects).issubset(current_objects) or set(current_objects) - set(original_objects) - allowed_new:
         issues.append("Original schema object set changed unexpectedly")
     for key, original in original_objects.items():
@@ -528,13 +570,18 @@ def migrate_copy(path: str | Path, *, confirmed_offline_copy: bool = False,
                 db.execute(statement)
             if failure_hook:
                 failure_hook("after_cost_tables")
-        _upgrade_sales_check(db, failure_hook)
-        for statement in _schema_statements(SCHEMA_V4):
+        if report["classification"] != "evidence_payments_v4":
+            _upgrade_sales_check(db, failure_hook)
+            for statement in _schema_statements(SCHEMA_V4):
+                db.execute(statement)
+            if failure_hook:
+                failure_hook("after_evidence_ddl")
+        for statement in _schema_statements(SCHEMA_V5):
             db.execute(statement)
         if failure_hook:
-            failure_hook("after_evidence_ddl")
+            failure_hook("after_pin_ddl")
         issues = (_preservation_issues(db, before) + _integrity_issues(db) +
-                  _money_issues(db, v2=True) + _v2_schema_issues(db) + _v3_issues(db) + _v4_issues(db))
+                  _money_issues(db, v2=True) + _v2_schema_issues(db) + _v3_issues(db) + _v4_issues(db) + _v5_issues(db))
         if issues:
             raise SchemaUpgradeRequired({"status": "HOLD", "issues": issues})
         db.execute(f"PRAGMA user_version={CURRENT_SCHEMA_VERSION}")
@@ -620,7 +667,7 @@ def backup_and_migrate_copy(path: str | Path, backup_directory: str | Path, *,
     if report["status"] != "UPGRADE_REQUIRED":
         raise SchemaUpgradeRequired(report)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    backup = directory / ("ramagan-before-v4-" + uuid.uuid4().hex + ".sqlite3")
+    backup = directory / ("ramagan-before-v5-" + uuid.uuid4().hex + ".sqlite3")
     expected = _verified_copy(target, backup)
     clone = directory / ("restore-proof-" + uuid.uuid4().hex + ".sqlite3")
     try:

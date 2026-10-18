@@ -48,7 +48,7 @@ class CostMigrationTests(unittest.TestCase):
             initialize_database(self.path, FRESH_SCHEMA)
         self.assertEqual(before, logical_snapshot(self.path))
         result = migrate_copy(self.path, confirmed_offline_copy=True)
-        self.assertEqual((result["status"], result["schema_version"]), ("PASS", 4))
+        self.assertEqual((result["status"], result["schema_version"]), ("PASS", 5))
         after = logical_snapshot(self.path)
         with fixture_connection(self.path) as db:
             for table, columns in before["columns"].items():
