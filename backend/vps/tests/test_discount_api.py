@@ -85,7 +85,7 @@ class DiscountApiTests(unittest.TestCase):
         self.assertEqual(me.status_code, 200)
         body = me.json()
         self.assertEqual(body["capabilities"], {"discounts": True, "discount_contract_version": 1,
-            "optional_document_references": True, "document_contract_version": 1, **cost_capabilities(), **receipt_capabilities(), **pin_capabilities()})
+            "optional_document_references": True, "document_contract_version": 1, **cost_capabilities("staff"), **receipt_capabilities(), **pin_capabilities()})
         self.assertEqual(body["role"], "staff")
         self.assertEqual(body["store_id"], self.store)
         self.assertFalse(body["store"]["sales_enabled"])
@@ -256,7 +256,7 @@ class DiscountApiTests(unittest.TestCase):
                     headers = {"Authorization": "Bearer " + login.json()["token"]}
                     me = client.get("/v1/me", headers=headers)
                     self.assertEqual(me.json()["capabilities"], {"discounts": True, "discount_contract_version": 1,
-                        "optional_document_references": True, "document_contract_version": 1, **cost_capabilities(), **receipt_capabilities(), **pin_capabilities()})
+                        "optional_document_references": True, "document_contract_version": 1, **cost_capabilities("staff"), **receipt_capabilities(), **pin_capabilities()})
                     self.assertFalse(me.json()["store"]["sales_enabled"])
                     with connect(path) as db:
                         db.execute("UPDATE products SET price_satang_per_gram=50000")

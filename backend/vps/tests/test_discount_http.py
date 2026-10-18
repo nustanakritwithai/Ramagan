@@ -99,7 +99,7 @@ class DiscountHttpAcceptanceTests(unittest.TestCase):
                     self.assertEqual(me.status_code, 200)
                     self.assertEqual(me.json()["capabilities"],
                                      {"discounts": True, "discount_contract_version": 1,
-                                      "optional_document_references": True, "document_contract_version": 1, **cost_capabilities(), **receipt_capabilities(), **pin_capabilities()})
+                                      "optional_document_references": True, "document_contract_version": 1, **cost_capabilities("staff"), **receipt_capabilities(), **pin_capabilities()})
                     self.assertFalse(me.json()["store"]["sales_enabled"])
 
                     lots = []
@@ -170,12 +170,12 @@ class DiscountHttpAcceptanceTests(unittest.TestCase):
                             "access-control-allow-origin"), [origins[1]])
                         if response.status_code == 200:
                             reports[role] = response.json()
-                    self.assertEqual(roles, {"owner": 200, "manager": 200,
+                    self.assertEqual(roles, {"owner": 200, "manager": 403,
                                              "staff": 403, "other": 200})
                     self.assertEqual(client.get(report_url).status_code, 401)
                     self.assertEqual(reports["other"]["summary"]["sale_count"], 0)
                     summary = reports["owner"]["summary"]
-                    self.assertEqual(summary, reports["manager"]["summary"])
+                    self.assertNotIn("manager", reports)
                     self.assertEqual((summary["subtotal_satang"], summary["discount_satang"],
                                       summary["total_satang"], summary["cash_satang"],
                                       summary["transfer_satang"]), (60000, 17650, 42350, 29900, 12450))

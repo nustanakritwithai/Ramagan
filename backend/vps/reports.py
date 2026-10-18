@@ -41,7 +41,7 @@ def add_cost_totals(row: dict) -> dict:
 
 
 def build_sales_report(db, store_id: str, start: date, end: date,
-                       low_stock_mg: int = 10000) -> dict:
+                       low_stock_mg: int = 10000, *, authorize=None) -> dict:
     if not 0 <= low_stock_mg <= 1_000_000_000:
         raise ValueError("Invalid low stock threshold")
     lower, upper = utc_range(start, end)
@@ -76,6 +76,10 @@ def build_sales_report(db, store_id: str, start: date, end: date,
     # Transaction-consistent read snapshot for all report sections.
     db.execute("BEGIN")
     try:
+        if authorize is not None:
+            # Recheck the live role/session in the SAME snapshot as all report
+            # data, so a demotion/revocation cannot retain an earlier Owner read.
+            authorize(db)
         has_voids = bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sale_voids'").fetchone())
         active_only = " AND NOT EXISTS(SELECT 1 FROM sale_voids v WHERE v.sale_id=s.id)" if has_voids else ""
         if has_voids:

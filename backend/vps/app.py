@@ -38,10 +38,10 @@ from stocktake_evidence import register_evidence_routes
 from cost_stock import (
     COST_CONTRACT_VERSION, STOCKTAKE_CONTRACT_VERSION, EXTRA_SCHEMA,
     capabilities as cost_capabilities, canonical_hash, inventory_value,
-    product_rows, register_stock_routes,
+    product_rows, register_stock_routes, cost_response,
 )
 
-APP_VERSION = "1.5.2-vps-preview"
+APP_VERSION = "1.5.3-vps-preview"
 BKK = ZoneInfo("Asia/Bangkok")
 ROLES = ("owner", "manager", "staff")
 DEFAULT_PATH = str(Path.home() / "Ramagan" / "data" / "ramagan.sqlite3")
@@ -296,6 +296,16 @@ def require_manager(actor: dict):
     if actor["role"] not in ("owner", "manager"):
         error(403, "Owner or manager permission required")
 
+
+def require_owner(actor: dict):
+    if actor["role"] != "owner":
+        error(403, "Owner permission required")
+
+
+def require_cost_write(actor: dict, value):
+    if value is not None and actor["role"] != "owner":
+        error(403, "Only Owner may set costs")
+
 def create_app(db_path: str | None = None, origins: list[str] | None = None,
                pin_pepper: str | bytes | None = None) -> FastAPI:
     path = str(db_path or os.environ.get("RAMAGAN_DB_PATH") or DEFAULT_PATH)
@@ -414,8 +424,10 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
         return {"ok": True}
 
     @app.get("/v1/me")
-    def me(actor: Annotated[dict, Depends(current)]):
+    def me(request: Request, actor: Annotated[dict, Depends(current)]):
         with connect(path) as db:
+            db.execute("BEGIN")
+            actor = recheck_actor(db, request.headers.get("authorization"), actor)
             store = db.execute(
                 "SELECT id,name,sales_enabled,requires_authorization FROM stores WHERE id=?",
                 (actor["store_id"],)
@@ -430,7 +442,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
             "capabilities": {"discounts": True,
                              "discount_contract_version": DISCOUNT_CONTRACT_VERSION,
                              "optional_document_references": True, "document_contract_version": 1,
-                             **cost_capabilities(), **receipt_capabilities(),
+                             **cost_capabilities(actor["role"]), **receipt_capabilities(),
                              **pin_capabilities(device_auth.enabled, required=pin_required)},
             "store": {**dict(store),
                       "sales_enabled": bool(store["sales_enabled"]),
@@ -438,10 +450,12 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
         }
 
     @app.get("/v1/catalog")
-    def catalog(actor: Annotated[dict, Depends(current)]):
+    def catalog(request: Request, actor: Annotated[dict, Depends(current)]):
         with connect(path) as db:
+            db.execute("BEGIN")
+            actor = recheck_actor(db, request.headers.get("authorization"), actor)
             products = product_rows(db, actor["store_id"],
-                                    include_cost=actor["role"] in ("owner", "manager"))
+                                    include_cost=actor["role"] == "owner")
             lots = [dict(r) for r in db.execute("""
              SELECT l.id,l.product_id,l.lot_code,l.expires_on,l.active,
                     p.name,p.sku,p.price_satang_per_gram,p.active AS product_active,
@@ -452,11 +466,12 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
               WHERE l.store_id=? AND l.active=1
               ORDER BY p.name,l.lot_code
             """, (actor["store_id"],))]
-        return {"products": products, "lots": lots}
+        return cost_response({"products": products, "lots": lots}, actor)
 
     @app.post("/v1/products")
     def add_product(payload: ProductIn, request: Request, actor: Annotated[dict, Depends(current)]):
         require_manager(actor)
+        require_cost_write(actor, payload.default_cost_satang_per_gram)
         if not payload.sku.strip() or not payload.name.strip() or not payload.category.strip():
             error(422, "SKU, name and category are required")
         pid = uuid_str()
@@ -465,6 +480,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                 db.execute("BEGIN IMMEDIATE")
                 actor = authorize_pos_write(db, request.headers.get("authorization"), actor)
                 require_manager(actor)
+                require_cost_write(actor, payload.default_cost_satang_per_gram)
                 db.execute("""
                     INSERT INTO products(id,store_id,sku,name,category,price_satang_per_gram,
                                          default_cost_satang_per_gram,created_at)
@@ -492,16 +508,24 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                 actor = recheck_actor(db, request.headers.get("authorization"), actor)
                 require_manager(actor)
                 if payload.client_receive_id is not None:
-                    existing = db.execute("SELECT request_hash,result_json FROM receive_requests "
+                    existing = db.execute("SELECT request_hash,result_json,actor_user_id FROM receive_requests "
                         "WHERE store_id=? AND client_receive_id=?",
                         (actor["store_id"], str(payload.client_receive_id))).fetchone()
                     if existing:
+                        # A pre-policy Manager request may contain an explicit
+                        # frozen cost. Resolve that exact completed operation
+                        # read-only; never let another actor or changed payload
+                        # use the old result as a cost-guessing oracle.
+                        if payload.cost_satang_per_gram is not None and actor["role"] != "owner":
+                            if existing["actor_user_id"] != actor["id"] or existing["request_hash"] != request_hash:
+                                require_cost_write(actor, payload.cost_satang_per_gram)
                         if existing["request_hash"] != request_hash:
                             error(409, "Receive UUID already used with different payload")
                         result = json.loads(existing["result_json"])
                         result["duplicate"] = True
                         db.rollback()
-                        return result
+                        return cost_response(result, actor)
+                    require_cost_write(actor, payload.cost_satang_per_gram)
                     rejected = db.execute("SELECT request_hash FROM receive_rejections "
                         "WHERE store_id=? AND client_receive_id=?",
                         (actor["store_id"], str(payload.client_receive_id))).fetchone()
@@ -511,6 +535,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                         error(409, "Receipt cancelled before commit")
                 actor = authorize_pos_write(db, request.headers.get("authorization"), actor)
                 require_manager(actor)
+                require_cost_write(actor, payload.cost_satang_per_gram)
                 if payload.expires_on and payload.expires_on < datetime.now(BKK).date():
                     error(422, "Expired stock cannot be received")
                 product = db.execute(
@@ -526,6 +551,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                 stamp = now_utc()
                 actor = authorize_pos_write(db, request.headers.get("authorization"), actor)
                 require_manager(actor)
+                require_cost_write(actor, payload.cost_satang_per_gram)
                 db.execute("""
                     INSERT INTO lots(id,store_id,product_id,lot_code,supplier_name,
                                      supplier_document_ref,cost_satang_per_gram,expires_on,received_at)
@@ -553,7 +579,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                 db.commit()
         except sqlite3.IntegrityError:
             error(409, "Duplicate lot code or invalid stock record")
-        return result
+        return cost_response(result, actor)
 
     @app.post("/v1/lots/receive/reconcile")
     def reconcile_receive(payload: ReceiveIn, request: Request, actor: Annotated[dict, Depends(current)]):
@@ -566,15 +592,21 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                 db.execute("BEGIN IMMEDIATE")
                 actor = recheck_actor(db, request.headers.get("authorization"), actor)
                 require_manager(actor)
-                existing = db.execute("SELECT request_hash,result_json FROM receive_requests "
+                existing = db.execute("SELECT request_hash,result_json,actor_user_id FROM receive_requests "
                     "WHERE store_id=? AND client_receive_id=?", (actor["store_id"], client_id)).fetchone()
                 if existing:
+                    if payload.cost_satang_per_gram is not None and actor["role"] != "owner":
+                        if existing["actor_user_id"] != actor["id"] or existing["request_hash"] != request_hash:
+                            require_cost_write(actor, payload.cost_satang_per_gram)
                     if existing["request_hash"] != request_hash:
                         error(409, "Receive UUID already used with different payload")
                     result = json.loads(existing["result_json"])
                     result["duplicate"] = True
                     db.rollback()
-                    return {"status": "completed", "result": result}
+                    return cost_response({"status": "completed", "result": result}, actor)
+                # Never create/cancel/re-key a legacy noncommitted cost intent
+                # under a lower role. Keep it on hold for Owner resolution.
+                require_cost_write(actor, payload.cost_satang_per_gram)
                 rejected = db.execute("SELECT request_hash,result_json FROM receive_rejections "
                     "WHERE store_id=? AND client_receive_id=?", (actor["store_id"], client_id)).fetchone()
                 if rejected:
@@ -582,7 +614,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                         error(409, "Receive UUID already used with different payload")
                     result = json.loads(rejected["result_json"])
                     db.rollback()
-                    return result
+                    return cost_response(result, actor)
                 # Reconciliation may cancel an original password actor's
                 # never-committed intent, but cannot create stock or a sale.
                 actor = recheck_actor(db, request.headers.get("authorization"), actor)
@@ -593,7 +625,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                     "actor_user_id,result_json,created_at) VALUES(?,?,?,?,?,?)", (actor["store_id"], client_id,
                     request_hash, actor["id"], json.dumps(result, sort_keys=True, separators=(",", ":")), now_utc()))
                 db.commit()
-                return result
+                return cost_response(result, actor)
             except Exception:
                 db.rollback()
                 raise
@@ -797,6 +829,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
 
     @app.get("/v1/admin/sales-report")
     def sales_report(
+        request: Request,
         actor: Annotated[dict, Depends(current)],
         from_date: date | None = Query(default=None, alias="from"),
         to_date: date | None = Query(default=None, alias="to"),
@@ -804,13 +837,14 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
     ):
         # The static GitHub Pages dashboard contains NO data or service key.
         # Every report must be authenticated and authorized against the VPS.
-        require_manager(actor)
+        require_owner(actor)
         actual_to = to_date or datetime.now(BKK).date()
         actual_from = from_date or (actual_to - timedelta(days=6))
         try:
             with connect(path) as db:
                 return build_sales_report(db, actor["store_id"], actual_from,
-                                          actual_to, low_stock_mg)
+                    actual_to, low_stock_mg, authorize=lambda connection:
+                        require_owner(recheck_actor(connection, request.headers.get("authorization"), actor)))
         except ValueError as exc:
             error(422, str(exc))
 

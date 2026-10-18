@@ -13,6 +13,7 @@ import {createSaleVoid,voidPendingKey} from './sale-void.js';
 import {supportsSharedPin,pendingDeviceActor} from './device-session.js';
 import {renderPinLock,renderPinSetup,pinSettingsHtml,bindPinSettings} from './pin-ui.js';
 import {countEvidenceSummary,inventoryTaskSummary,inventoryStockRow} from './management-ui.js';
+import {canViewCosts,canAccessDashboard,canManageSettings,usesRedactedCosts,withoutPrivateCosts} from './permissions.js';
 import './style.css';
 import './navigation.css';
 import './pages.css';
@@ -71,8 +72,8 @@ function pinFlags(){
   const pin=deviceAuth?.snapshot();
   return {capability:supportsSharedPin(state.capabilities),passwordSession:!api?.auth.isPinSession(),isOwner:state.role==='owner',
     device:pin?.device,configuration:pin?.configuration,role:state.role,busy:Boolean(pin?.busy||state.busy),error:pin?.error||'',
-    onRefreshConfiguration:()=>deviceAuth.refreshConfiguration(),onLogout:logout,onChangeServer:changeServer,
-    onEnroll:payload=>deviceAuth.enroll(payload),onLock:()=>deviceAuth.lock(),onForget:()=>deviceAuth.forget(),
+    onRefreshConfiguration:()=>deviceAuth.refreshConfiguration(),onLogout:logout,...(canSettings()?{onChangeServer:changeServer}:{}),
+    onEnroll:payload=>deviceAuth.enroll(payload),onLock:()=>deviceAuth.lock(),...(canSettings()?{onForget:()=>deviceAuth.forget()}:{}),
     onChangePins:payload=>deviceAuth.changePins(payload),onRevoke:payload=>deviceAuth.revoke(payload)};
 }
 function pinSetupRequired(){
@@ -174,7 +175,7 @@ function render() {
   const pin=deviceAuth?.snapshot();
   if(pin?.device&&pin.locked&&!pin.passwordOverride)return renderPinLock({root,...pin,
     onUnlock:(role,value)=>deviceAuth.unlock(role,value),onUnlockAuto:value=>deviceAuth.unlockAuto(value),
-    onPasswordLogin:()=>deviceAuth.passwordLogin(),onForget:()=>deviceAuth.forget()});
+    onPasswordLogin:()=>deviceAuth.passwordLogin()});
   if (!state.user) return renderLogin();
   if (!state.store) {
     root.innerHTML = '<div class="setup"><h1>RAMAGAN POS</h1><p>' +
@@ -184,6 +185,7 @@ function render() {
     return;
   }
   if(pinSetupRequired())return renderRequiredPinSetup();
+  if(state.view==='settings'&&!canSettings())state.view='sales';
   if (['receipts','products','settings','apps','support'].includes(state.view)) return renderSidePage(navigationContext());
   if (state.view === 'inventory' && canManage()) return renderManagerPage(renderInventory, 'รับเข้าและตั้งค่าสินค้า');
   if (state.view === 'stocktake' && canManage()) return renderManagerPage(renderStocktake, 'นับสต็อก');
@@ -234,6 +236,7 @@ function renderSetup() {
 }
 
 async function changeServer() {
+  if(!canSettings())return setMessage('เฉพาะ Owner เท่านั้นที่เปลี่ยนเซิร์ฟเวอร์ได้',true);
   if (hasPendingMutation() || state.busy || activeIO || deviceAuth?.snapshot().busy) {
     return setMessage('ต้องตรวจสอบรายการขายหรือสต็อกค้างก่อนเปลี่ยนเซิร์ฟเวอร์', true);
   }
@@ -284,6 +287,9 @@ async function startSession() {
 function canManage() {
   return state.role === 'owner' || state.role === 'manager';
 }
+function viewCosts(){return supportsCosts(state.capabilities)&&canViewCosts(state.role,state.capabilities);}
+function canDashboard(){return canAccessDashboard(state.role,state.capabilities);}
+function canSettings(){return canManageSettings(state.role,state.capabilities);}
 function hasInventoryPending() {
   return state.inventoryBlocked || Object.values(state.inventoryPending).some(Boolean);
 }
@@ -429,9 +435,10 @@ function renderDashboard() {
   });
 }
 function navigationContext() {
-  return {root,state,api,currentApi:()=>api,render,canManage,openView,logout,changeServer,
+  return {root,state,api,currentApi:()=>api,render,canManage,canDashboard,canSettings,openView,logout,changeServer,
+    lockDevice:()=>{if(!state.busy&&!activeIO)void deviceAuth?.lock();},canLockDevice:()=>Boolean(deviceAuth?.snapshot().device),
     voidReceipt:runReceiptVoid,hasPending:hasPendingMutation,
-    adminUrl:ADMIN_REPORT_URL,apiUrl,appVersion:'1.5.2',pinSettingsHtml:()=>pinSettingsHtml(pinFlags()),bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
+    adminUrl:canDashboard()?ADMIN_REPORT_URL:null,apiUrl,appVersion:'1.5.3',pinSettingsHtml:()=>canSettings()?pinSettingsHtml(pinFlags()):'',bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
       if(!canManage())return;
       openView('inventory');
       const form=root.querySelector('#'+section);
@@ -444,6 +451,7 @@ function openView(view) {
   if(pinSetupRequired())return render();
   if(!['sales','receipts','products','settings','apps','support','inventory','stocktake'].includes(view))return;
   if(['inventory','stocktake'].includes(view)&&!canManage())return;
+  if(view==='settings'&&!canSettings())return;
   state.closeEvidenceViewer?.();state.posMenuOpen=false;state.view=view;state.message='';
   render();
   if(view==='receipts'&&!state.pages.receiptsLoaded&&!state.pages.receiptLoading&&supportsReceipts(state.capabilities))loadReceipts(navigationContext());
@@ -492,7 +500,7 @@ function previewHtml(totals) {
     '</strong></div><div class="cart-total"><span>สุทธิ (ประมาณ)</span><strong>' + h(formatBaht(totals.total)) + '</strong></div>';
 }
 function renderInventory() {
-  const costs = supportsCosts(state.capabilities);
+  const contract = supportsCosts(state.capabilities), costs = viewCosts();
   const locked = state.busy || hasPendingMutation() || !navigator.onLine;
   const options = state.products.filter((p) => p.active).map((p) =>
     '<option value="' + h(p.id) + '">' + h(p.sku) + ' — ' +
@@ -505,23 +513,23 @@ function renderInventory() {
   root.innerHTML = [
     '<header class="topbar"><div class="brand">R<span>●</span> RAMAGAN <small>V1</small></div>',
     '<div class="top-actions">', statusChip(),
-    '<button id="change-server" class="ghost">เซิร์ฟเวอร์</button>',
+    canSettings()?'<button id="change-server" class="ghost">เซิร์ฟเวอร์</button>':'',
     '<button id="logout" class="ghost">ออกจากระบบ</button></div></header>',
     '<main class="manager-layout"><div class="view-links">',
     '<button id="open-sales" class="ghost">หน้าขาย</button>',
     '<button id="open-stocktake" class="ghost">นับสต็อก</button>',
-    '<a class="ghost admin-link" href="' + ADMIN_REPORT_URL + '" target="_blank" rel="noopener noreferrer">รายงาน ↗</a></div>',
+    canDashboard()?'<a class="ghost admin-link" href="' + ADMIN_REPORT_URL + '" target="_blank" rel="noopener noreferrer">รายงาน ↗</a>':'','</div>',
     '<div class="heading"><div><h1>สต็อกและรับเข้า</h1>',
     '<p class="muted">', h(lots.length), ' Lot · แตะเมนูเพื่อเพิ่มสินค้า / รับเข้า</p></div>',
     '<button id="refresh" class="ghost">รีเฟรช</button></div>',
     !navigator.onLine ? '<p class="alert danger">ออฟไลน์: ไม่สามารถสร้าง/รับสินค้าได้</p>' : '',
     state.message ? '<div class="alert ' + (state.error ? 'danger' : '') +
     '">' + h(state.message) + '</div>' : '',
-    !costs ? '<div class="alert">เซิร์ฟเวอร์ยังไม่รองรับต้นทุนรุ่น 1 ดูยอดคงเหลือและเพิ่มสินค้าได้ การรับเข้าพร้อมต้นทุนและเลขอ้างอิงป้องกันซ้ำต้องรออัปเกรด Backend</div>' : '',
+    !contract ? '<div class="alert">เซิร์ฟเวอร์ยังไม่รองรับการรับเข้ารุ่นนี้ กรุณาให้ Owner อัปเกรด Backend</div>' : '',
     state.inventoryError ? '<div class="alert danger">' + h(state.inventoryError) + '</div>' : '',
     inventoryPendingHtml(),
     '<details class="inventory-task" id="new-product-panel"',managementPanel('new-product-panel'),'><summary>',
-    inventoryTaskSummary({title:'เพิ่มสินค้าใหม่',subtitle:'ชื่อสินค้า ราคา และต้นทุนเริ่มต้น'}),'</summary><form id="new-product" class="compact-form-grid">',
+    inventoryTaskSummary({title:'เพิ่มสินค้าใหม่',subtitle:costs?'ชื่อสินค้า ราคา และต้นทุนเริ่มต้น':'ชื่อสินค้าและราคา'}),'</summary><form id="new-product" class="compact-form-grid">',
     '<label>SKU <input name="sku" maxlength="60" required placeholder="เช่น SKU-01" /></label>',
     '<label>ชื่อสินค้า <input name="name" maxlength="200" required /></label>',
     '<label>หมวดสินค้า <input name="category" maxlength="60" required value="other" /></label>',
@@ -530,7 +538,7 @@ function renderInventory() {
     '<button class="primary" ', locked ? 'disabled' : '',
     '>บันทึกสินค้า</button></form></details>',
     '<details class="inventory-task" id="receive-lot-panel"',managementPanel('receive-lot-panel'),'><summary>',
-    inventoryTaskSummary({title:'รับสินค้าเข้า Lot',subtitle:'จำนวน ต้นทุน และข้อมูลรับเข้า',badge:'↓'}),'</summary>',
+    inventoryTaskSummary({title:'รับสินค้าเข้า Lot',subtitle:costs?'จำนวน ต้นทุน และข้อมูลรับเข้า':'จำนวนและข้อมูลรับเข้า',badge:'↓'}),'</summary>',
     '<form id="receive-lot" class="compact-form-grid"><label class="span-all">สินค้า <select name="product_id" required>',
     options || '<option value="">ยังไม่มีสินค้า</option>', '</select></label>',
     '<label>รหัส Lot (ห้ามซ้ำ) <input name="lot_code" maxlength="100" required /></label>',
@@ -541,7 +549,7 @@ function renderInventory() {
     costs ? '<label>ต้นทุน Lot/กรัม (บาท) <input name="cost" inputmode="decimal" placeholder="ว่าง = ค่าเริ่มต้น" /></label><p id="receive-default-cost" class="footnote"></p>' : '',
     '<label>วันหมดอายุ (ถ้ามี) <input name="expires" type="date" /></label>',
     '<label>เหตุผลการรับสินค้า <input name="reason" maxlength="500" required value="รับสินค้าเข้าร้าน" /></label>',
-    '<button class="primary" ', locked || !options || !costs ? 'disabled' : '',
+    '<button class="primary" ', locked || !options || !contract ? 'disabled' : '',
     '>ยืนยันการรับเข้าผ่านเซิร์ฟเวอร์</button></form></details>',
     '<section class="main-panel inventory-stock"><h2>สต็อกปัจจุบัน</h2>',
     costs && state.inventory ? valuationHtml(state.inventory.summary) : '',
@@ -658,7 +666,7 @@ function renderStocktake() {
     ' กรัม</td><td><button type="button" class="ghost" data-history="' + h(x.client_stocktake_id) + '">ดูรายการ</button></td></tr>').join('') || '<tr><td colspan="6">ยังไม่มีประวัติการนับ</td></tr>';
   root.innerHTML = [
     '<header class="topbar"><div class="brand">R<span>●</span> RAMAGAN <small>V1</small></div><div class="top-actions">', statusChip(),
-    '<button id="change-server" class="ghost">เซิร์ฟเวอร์</button><button id="logout" class="ghost">ออกจากระบบ</button></div></header>',
+    canSettings()?'<button id="change-server" class="ghost">เซิร์ฟเวอร์</button>':'','<button id="logout" class="ghost">ออกจากระบบ</button></div></header>',
     '<main class="manager-layout"><div class="view-links"><button id="open-sales" class="ghost">หน้าขาย</button>',
     '<button id="open-inventory" class="ghost">สินค้า / รับเข้า</button></div>',
     '<section class="main-panel"><div class="heading"><div><h1>นับสต็อก</h1><p class="muted" id="count-progress" aria-live="polite"></p></div></div>',
@@ -685,7 +693,7 @@ function renderStocktake() {
   ].join('');
   bindManagementPanels();
   root.querySelector('#logout').addEventListener('click', logout);
-  root.querySelector('#change-server').addEventListener('click', changeServer);
+  root.querySelector('#change-server')?.addEventListener('click', changeServer);
   root.querySelector('#open-sales').addEventListener('click', () => { state.view = 'sales'; render(); });
   root.querySelector('#open-inventory').addEventListener('click', () => { state.view = 'inventory'; render(); });
   root.querySelector('#reload-count').addEventListener('click', async () => {
@@ -835,7 +843,7 @@ async function loadHistoryDetail(id) {
   if (request !== state.historyRequest || state.user?.id !== actor || state.store?.id !== store ||
       generation !== state.inventoryLoad || !canManage()) return;
   state.historyError = error ? 'อ่านรายละเอียดการนับไม่สำเร็จ: ' + error.message : '';
-  if (!error && data?.client_stocktake_id === id && Array.isArray(data.items)) state.historyDetail = data;
+  if (!error && data?.client_stocktake_id === id && Array.isArray(data.items)) state.historyDetail = viewCosts()?data:withoutPrivateCosts(data);
   else if (!error) state.historyError = 'คำตอบรายละเอียดการนับไม่ครบ';
   render();
 }
@@ -866,7 +874,7 @@ async function createProduct(event) {
   let price, cost;
   try {
     price = bahtToSatang(form.get('price'));
-    if (supportsCosts(state.capabilities)) cost = optionalCost(form.get('default_cost'));
+    if (viewCosts()) cost = optionalCost(form.get('default_cost'));
   }
   catch (e) { return setMessage(e.message, true); }
   return withNewMutation(async () => {
@@ -897,7 +905,7 @@ async function receiveLot(event) {
   if (!canManage() || state.busy || hasPendingMutation() || !navigator.onLine || !supportsCosts(state.capabilities)) return;
   const form = new FormData(event.currentTarget);
   let qty, cost;
-  try { qty = receivedMilligrams(form.get('qty')); cost = optionalCost(form.get('cost')); }
+  try { qty = receivedMilligrams(form.get('qty')); cost = viewCosts()?optionalCost(form.get('cost')):null; }
   catch (e) { return setMessage(e.message, true); }
   if (!optionalDocuments(state.capabilities) && !String(form.get('supplier_document_ref') || '').trim()) {
     return setMessage('เซิร์ฟเวอร์รุ่นนี้ยังต้องระบุเลขที่เอกสารผู้ส่งมอบ', true);
@@ -942,7 +950,8 @@ async function performInventory(kind, action, payload) {
       if(!current())return;
       state.message = result.rejected ? 'ไม่ได้บันทึก: ' + result.error.message +
         (kind === 'stocktake' ? ' · รีโหลดยอดระบบแล้ว กรุณานับใหม่ก่อนยืนยัน' : '') :
-        (kind === 'stocktake' ? 'เซิร์ฟเวอร์ยืนยันการนับและบันทึกประวัติแล้ว' : 'เซิร์ฟเวอร์ยืนยัน Lot พร้อมต้นทุนและรายการรับเข้าแล้ว') +
+        (kind === 'stocktake' ? 'เซิร์ฟเวอร์ยืนยันการนับและบันทึกประวัติแล้ว' :
+          (viewCosts()?'เซิร์ฟเวอร์ยืนยัน Lot พร้อมต้นทุนและรายการรับเข้าแล้ว':'เซิร์ฟเวอร์ยืนยัน Lot และรายการรับเข้าแล้ว')) +
         ' · เลขอ้างอิง ' + (result.op.payload.client_stocktake_id || result.op.payload.client_receive_id);
       if (!fresh) state.message += ' · รีเฟรชสต็อกไม่สำเร็จ กรุณารีเฟรชก่อนทำรายการต่อ';
       state.error = Boolean(result.rejected || !fresh);
@@ -1003,7 +1012,8 @@ async function loadProfile(user,{current:sessionCurrent=()=>true,role:expectedRo
     }) : null;
     for (const kind of ['stocktake', 'receive']) state[kind] = createInventoryOperation({
       storage: localStorage, identity: {api: api.base, store: state.store.id, actor: user.id},
-      kind, transport: client.inventoryTransport(kind), uuid: () => crypto.randomUUID(), lock
+      kind, transport: client.inventoryTransport(kind), uuid: () => crypto.randomUUID(), lock,
+      allowRedactedCosts:usesRedactedCosts(state.role,state.capabilities)
     });
     restoreInventoryPending();
     state.saleVoid=createSaleVoid({storage:localStorage,
@@ -1049,18 +1059,19 @@ async function refreshLots() {
   const { data, error } = lotsResult;
   if (productsResult.error) return setMessage('อ่านรายการสินค้าไม่สำเร็จ: ' +
     productsResult.error.message, true);
-  state.products = productsResult.data || [];
+  state.products = viewCosts()?(productsResult.data||[]):withoutPrivateCosts(productsResult.data||[]);
   state.inventoryError = '';
   if (inventoryResult?.error) state.inventoryError = 'อ่านสต็อกสำหรับตรวจนับ/ต้นทุนไม่สำเร็จ: ' + inventoryResult.error.message;
   else if (inventoryResult) {
     try {
-      validateInventory(inventoryResult.data);
-      state.inventory = inventoryResult.data;
-      state.products = inventoryResult.data.products;
+      const received=viewCosts()?inventoryResult.data:withoutPrivateCosts(inventoryResult.data);
+      validateInventory(received);
+      state.inventory = received;
+      state.products = received.products;
     } catch (error) { state.inventoryError = error.message; }
   }
   state.stocktakeError = historyResult?.error ? 'อ่านประวัติการนับไม่สำเร็จ: ' + historyResult.error.message : '';
-  state.stocktakes = Array.isArray(historyResult?.data?.stocktakes) ? historyResult.data.stocktakes : [];
+  state.stocktakes = Array.isArray(historyResult?.data?.stocktakes) ? (viewCosts()?historyResult.data.stocktakes:withoutPrivateCosts(historyResult.data.stocktakes)) : [];
   if (error) return setMessage('โหลดสต็อกไม่สำเร็จ: ' + error.message, true);
   state.lots = (data || []).filter((row) => row.ramagan_products?.active).map((row) => {
     const balance = row.ramagan_lot_balances;
@@ -1080,11 +1091,11 @@ async function refreshLots() {
 function validateInventory(data) {
   const quantity = x => Number.isSafeInteger(x) && x >= 0;
   const cost = x => x === null || quantity(x);
-  if (!data || !Array.isArray(data.products) || !Array.isArray(data.lots) || !data.summary ||
+  if (!data || !Array.isArray(data.products) || !Array.isArray(data.lots) || !data.summary || !quantity(data.summary.quantity_mg) ||
       data.lots.some(x => typeof x.id !== 'string' || !quantity(x.quantity_mg) ||
         (supportsStocktakes(state.capabilities) && !quantity(x.stock_revision)) ||
-        (supportsCosts(state.capabilities) && (!cost(x.cost_satang_per_gram) || !cost(x.inventory_value_satang)))) ||
-      (supportsCosts(state.capabilities) && (data.products.some(x => !cost(x.default_cost_satang_per_gram)) ||
+        (viewCosts() && (!cost(x.cost_satang_per_gram) || !cost(x.inventory_value_satang)))) ||
+      (viewCosts() && (data.products.some(x => !cost(x.default_cost_satang_per_gram)) ||
         !cost(data.summary.inventory_value_satang) || !quantity(data.summary.known_inventory_value_satang) ||
         !quantity(data.summary.unknown_cost_lot_count)))) {
     throw new Error('ข้อมูลสต็อก/ต้นทุนหรือ stock revision จากเซิร์ฟเวอร์ไม่ครบ กรุณาอัปเกรด Backend ให้ตรงสัญญา');

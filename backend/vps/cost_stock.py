@@ -101,12 +101,42 @@ BEGIN SELECT RAISE(ABORT, 'Immutable intake cost'); END;
 """
 
 
-def capabilities() -> dict:
-    return {"inventory_costs": True, "cost_contract_version": COST_CONTRACT_VERSION,
+def capabilities(role: str | None = None) -> dict:
+    # Contract support is independent of permission to view financial details.
+    # Managers still receive/count stock using the same integer/idempotent DTOs.
+    permissions = ({"can_view_costs": role == "owner", "can_access_dashboard": role == "owner",
+                    "can_manage_settings": role == "owner", "cost_privacy_contract_version": 1}
+                   if role is not None else {})
+    return {"inventory_costs": True, "cost_contract_version": COST_CONTRACT_VERSION, **permissions,
             "stocktakes": True, "stocktake_contract_version": STOCKTAKE_CONTRACT_VERSION,
             "stocktake_evidence": True, "evidence_contract_version": 1,
             "split_payments": True, "payment_contract_version": 1,
             "sale_reconciliation": True, "sale_reconciliation_contract_version": 1}
+
+
+PRIVATE_COST_FIELDS = frozenset({
+    "default_cost_satang_per_gram", "cost_satang_per_gram", "unit_cost_satang_per_gram",
+    "line_cost_satang", "inventory_value_satang", "known_inventory_value_satang",
+    "unknown_cost_lot_count", "inventory_delta_satang", "known_cost_satang",
+    "unknown_cost_line_count", "cost_complete", "cost_satang", "gross_profit_satang",
+})
+
+
+def cost_response(value, actor):
+    """Project role-safe DTOs at every response, including stored retry results.
+
+    Keep authoritative cost accounting and immutable cached operation results in
+    storage. Redact nested financial fields for the CURRENT actor at the output
+    boundary so an old Owner operation cannot leak through a Manager retry.
+    """
+    if actor["role"] == "owner":
+        return value
+    if isinstance(value, dict):
+        return {key: cost_response(item, actor) for key, item in value.items()
+                if key not in PRIVATE_COST_FIELDS}
+    if isinstance(value, (list, tuple)):
+        return [cost_response(item, actor) for item in value]
+    return value
 
 
 def inventory_value(cost: int | None, quantity_mg: int) -> int | None:
@@ -132,8 +162,9 @@ def product_rows(db, store_id: str, *, include_cost: bool) -> list[dict]:
         "SELECT " + fields + " FROM products WHERE store_id=? ORDER BY name,id", (store_id,))]
 
 
-def inventory_snapshot(db, store_id: str) -> dict:
-    db.execute("BEGIN")
+def inventory_snapshot(db, store_id: str, *, manage_transaction=True) -> dict:
+    if manage_transaction:
+        db.execute("BEGIN")
     try:
         products = product_rows(db, store_id, include_cost=True)
         lots = []
@@ -163,7 +194,8 @@ def inventory_snapshot(db, store_id: str) -> dict:
             "inventory_value_satang": None if unknown_count else known_value,
             "unknown_cost_lot_count": unknown_count}}
     finally:
-        db.rollback()
+        if manage_transaction:
+            db.rollback()
 
 
 class StocktakeLineIn(BaseModel):
@@ -234,10 +266,16 @@ def validate_evidence(db, items, actor, client_id, error):
 def register_stock_routes(app, path, connect, current, require_manager, error, now_utc, uuid_str, *,
                           authorize_pos_write, recheck_actor):
     @app.get("/v1/inventory")
-    def inventory(actor: Annotated[dict, Depends(current)]):
+    def inventory(request: Request, actor: Annotated[dict, Depends(current)]):
         require_manager(actor)
         with connect(path) as db:
-            return inventory_snapshot(db, actor["store_id"])
+            db.execute("BEGIN")
+            try:
+                actor = recheck_actor(db, request.headers.get("authorization"), actor)
+                require_manager(actor)
+                return cost_response(inventory_snapshot(db, actor["store_id"], manage_transaction=False), actor)
+            finally:
+                db.rollback()
 
     @app.post("/v1/stocktakes")
     def stocktake(payload: StocktakeIn, request: Request, actor: Annotated[dict, Depends(current)]):
@@ -255,7 +293,7 @@ def register_stock_routes(app, path, connect, current, require_manager, error, n
                         error(409, "Stocktake UUID already used with different payload")
                     result = stocktake_result(db, existing, duplicate=True)
                     db.rollback()
-                    return result
+                    return cost_response(result, actor)
                 rejected = db.execute("SELECT request_hash FROM stocktake_rejections "
                     "WHERE store_id=? AND client_stocktake_id=?",
                     (actor["store_id"], str(payload.client_stocktake_id))).fetchone()
@@ -315,7 +353,7 @@ def register_stock_routes(app, path, connect, current, require_manager, error, n
                 header = db.execute("SELECT * FROM stocktakes WHERE id=?", (sid,)).fetchone()
                 result = stocktake_result(db, header, duplicate=False)
                 db.commit()
-                return result
+                return cost_response(result, actor)
             except Exception:
                 db.rollback()
                 raise
@@ -337,7 +375,7 @@ def register_stock_routes(app, path, connect, current, require_manager, error, n
                         error(409, "Stocktake UUID already used with different payload")
                     result = {"status": "completed", "result": stocktake_result(db, existing, duplicate=True)}
                     db.rollback()
-                    return result
+                    return cost_response(result, actor)
                 rejected = db.execute("SELECT request_hash,result_json FROM stocktake_rejections "
                     "WHERE store_id=? AND client_stocktake_id=?", (actor["store_id"], client_id)).fetchone()
                 if rejected:
@@ -345,7 +383,7 @@ def register_stock_routes(app, path, connect, current, require_manager, error, n
                         error(409, "Stocktake UUID already used with different payload")
                     result = json.loads(rejected["result_json"])
                     db.rollback()
-                    return result
+                    return cost_response(result, actor)
                 stale = False
                 for item in items:
                     row = db.execute("SELECT b.stock_revision FROM lots l JOIN lot_balances b ON b.lot_id=l.id "
@@ -364,32 +402,37 @@ def register_stock_routes(app, path, connect, current, require_manager, error, n
                     "actor_user_id,result_json,created_at) VALUES(?,?,?,?,?,?)", (actor["store_id"], client_id,
                     request_hash, actor["id"], json.dumps(result, sort_keys=True, separators=(",", ":")), now_utc()))
                 db.commit()
-                return result
+                return cost_response(result, actor)
             except Exception:
                 db.rollback()
                 raise
 
     @app.get("/v1/stocktakes")
-    def history(actor: Annotated[dict, Depends(current)]):
+    def history(request: Request, actor: Annotated[dict, Depends(current)]):
         require_manager(actor)
         with connect(path) as db:
+            db.execute("BEGIN")
+            actor = recheck_actor(db, request.headers.get("authorization"), actor)
+            require_manager(actor)
             rows = db.execute("""SELECT s.id,s.client_stocktake_id,s.shift_label,s.reason,
                 s.actor_user_id,s.actor_email,s.created_at,count(l.id) AS line_count,
                 coalesce(sum(l.variance_mg),0) AS variance_mg FROM stocktakes s
                 JOIN stocktake_lines l ON l.stocktake_id=s.id WHERE s.store_id=?
                 GROUP BY s.id ORDER BY s.created_at DESC,s.id DESC LIMIT 50""", (actor["store_id"],))
-            return {"stocktakes": [dict(row) for row in rows]}
+            return cost_response({"stocktakes": [dict(row) for row in rows]}, actor)
 
     @app.get("/v1/stocktakes/by-client/{client_stocktake_id}")
-    def lookup(client_stocktake_id: uuid.UUID, actor: Annotated[dict, Depends(current)]):
+    def lookup(client_stocktake_id: uuid.UUID, request: Request, actor: Annotated[dict, Depends(current)]):
         require_manager(actor)
         with connect(path) as db:
             db.execute("BEGIN")
             try:
+                actor = recheck_actor(db, request.headers.get("authorization"), actor)
+                require_manager(actor)
                 header = db.execute("SELECT * FROM stocktakes WHERE store_id=? AND client_stocktake_id=?",
                     (actor["store_id"], str(client_stocktake_id))).fetchone()
                 if not header:
                     error(404, "Stocktake not found")
-                return stocktake_result(db, header, duplicate=True)
+                return cost_response(stocktake_result(db, header, duplicate=True), actor)
             finally:
                 db.rollback()

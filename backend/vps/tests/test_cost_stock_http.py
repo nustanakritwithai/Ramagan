@@ -95,7 +95,7 @@ class CostStockHttpTests(unittest.TestCase):
                     sale=client.post("/v1/sales",headers=headers["staff"],json=sale_payload)
                     self.assertEqual(sale.status_code,200,sale.text)
                     self.assertEqual(sale.json()["total_satang"],9900)
-                    inventory=client.get("/v1/inventory",headers=headers["manager"])
+                    inventory=client.get("/v1/inventory",headers=headers["owner"])
                     self.assertEqual(inventory.status_code,200)
                     row=inventory.json()["lots"][0]
                     self.assertEqual((row["quantity_mg"],row["stock_revision"],row["cost_satang_per_gram"]),(9000,1,4000))
@@ -146,7 +146,8 @@ class CostStockHttpTests(unittest.TestCase):
                     self.assertEqual(client.get("/v1/stocktakes/by-client/"+count["client_stocktake_id"],headers=headers["other"]).status_code,404)
                     self.assertEqual(client.get("/v1/inventory",headers=headers["other"]).json()["lots"],[])
                     day=datetime.now(ZoneInfo("Asia/Bangkok")).date().isoformat()
-                    report=client.get("/v1/admin/sales-report",headers=headers["manager"],params={"from":day,"to":day})
+                    self.assertEqual(client.get("/v1/admin/sales-report",headers=headers["manager"]).status_code,403)
+                    report=client.get("/v1/admin/sales-report",headers=headers["owner"],params={"from":day,"to":day})
                     self.assertEqual(report.status_code,200)
                     data=report.json()
                     for section in [data["summary"],*data["daily"],*data["recent_sales"],*data["top_products"],*data["top_categories"]]:

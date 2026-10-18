@@ -2,6 +2,7 @@
 // remain authoritative; local storage never grants authority or stores tokens.
 import {bahtToSatang} from './math.js';
 import {supportsEvidence} from './evidence-draft.js';
+import {withoutPrivateCosts} from './permissions.js';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const integer = (x, max = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(x) && x >= 0 && x <= max;
 const fail = message => { throw new Error(message); };
@@ -71,13 +72,14 @@ function validatePayload(kind, p) {
     }
   } else fail('Unknown inventory action');
 }
-function validateResult(kind, data, op) {
+function validateResult(kind, data, op, allowRedactedCosts = false) {
   const p = op.payload;
   if (kind === 'receive') {
     if (!UUID.test(data?.lot_id) || data.client_receive_id !== p.client_receive_id ||
         data.quantity_mg !== p.quantity_mg || typeof data.duplicate !== 'boolean' ||
-        (p.cost_satang_per_gram !== null && data.cost_satang_per_gram !== p.cost_satang_per_gram) ||
-        !(data.cost_satang_per_gram === null || integer(data.cost_satang_per_gram, 100000000))) {
+        (!(allowRedactedCosts && !Object.hasOwn(data,'cost_satang_per_gram')) &&
+          ((p.cost_satang_per_gram !== null && data.cost_satang_per_gram !== p.cost_satang_per_gram) ||
+           !(data.cost_satang_per_gram === null || integer(data.cost_satang_per_gram, 100000000))))) {
       fail('คำตอบรับสินค้าไม่สมบูรณ์ ต้องตรวจสอบรายการเดิม');
     }
   } else {
@@ -98,7 +100,7 @@ function validateResult(kind, data, op) {
   return data;
 }
 
-export function createInventoryOperation({storage, identity, kind, transport, uuid, lock}) {
+export function createInventoryOperation({storage, identity, kind, transport, uuid, lock, allowRedactedCosts = false}) {
   const key = inventoryPendingKey(identity, kind), completedKey = key + '.completed';
   let observed;
   try { observed = storage.getItem(completedKey); } catch { /* fail closed on read/start */ }
@@ -110,7 +112,7 @@ export function createInventoryOperation({storage, identity, kind, transport, uu
       fail('รายการสต็อกค้างไม่ถูกต้องหรือเป็นของบัญชีอื่น ให้ผู้จัดการตรวจสอบ');
     }
     validatePayload(kind, op.payload);
-    if (op.status === 'confirmed') validateResult(kind, op.result, op);
+    if (op.status === 'confirmed') validateResult(kind, op.result, op, allowRedactedCosts);
     return op;
   }
   function read() {
@@ -136,11 +138,11 @@ export function createInventoryOperation({storage, identity, kind, transport, uu
     }
   }
   function confirmed(data, op) {
-    const result = validateResult(kind, data, op);
+    const result = validateResult(kind, allowRedactedCosts?withoutPrivateCosts(data):data, op, allowRedactedCosts);
     return {result, op: persist({...op, status: 'confirmed', result})};
   }
   async function lookup(op, explicitReceiveVerification = false) {
-    if (op.status === 'confirmed') return {result: validateResult(kind, op.result, op), op};
+    if (op.status === 'confirmed') return {result: validateResult(kind, allowRedactedCosts?withoutPrivateCosts(op.result):op.result, op, allowRedactedCosts), op};
     if (op.status === 'rejected') return {rejected: true, op, error: new Error(op.rejection)};
     if (transport.lookup) {
       const found = await transport.lookup(op.payload.client_stocktake_id);

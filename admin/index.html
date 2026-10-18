@@ -24,7 +24,7 @@
         <span class="eyebrow">PRIVATE REPORTING PORTAL</span>
         <h1>รายงานหน้าร้าน<br><em>ที่อ่านจากยอดจริง</em></h1>
         <p>สรุปยอดขายรายวัน เงินสด/โอน สินค้าขายดี สต็อกต่ำ และธุรกรรมล่าสุด จากฐานข้อมูลกลางบน VPS เท่านั้น</p>
-        <div class="feature-badges"><span>Owner / Manager</span><span>Live VPS Data</span><span>Bangkok Time</span></div>
+        <div class="feature-badges"><span>Owner เท่านั้น</span><span>Live VPS Data</span><span>Bangkok Time</span></div>
       </div>
       <form class="login-card" id="login-form">
         <span class="eyebrow">RAMAGAN POS V1</span>
@@ -32,7 +32,7 @@
         <p class="muted">GitHub Pages เป็นหน้ารายงานเท่านั้น ยอดขายจริงเก็บบน VPS และต้องผ่านสิทธิ์ก่อนอ่านได้</p>
         <label for="api-base">ที่อยู่ API กลาง (HTTPS)</label>
         <input type="url" name="apiBase" id="api-base" required placeholder="https://your-server.example/ramagan-api" autocomplete="url" spellcheck="false">
-        <label for="email">อีเมลเจ้าของร้าน / ผู้จัดการ</label>
+        <label for="email">อีเมลเจ้าของร้าน</label>
         <input type="email" name="email" id="email" required autocomplete="username" placeholder="name@example.com">
         <label for="password">รหัสผ่าน</label>
         <input type="password" name="password" id="password" required autocomplete="current-password">
@@ -40,7 +40,7 @@
         <button type="button" id="api-check-button" class="button subtle full">ตรวจสอบการเชื่อมต่อ API (ไม่ใช้รหัสผ่าน)</button>
         <p id="login-message" class="notice" role="status" aria-live="polite" hidden></p>
         <a id="health-open-link" href="#" target="_blank" rel="noopener noreferrer" hidden>เปิดหน้า Health Check ในเบราว์เซอร์เพื่อตรวจสอบ HTTPS/TLS</a>
-        <p class="muted small">ไม่รองรับบัญชีพนักงานทั่วไป · ไม่บันทึกรหัสผ่านหรือโทเค็นในเบราว์เซอร์ · รีเฟรชแล้วต้องล็อกอินใหม่</p>
+        <p class="muted small">เฉพาะเจ้าของร้าน (Owner) · ไม่บันทึกรหัสผ่านหรือโทเค็นในเบราว์เซอร์ · รีเฟรชแล้วต้องล็อกอินใหม่</p>
       </form>
     </section>
 

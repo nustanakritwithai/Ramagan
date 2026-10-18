@@ -493,7 +493,9 @@ class StocktakeEvidenceAcceptanceTests(unittest.TestCase):
         replay = self.count(payload)
         self.assertEqual(replay.json(), {**result.json(), "duplicate": True})
         lookup = self.client.get("/v1/stocktakes/by-client/" + payload["client_stocktake_id"], headers=self.headers["manager"])
-        self.assertEqual(lookup.json(), replay.json())
+        expected = {**replay.json(), "items": [{key: value for key, value in item.items()
+                    if key != "inventory_delta_satang"} for item in replay.json()["items"]]}
+        self.assertEqual(lookup.json(), expected)
         self.assert_unchanged(before)
 
     def test_evidence_count_lot_actor_binding_and_duplicate_payload_conflict(self):

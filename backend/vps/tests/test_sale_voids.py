@@ -95,7 +95,7 @@ class SaleVoidTests(unittest.TestCase):
         self.assertTrue(before == self.state(), "Void failure/replay changed data, revisions, timestamps or schema")
 
     def report(self, start="2026-10-14", end=None):
-        response = self.client.get("/v1/admin/sales-report", headers=self.headers["manager"], params={"from": start, "to": end or start})
+        response = self.client.get("/v1/admin/sales-report", headers=self.headers["owner"], params={"from": start, "to": end or start})
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
@@ -119,7 +119,10 @@ class SaleVoidTests(unittest.TestCase):
                 for field in ("subtotal_satang", "discount_satang", "total_satang", "payments", "payment_method"):
                     self.assertEqual(result[field], sale[field])
                 self.assertEqual(len(result["restored_items"]), 2)
-                self.assertEqual(sorted(x["inventory_delta_satang"] is None for x in result["restored_items"]), [False, True])
+                self.assertTrue(all("inventory_delta_satang" not in x for x in result["restored_items"]))
+                owner_result = self.client.get("/v1/sale-voids/by-client/" + result["client_void_id"],
+                                               headers=self.headers["owner"]).json()
+                self.assertEqual(sorted(x["inventory_delta_satang"] is None for x in owner_result["restored_items"]), [False, True])
                 after = self.state()
                 for table in ("sales", "sale_lines", "sale_payments", "sale_rejections", "products", "lots", "users", "stores"):
                     self.assertEqual(before["rows"][table], after["rows"][table], table)
@@ -147,7 +150,10 @@ class SaleVoidTests(unittest.TestCase):
         before = self.state()
         replay = self.void(sale, {**payload, "reason": "  " + payload["reason"] + "  "}, actor="manager")
         self.assertEqual(replay.status_code, 200, replay.text)
-        self.assertEqual(replay.json(), {**first.json(), "duplicate": True})
+        redacted = {**first.json(), "duplicate": True, "restored_items": [
+            {key: value for key, value in item.items() if key != "inventory_delta_satang"}
+            for item in first.json()["restored_items"]]}
+        self.assertEqual(replay.json(), redacted)
         lookup = self.client.get("/v1/sale-voids/by-client/" + payload["client_void_id"], headers=self.headers["manager"])
         self.assertEqual(lookup.json(), replay.json())
         old = self.client.post("/v1/sales", headers=self.headers["staff"], json=checkout)
