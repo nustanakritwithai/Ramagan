@@ -200,7 +200,7 @@ test('failed endpoint check keeps the attempted URL for retry and never probes t
 
 test('unreachable server stays on connection settings and retry can recover', async () => {
   const f = fixture({failHealth: true});
-  const app = await boot(f, null, {configured: false, signedIn: false, waitFor: '#server-form'});
+  const app = await boot(f, null, {configured: false, signedIn: false, waitFor: '#connection-error'});
   try {
     assert.equal(app.q('#login-form'), null);
     assert.match(app.text(), /Could not reach the RAMAGAN API/);
@@ -214,7 +214,7 @@ test('unreachable server stays on connection settings and retry can recover', as
 
 test('incompatible server version is rejected before sign-in', async () => {
   const f = fixture({healthVersion: '0.9.0'});
-  const app = await boot(f, null, {configured: false, signedIn: false, waitFor: '#server-form'});
+  const app = await boot(f, null, {configured: false, signedIn: false, waitFor: '#connection-error'});
   try {
     assert.equal(app.q('#login-form'), null);
     assert.match(app.text(), /Incompatible server version/);
