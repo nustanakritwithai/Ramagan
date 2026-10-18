@@ -41,7 +41,7 @@ from cost_stock import (
     product_rows, register_stock_routes,
 )
 
-APP_VERSION = "1.5.0-vps-preview"
+APP_VERSION = "1.5.1-vps-preview"
 BKK = ZoneInfo("Asia/Bangkok")
 ROLES = ("owner", "manager", "staff")
 DEFAULT_PATH = str(Path.home() / "Ramagan" / "data" / "ramagan.sqlite3")
@@ -355,6 +355,11 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
             error(403, "Session identity changed during request")
         return active
 
+    def authorize_pos_write(db, authorization, prior):
+        active = recheck_actor(db, authorization, prior)
+        device_auth.require_pos_pin(db, active, authorization)
+        return active
+
     @app.get("/health")
     def health():
         try:
@@ -369,7 +374,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                 "stocktake_contract_version": STOCKTAKE_CONTRACT_VERSION,
                 "evidence_contract_version": 1, "payment_contract_version": 1,
                 "sale_voids": True, "sale_void_contract_version": 1,
-                **pin_capabilities(device_auth.enabled)}
+                **pin_capabilities(device_auth.enabled, required=device_auth.pos_pin_required())}
 
     @app.post("/v1/auth/login")
     def login(payload: LoginIn, request: Request):
@@ -415,6 +420,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                 "SELECT id,name,sales_enabled,requires_authorization FROM stores WHERE id=?",
                 (actor["store_id"],)
             ).fetchone()
+            pin_required = device_auth.pos_pin_required(db, actor["store_id"])
         if not store:
             error(403, "Store unavailable")
         return {
@@ -424,7 +430,8 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
             "capabilities": {"discounts": True,
                              "discount_contract_version": DISCOUNT_CONTRACT_VERSION,
                              "optional_document_references": True, "document_contract_version": 1,
-                             **cost_capabilities(), **receipt_capabilities(), **pin_capabilities(device_auth.enabled)},
+                             **cost_capabilities(), **receipt_capabilities(),
+                             **pin_capabilities(device_auth.enabled, required=pin_required)},
             "store": {**dict(store),
                       "sales_enabled": bool(store["sales_enabled"]),
                       "requires_authorization": bool(store["requires_authorization"])}
@@ -448,7 +455,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
         return {"products": products, "lots": lots}
 
     @app.post("/v1/products")
-    def add_product(payload: ProductIn, actor: Annotated[dict, Depends(current)]):
+    def add_product(payload: ProductIn, request: Request, actor: Annotated[dict, Depends(current)]):
         require_manager(actor)
         if not payload.sku.strip() or not payload.name.strip() or not payload.category.strip():
             error(422, "SKU, name and category are required")
@@ -456,6 +463,8 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
         try:
             with connect(path) as db:
                 db.execute("BEGIN IMMEDIATE")
+                actor = authorize_pos_write(db, request.headers.get("authorization"), actor)
+                require_manager(actor)
                 db.execute("""
                     INSERT INTO products(id,store_id,sku,name,category,price_satang_per_gram,
                                          default_cost_satang_per_gram,created_at)
@@ -469,7 +478,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
         return {"product_id": pid, "created": True}
 
     @app.post("/v1/lots/receive")
-    def receive(payload: ReceiveIn, actor: Annotated[dict, Depends(current)]):
+    def receive(payload: ReceiveIn, request: Request, actor: Annotated[dict, Depends(current)]):
         require_manager(actor)
         if not all(x.strip() for x in (
             payload.lot_code, payload.supplier_name, payload.reason
@@ -480,6 +489,8 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
         try:
             with connect(path) as db:
                 db.execute("BEGIN IMMEDIATE")
+                actor = recheck_actor(db, request.headers.get("authorization"), actor)
+                require_manager(actor)
                 if payload.client_receive_id is not None:
                     existing = db.execute("SELECT request_hash,result_json FROM receive_requests "
                         "WHERE store_id=? AND client_receive_id=?",
@@ -498,6 +509,8 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                         if rejected["request_hash"] != request_hash:
                             error(409, "Receive UUID already used with different payload")
                         error(409, "Receipt cancelled before commit")
+                actor = authorize_pos_write(db, request.headers.get("authorization"), actor)
+                require_manager(actor)
                 if payload.expires_on and payload.expires_on < datetime.now(BKK).date():
                     error(422, "Expired stock cannot be received")
                 product = db.execute(
@@ -511,6 +524,8 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                     cost = product["default_cost_satang_per_gram"]
                 inventory_value(cost, payload.quantity_mg)  # Validate authoritative stored default.
                 stamp = now_utc()
+                actor = authorize_pos_write(db, request.headers.get("authorization"), actor)
+                require_manager(actor)
                 db.execute("""
                     INSERT INTO lots(id,store_id,product_id,lot_code,supplier_name,
                                      supplier_document_ref,cost_satang_per_gram,expires_on,received_at)
@@ -541,7 +556,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
         return result
 
     @app.post("/v1/lots/receive/reconcile")
-    def reconcile_receive(payload: ReceiveIn, actor: Annotated[dict, Depends(current)]):
+    def reconcile_receive(payload: ReceiveIn, request: Request, actor: Annotated[dict, Depends(current)]):
         require_manager(actor)
         if payload.client_receive_id is None:
             error(422, "Client receive UUID required for reconciliation")
@@ -549,6 +564,8 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
         with connect(path) as db:
             try:
                 db.execute("BEGIN IMMEDIATE")
+                actor = recheck_actor(db, request.headers.get("authorization"), actor)
+                require_manager(actor)
                 existing = db.execute("SELECT request_hash,result_json FROM receive_requests "
                     "WHERE store_id=? AND client_receive_id=?", (actor["store_id"], client_id)).fetchone()
                 if existing:
@@ -566,6 +583,10 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                     result = json.loads(rejected["result_json"])
                     db.rollback()
                     return result
+                # Reconciliation may cancel an original password actor's
+                # never-committed intent, but cannot create stock or a sale.
+                actor = recheck_actor(db, request.headers.get("authorization"), actor)
+                require_manager(actor)
                 result = {"status": "rejected", "client_receive_id": client_id, "code": "RECEIVE_CANCELLED",
                           "message": "Receipt cancelled before commit", "committed": False}
                 db.execute("INSERT INTO receive_rejections(store_id,client_receive_id,request_hash,"
@@ -578,7 +599,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                 raise
 
     @app.post("/v1/sales")
-    def checkout(payload: SaleIn, actor: Annotated[dict, Depends(current)]):
+    def checkout(payload: SaleIn, request: Request, actor: Annotated[dict, Depends(current)]):
         try:
             allocations, ref, items, request_hash, legacy_hash = sale_input(payload)
         except ValueError as exc:
@@ -587,6 +608,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
         with connect(path) as db:
             try:
                 db.execute("BEGIN IMMEDIATE")
+                actor = recheck_actor(db, request.headers.get("authorization"), actor)
                 existing = db.execute("""
                   SELECT id,client_sale_id,subtotal_satang,discount_satang,
                          total_satang,request_hash,cashier_user_id,payment_method FROM sales
@@ -612,6 +634,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                     if rejected["request_hash"] != request_hash:
                         error(409, "Checkout ID reused with different payload")
                     error(409, "Sale cancelled before commit")
+                actor = authorize_pos_write(db, request.headers.get("authorization"), actor)
                 store = db.execute("""
                    SELECT sales_enabled,requires_authorization FROM stores WHERE id=?
                 """, (actor["store_id"],)).fetchone()
@@ -669,6 +692,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                     allocations = [{"payment_method": payload.payment_method, "amount_satang": total}]
                 elif sum(line["amount_satang"] for line in allocations) != total:
                     error(422, "Split payment allocations must equal sale net")
+                actor = authorize_pos_write(db, request.headers.get("authorization"), actor)
                 db.execute("""
                   INSERT INTO sales(id,store_id,client_sale_id,request_hash,cashier_user_id,
                                     payment_method,authorization_ref,subtotal_satang,
@@ -712,7 +736,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                 "payment_method": payload.payment_method, "payments": allocations}
 
     @app.post("/v1/sales/reconcile")
-    def reconcile_sale(payload: SaleIn, actor: Annotated[dict, Depends(current)]):
+    def reconcile_sale(payload: SaleIn, request: Request, actor: Annotated[dict, Depends(current)]):
         try:
             _, _, _, request_hash, legacy_hash = sale_input(payload)
         except ValueError as exc:
@@ -721,6 +745,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
         with connect(path) as db:
             try:
                 db.execute("BEGIN IMMEDIATE")
+                actor = recheck_actor(db, request.headers.get("authorization"), actor)
                 row = db.execute("SELECT * FROM sales WHERE store_id=? AND client_sale_id=?", (actor["store_id"], client_id)).fetchone()
                 if row:
                     if row["cashier_user_id"] != actor["id"]:
@@ -740,6 +765,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                     result = json.loads(rejected["result_json"])
                     db.rollback()
                     return result
+                actor = recheck_actor(db, request.headers.get("authorization"), actor)
                 result = {"status": "rejected", "client_sale_id": client_id, "code": "SALE_CANCELLED",
                           "message": "Sale cancelled before commit", "committed": False}
                 db.execute("INSERT INTO sale_rejections(store_id,client_sale_id,actor_user_id,request_hash,result_json,created_at) VALUES(?,?,?,?,?,?)",
@@ -799,11 +825,14 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
             """, (actor["store_id"],)).fetchall()
         return {"events": [dict(r) for r in rows]}
 
-    register_stock_routes(app, path, connect, current, require_manager, error, now_utc, uuid_str)
-    register_evidence_routes(app, path, connect, current, require_manager, error, now_utc, uuid_str)
+    register_stock_routes(app, path, connect, current, require_manager, error, now_utc, uuid_str,
+                          authorize_pos_write=authorize_pos_write, recheck_actor=recheck_actor)
+    register_evidence_routes(app, path, connect, current, require_manager, error, now_utc, uuid_str,
+                             authorize_pos_write=authorize_pos_write, recheck_actor=recheck_actor)
     register_receipt_routes(app, path, connect, current, error, recheck_actor=recheck_actor,
-                            require_manager=require_manager, now_utc=now_utc, uuid_str=uuid_str)
-    device_auth.register(app, current)
+                            require_manager=require_manager, now_utc=now_utc, uuid_str=uuid_str,
+                            authorize_pos_write=authorize_pos_write)
+    device_auth.register(app, current, recheck_actor=recheck_actor)
     return app
 
 app = create_app()

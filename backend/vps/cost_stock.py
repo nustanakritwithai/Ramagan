@@ -4,7 +4,7 @@ import json
 import uuid
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from pydantic import BaseModel, Field, StrictInt, StrictStr
 from stocktake_evidence import METADATA_COLUMNS, metadata as evidence_metadata
 
@@ -231,7 +231,8 @@ def validate_evidence(db, items, actor, client_id, error):
             error(409, "Evidence already linked to a completed count")
 
 
-def register_stock_routes(app, path, connect, current, require_manager, error, now_utc, uuid_str):
+def register_stock_routes(app, path, connect, current, require_manager, error, now_utc, uuid_str, *,
+                          authorize_pos_write, recheck_actor):
     @app.get("/v1/inventory")
     def inventory(actor: Annotated[dict, Depends(current)]):
         require_manager(actor)
@@ -239,12 +240,14 @@ def register_stock_routes(app, path, connect, current, require_manager, error, n
             return inventory_snapshot(db, actor["store_id"])
 
     @app.post("/v1/stocktakes")
-    def stocktake(payload: StocktakeIn, actor: Annotated[dict, Depends(current)]):
+    def stocktake(payload: StocktakeIn, request: Request, actor: Annotated[dict, Depends(current)]):
         require_manager(actor)
         shift, reason, items, request_hash = prepare_stocktake(payload, error)
         with connect(path) as db:
             try:
                 db.execute("BEGIN IMMEDIATE")
+                actor = recheck_actor(db, request.headers.get("authorization"), actor)
+                require_manager(actor)
                 existing = db.execute("SELECT * FROM stocktakes WHERE store_id=? AND client_stocktake_id=?",
                     (actor["store_id"], str(payload.client_stocktake_id))).fetchone()
                 if existing:
@@ -260,6 +263,8 @@ def register_stock_routes(app, path, connect, current, require_manager, error, n
                     if rejected["request_hash"] != request_hash:
                         error(409, "Stocktake UUID already used with different payload")
                     error(409, "Stock changed; reload and recount")
+                actor = authorize_pos_write(db, request.headers.get("authorization"), actor)
+                require_manager(actor)
                 validated = []
                 for item in items:
                     lot = db.execute("""
@@ -278,6 +283,8 @@ def register_stock_routes(app, path, connect, current, require_manager, error, n
                     delta_value = None if before_value is None else after_value - before_value
                     validated.append((item, lot, delta_value))
                 validate_evidence(db, items, actor, str(payload.client_stocktake_id), error)
+                actor = authorize_pos_write(db, request.headers.get("authorization"), actor)
+                require_manager(actor)
                 sid, stamp = uuid_str(), now_utc()
                 db.execute("""INSERT INTO stocktakes(id,store_id,client_stocktake_id,request_hash,
                     shift_label,reason,actor_user_id,actor_email,created_at) VALUES(?,?,?,?,?,?,?,?,?)""",
@@ -314,13 +321,15 @@ def register_stock_routes(app, path, connect, current, require_manager, error, n
                 raise
 
     @app.post("/v1/stocktakes/reconcile")
-    def reconcile(payload: StocktakeIn, actor: Annotated[dict, Depends(current)]):
+    def reconcile(payload: StocktakeIn, request: Request, actor: Annotated[dict, Depends(current)]):
         require_manager(actor)
         _, _, items, request_hash = prepare_stocktake(payload, error)
         client_id = str(payload.client_stocktake_id)
         with connect(path) as db:
             try:
                 db.execute("BEGIN IMMEDIATE")
+                actor = recheck_actor(db, request.headers.get("authorization"), actor)
+                require_manager(actor)
                 existing = db.execute("SELECT * FROM stocktakes WHERE store_id=? AND client_stocktake_id=?",
                     (actor["store_id"], client_id)).fetchone()
                 if existing:
@@ -347,6 +356,8 @@ def register_stock_routes(app, path, connect, current, require_manager, error, n
                     validate_evidence(db, items, actor, client_id, error)
                     db.rollback()
                     return {"status": "pending", "client_stocktake_id": client_id}
+                actor = recheck_actor(db, request.headers.get("authorization"), actor)
+                require_manager(actor)
                 result = {"status": "rejected", "client_stocktake_id": client_id, "code": "STOCK_CHANGED",
                           "message": "Stock changed; reload and recount", "committed": False}
                 db.execute("INSERT INTO stocktake_rejections(store_id,client_stocktake_id,request_hash,"

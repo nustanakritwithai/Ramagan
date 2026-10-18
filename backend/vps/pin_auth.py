@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import os
 from pathlib import Path
+import re
 import secrets
 import time
 from typing import Literal
@@ -21,6 +22,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
 CONTRACT_VERSION = 1
+ENROLLMENT_CONTRACT_VERSION = 2
 SESSION_SECONDS = 300
 DEVICE_SECONDS = 90 * 24 * 3600
 LOCK_SECONDS = 15 * 60
@@ -55,7 +57,7 @@ class Pins(PrivateInput):
 class Enrollment(PrivateInput):
     owner_password: StrictStr = Field(min_length=1, max_length=128)
     label: StrictStr = Field(min_length=1, max_length=100)
-    pins: Pins
+    pins: Pins | None = None
 
 
 class DeviceInput(PrivateInput):
@@ -97,8 +99,10 @@ def resolve_pepper(value=None):
     return value if isinstance(value, bytes) and 32 <= len(value) <= 4096 else None
 
 
-def capabilities(enabled=False):
-    return {"shared_role_pin": bool(enabled), "shared_role_pin_contract_version": CONTRACT_VERSION}
+def capabilities(enabled=False, *, required=None):
+    return {"shared_role_pin": bool(enabled), "shared_role_pin_contract_version": CONTRACT_VERSION,
+            "pos_pin_required": bool(enabled) if required is None else bool(required), "pin_preserving_enrollment": True,
+            "device_enrollment_contract_version": ENROLLMENT_CONTRACT_VERSION}
 
 
 def _digest(value):
@@ -109,6 +113,10 @@ class DeviceAuth:
     def __init__(self, path, connect, verify_password, pepper=None):
         self.path, self.connect, self.verify_password = path, connect, verify_password
         self._pepper = resolve_pepper(pepper)
+        # Availability and policy are different. Losing an explicitly configured
+        # key must never turn a PIN-protected shop into a password-only POS.
+        self._policy_intent = bool(pepper) or bool(
+            os.environ.get("RAMAGAN_PIN_PEPPER", "") or os.environ.get("RAMAGAN_PIN_PEPPER_FILE", ""))
 
     @property
     def enabled(self):
@@ -117,6 +125,15 @@ class DeviceAuth:
     def require_enabled(self):
         if not self.enabled:
             raise HTTPException(503, "Shared-role PIN authentication is not configured")
+
+    def pos_pin_required(self, db=None, store=None):
+        if self.enabled or self._policy_intent:
+            return True
+        if db is None:
+            with self.connect(self.path) as reader:
+                return self.pos_pin_required(reader, store)
+        sql = "SELECT 1 FROM device_auth_roles" + (" WHERE store_id=?" if store is not None else "") + " LIMIT 1"
+        return db.execute(sql, (store,) if store is not None else ()).fetchone() is not None
 
     @contextmanager
     def transaction(self):
@@ -185,11 +202,15 @@ class DeviceAuth:
         db.commit()
         raise HTTPException(status, message)
 
-    def _owner(self, db, actor, password, now):
+    def _owner_identity(self, db, actor):
         user = db.execute("SELECT * FROM users WHERE id=? AND is_active=1", (actor["id"],)).fetchone()
         mapped = db.execute("SELECT 1 FROM device_auth_roles WHERE actor_user_id=?", (actor["id"],)).fetchone()
         if (not user or mapped or user["role"] != "owner" or user["store_id"] != actor["store_id"]):
             raise HTTPException(403, "A password-authenticated store owner is required")
+        return user
+
+    def _owner(self, db, actor, password, now):
+        user = self._owner_identity(db, actor)
         scopes = [("owner_password", user["id"], "owner")]
         if self._blocked(db, user["store_id"], scopes, now):
             raise HTTPException(429, "Owner authentication temporarily locked")
@@ -208,13 +229,38 @@ class DeviceAuth:
         return row
 
     def _role(self, db, store, role):
-        return db.execute("""SELECT r.*,u.email,u.is_active,u.role AS actual_role,u.store_id AS actual_store
+        return db.execute("""SELECT r.*,u.email,u.is_active,u.role AS actual_role,u.store_id AS actual_store,
+            u.password_hash AS actor_password_hash
             FROM device_auth_roles r JOIN users u ON u.id=r.actor_user_id
             WHERE r.store_id=? AND r.role=?""", (store, role)).fetchone()
 
     def _roles_valid(self, db, store):
         return all((row := self._role(db, store, role)) is not None and row["is_active"]
-                   and row["actual_role"] == role and row["actual_store"] == store for role in ROLES)
+                   and row["actual_role"] == role and row["actual_store"] == store
+                   and type(row["actor_password_hash"]) is str and type(row["pin_hash"]) is str
+                   and row["actor_password_hash"].startswith("unusable-pin-role-v1$")
+                   and re.fullmatch(r"pin-scrypt-v1\$[0-9a-f]{32}\$[0-9a-f]{64}", row["pin_hash"])
+                   for role in ROLES)
+
+    def _configured(self, db, store):
+        count = db.execute("SELECT count(*) FROM device_auth_roles WHERE store_id=?", (store,)).fetchone()[0]
+        if count == 0:
+            return False
+        if count != 3 or not self._roles_valid(db, store):
+            raise HTTPException(409, "Role authentication requires owner recovery")
+        return True
+
+    def require_pos_pin(self, db, actor, authorization):
+        """Call after fresh authentication, inside the business write transaction."""
+        if not self.pos_pin_required(db, actor["store_id"]):
+            return
+        self.require_enabled()
+        if not self._configured(db, actor["store_id"]):
+            raise HTTPException(409, "Set up role PINs and connect this device before using POS")
+        token_hash = _digest(authorization[7:].strip()) if authorization and authorization.startswith("Bearer ") else ""
+        binding = db.execute("SELECT 1 FROM device_pin_sessions WHERE token_hash=?", (token_hash,)).fetchone()
+        if not binding or not self.valid_session(db, token_hash, actor, int(time.time())):
+            raise HTTPException(403, "A PIN-unlocked session is required for POS operations")
 
     @staticmethod
     def _distinct(pins):
@@ -240,27 +286,41 @@ class DeviceAuth:
                          (token_hash, now, actor["id"], actor["store_id"], actor["role"])).fetchone()
         return row is not None
 
-    def register(self, app, current):
+    def register(self, app, current, *, recheck_actor):
         router = APIRouter(prefix="/v1/auth/device", route_class=PrivateRoute,
                            dependencies=[Depends(self.require_enabled)])
 
+        @router.get("/configuration")
+        def configuration(actor: dict = Depends(current), authorization: str | None = Header(default=None)):
+            with self.connect(self.path) as db:
+                db.execute("BEGIN")
+                try:
+                    actor = recheck_actor(db, authorization, actor)
+                    owner = self._owner_identity(db, actor)
+                    configured = self._configured(db, owner["store_id"])
+                    return {"configured": configured, "roles": list(ROLES) if configured else [],
+                            "device_enrollment_contract_version": ENROLLMENT_CONTRACT_VERSION}
+                finally:
+                    db.rollback()
+
         @router.post("/enroll")
-        def enroll(payload: Enrollment, actor: dict = Depends(current)):
+        def enroll(payload: Enrollment, actor: dict = Depends(current), authorization: str | None = Header(default=None)):
             now = int(time.time())
-            self._distinct(payload.pins)
+            if payload.pins is not None:
+                self._distinct(payload.pins)
             if not payload.label.strip():
                 raise HTTPException(422, "Device label is required")
             with self.transaction() as db:
+                actor = recheck_actor(db, authorization, actor)
                 owner = self._owner(db, actor, payload.owner_password, now)
                 store = owner["store_id"]
-                existing = db.execute("SELECT count(*) FROM device_auth_roles WHERE store_id=?", (store,)).fetchone()[0]
-                if existing:
-                    if existing != 3 or not self._roles_valid(db, store):
-                        raise HTTPException(409, "Role authentication requires owner recovery")
-                    if not all(self._pin_matches(getattr(payload.pins, role), store, role,
+                if self._configured(db, store):
+                    if payload.pins is not None and not all(self._pin_matches(getattr(payload.pins, role), store, role,
                                                 self._role(db, store, role)["pin_hash"]) for role in ROLES):
                         raise HTTPException(409, "Role PINs already exist; change them in PIN settings")
                 else:
+                    if payload.pins is None:
+                        raise HTTPException(422, "The first device requires three distinct role PINs")
                     for role in ROLES:
                         uid = str(uuid.uuid4())
                         email = "role-" + uid + "@pin-role.ramagan.invalid"
@@ -339,9 +399,10 @@ class DeviceAuth:
             return {"ok": True}
 
         @router.post("/revoke")
-        def revoke(payload: Revoke, actor: dict = Depends(current)):
+        def revoke(payload: Revoke, actor: dict = Depends(current), authorization: str | None = Header(default=None)):
             now = int(time.time())
             with self.transaction() as db:
+                actor = recheck_actor(db, authorization, actor)
                 owner = self._owner(db, actor, payload.owner_password, now)
                 device = db.execute("SELECT * FROM remembered_devices WHERE id=? AND store_id=?",
                                     (str(payload.device_id), owner["store_id"])).fetchone()
@@ -353,10 +414,11 @@ class DeviceAuth:
             return {"ok": True}
 
         @router.post("/pins")
-        def pins(payload: ChangePins, actor: dict = Depends(current)):
+        def pins(payload: ChangePins, actor: dict = Depends(current), authorization: str | None = Header(default=None)):
             now = int(time.time())
             self._distinct(payload.pins)
             with self.transaction() as db:
+                actor = recheck_actor(db, authorization, actor)
                 owner = self._owner(db, actor, payload.owner_password, now)
                 store = owner["store_id"]
                 if not self._roles_valid(db, store):

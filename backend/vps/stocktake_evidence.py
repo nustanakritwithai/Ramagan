@@ -71,7 +71,8 @@ def normalize_image(raw, declared_type):
             raise ValueError("Invalid, truncated or oversized image") from exc
 
 
-def register_evidence_routes(app, path, connect, current, require_manager, error, now_utc, uuid_str):
+def register_evidence_routes(app, path, connect, current, require_manager, error, now_utc, uuid_str, *,
+                             authorize_pos_write, recheck_actor):
     @app.post("/v1/stocktake-evidence/{client_upload_id}")
     async def upload(client_upload_id: uuid.UUID, lot_id: uuid.UUID, client_stocktake_id: uuid.UUID,
                      request: Request, actor: Annotated[dict, Depends(current)]):
@@ -113,6 +114,8 @@ def register_evidence_routes(app, path, connect, current, require_manager, error
                 existing = db.execute("SELECT " + METADATA_COLUMNS + ",actor_user_id,source_sha256 FROM stocktake_evidence "
                     "WHERE store_id=? AND client_upload_id=?", (actor["store_id"], str(client_upload_id))).fetchone()
                 if existing:
+                    actor = recheck_actor(db, request.headers.get("authorization"), actor)
+                    require_manager(actor)
                     if (existing["actor_user_id"] != actor["id"] or existing["source_sha256"] != source_hash or
                             existing["lot_id"] != str(lot_id) or existing["client_stocktake_id"] != str(client_stocktake_id)):
                         error(409, "Evidence UUID already used with different image or context")
@@ -124,14 +127,8 @@ def register_evidence_routes(app, path, connect, current, require_manager, error
             with connect(path) as db:
                 try:
                     db.execute("BEGIN IMMEDIATE")
-                    authorization = request.headers.get("authorization", "")
-                    token_hash = hashlib.sha256(authorization[7:].strip().encode()).hexdigest()
-                    active = db.execute("SELECT u.id FROM users u JOIN sessions s ON s.user_id=u.id "
-                        "WHERE u.id=? AND u.store_id=? AND u.is_active=1 AND u.role IN ('owner','manager') "
-                        "AND s.token_hash=? AND s.revoked=0 AND s.expires_at>?",
-                        (actor["id"], actor["store_id"], token_hash, int(time.time()))).fetchone()
-                    if not active:
-                        error(403, "Session or inventory permission changed during upload")
+                    actor = recheck_actor(db, request.headers.get("authorization"), actor)
+                    require_manager(actor)
                     raced = db.execute("SELECT " + METADATA_COLUMNS + ",actor_user_id,source_sha256 FROM stocktake_evidence "
                         "WHERE store_id=? AND client_upload_id=?", (actor["store_id"], str(client_upload_id))).fetchone()
                     if raced:
@@ -141,6 +138,8 @@ def register_evidence_routes(app, path, connect, current, require_manager, error
                         result = metadata(raced, duplicate=True)
                         db.rollback()
                         return result
+                    actor = authorize_pos_write(db, request.headers.get("authorization"), actor)
+                    require_manager(actor)
                     if not db.execute("SELECT id FROM lots WHERE id=? AND store_id=?", (str(lot_id), actor["store_id"])).fetchone():
                         error(422, "Lot unavailable in this store")
                     if db.execute("SELECT id FROM stocktakes WHERE store_id=? AND client_stocktake_id=?",
