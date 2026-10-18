@@ -1,6 +1,10 @@
 # RAMAGAN V1 — Website + Android on Windows VPS backend
 
-**Preview, NOT APPROVED FOR LIVE SALES.** Existing V0 remains at repo root.
+**Source candidate: four-screen POS, split payments and private stocktake photos.**
+See [POS_FLOW.md](POS_FLOW.md) and the backend
+[schema 4 contract](../backend/vps/STOCKTAKE_EVIDENCE_CONTRACT.md).
+Source and CI builds do not establish that the original VPS or installed APK has
+received this release. Existing V0 remains at repo root.
 
 ## Architecture
 
