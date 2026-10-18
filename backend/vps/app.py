@@ -28,13 +28,16 @@ from discounts import (
 )
 from migrations import CURRENT_SCHEMA_VERSION, initialize_database
 from reports import build_sales_report
+from schema_v4 import SCHEMA_V4
+from payments import PaymentIn, normalize_payments, recorded_payments, split_request_hash
+from stocktake_evidence import register_evidence_routes
 from cost_stock import (
     COST_CONTRACT_VERSION, STOCKTAKE_CONTRACT_VERSION, EXTRA_SCHEMA,
     capabilities as cost_capabilities, canonical_hash, inventory_value,
     product_rows, register_stock_routes,
 )
 
-APP_VERSION = "1.2.0-vps-preview"
+APP_VERSION = "1.3.0-vps-preview"
 BKK = ZoneInfo("Asia/Bangkok")
 ROLES = ("owner", "manager", "staff")
 DEFAULT_PATH = str(Path.home() / "Ramagan" / "data" / "ramagan.sqlite3")
@@ -103,7 +106,7 @@ CREATE TABLE IF NOT EXISTS sales (
   client_sale_id TEXT NOT NULL,
   request_hash TEXT NOT NULL,
   cashier_user_id TEXT NOT NULL REFERENCES users(id),
-  payment_method TEXT NOT NULL CHECK(payment_method IN ('cash','transfer')),
+  payment_method TEXT NOT NULL CHECK(payment_method IN ('cash','transfer','split')),
   authorization_ref TEXT,
   subtotal_satang INTEGER NOT NULL CHECK(subtotal_satang >= 0),
   discount_satang INTEGER NOT NULL DEFAULT 0 CHECK(discount_satang >= 0),
@@ -152,7 +155,7 @@ BEGIN SELECT RAISE(ABORT, 'Immutable sale lines'); END;
 CREATE INDEX IF NOT EXISTS sales_store_created ON sales(store_id,created_at);
 CREATE INDEX IF NOT EXISTS ledger_store_lot_created ON ledger_events(store_id,lot_id,created_at);
 CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions(user_id);
-""" + EXTRA_SCHEMA
+""" + EXTRA_SCHEMA + SCHEMA_V4
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -250,6 +253,7 @@ class SaleIn(BaseModel):
     payment_method: str
     authorization_ref: str | None = Field(default=None, max_length=120)
     discount_satang: StrictInt = Field(default=0, ge=0, le=MAX_SALE_SATANG)
+    payments: list[PaymentIn] | None = Field(default=None, max_length=2)
 
 def receive_request_hash(payload: ReceiveIn) -> str:
     return canonical_hash({"product_id": str(payload.product_id),
@@ -258,6 +262,27 @@ def receive_request_hash(payload: ReceiveIn) -> str:
         "quantity_mg": payload.quantity_mg,
         "expires_on": payload.expires_on.isoformat() if payload.expires_on else None,
         "reason": payload.reason.strip(), "cost_satang_per_gram": payload.cost_satang_per_gram})
+
+
+def sale_input(payload):
+    allocations = normalize_payments(payload.payment_method, payload.payments)
+    ref = (payload.authorization_ref or "").strip()
+    ids = [str(line.lot_id) for line in payload.items]
+    if len(set(ids)) != len(ids):
+        raise ValueError("Duplicate lot in one checkout")
+    items = sorted([{"lot_id": str(line.lot_id), "quantity_mg": line.quantity_mg}
+                    for line in payload.items], key=lambda row: row["lot_id"])
+    request_hash = (split_request_hash(items, ref, payload.discount_satang, allocations)
+                    if allocations is not None else checkout_request_hash(
+                        items, payload.payment_method, ref, payload.discount_satang))
+    return allocations, ref, items, request_hash, legacy_checkout_request_hash(items, payload.payment_method, ref)
+
+
+def stored_sale(db, row):
+    return {"sale_id": row["id"], "client_sale_id": row["client_sale_id"],
+            "subtotal_satang": row["subtotal_satang"], "discount_satang": row["discount_satang"],
+            "total_satang": row["total_satang"], "duplicate": True, "payment_method": row["payment_method"],
+            "payments": recorded_payments(db, row["id"], row["payment_method"], row["total_satang"])}
 
 
 def error(status: int, message: str):
@@ -320,7 +345,8 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
                 "schema_version": CURRENT_SCHEMA_VERSION,
                 "discount_contract_version": DISCOUNT_CONTRACT_VERSION,
                 "cost_contract_version": COST_CONTRACT_VERSION,
-                "stocktake_contract_version": STOCKTAKE_CONTRACT_VERSION}
+                "stocktake_contract_version": STOCKTAKE_CONTRACT_VERSION,
+                "evidence_contract_version": 1, "payment_contract_version": 1}
 
     @app.post("/v1/auth/login")
     def login(payload: LoginIn, request: Request):
@@ -530,27 +556,17 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
 
     @app.post("/v1/sales")
     def checkout(payload: SaleIn, actor: Annotated[dict, Depends(current)]):
-        if payload.payment_method not in ("cash", "transfer"):
-            error(422, "Invalid payment method")
-        ref = (payload.authorization_ref or "").strip()
-        ids = [str(x.lot_id) for x in payload.items]
-        if len(set(ids)) != len(ids):
-            error(422, "Duplicate lot in one checkout")
-        items = sorted([
-            {"lot_id": str(x.lot_id), "quantity_mg": x.quantity_mg}
-            for x in payload.items
-        ], key=lambda x: x["lot_id"])
-        request_hash = checkout_request_hash(
-            items, payload.payment_method, ref, payload.discount_satang
-        )
-        legacy_hash = legacy_checkout_request_hash(items, payload.payment_method, ref)
+        try:
+            allocations, ref, items, request_hash, legacy_hash = sale_input(payload)
+        except ValueError as exc:
+            error(422, str(exc))
         sid = uuid_str()
         with connect(path) as db:
             try:
                 db.execute("BEGIN IMMEDIATE")
                 existing = db.execute("""
                   SELECT id,client_sale_id,subtotal_satang,discount_satang,
-                         total_satang,request_hash,cashier_user_id FROM sales
+                         total_satang,request_hash,cashier_user_id,payment_method FROM sales
                    WHERE store_id=? AND client_sale_id=?
                 """, (actor["store_id"], str(payload.client_sale_id))).fetchone()
                 if existing:
@@ -562,12 +578,17 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
                     )
                     if not matches:
                         error(409, "Checkout ID reused with different payload")
+                    result = stored_sale(db, existing)
                     db.rollback()
-                    return {"sale_id": existing["id"],
-                            "client_sale_id": existing["client_sale_id"],
-                            "subtotal_satang": existing["subtotal_satang"],
-                            "discount_satang": existing["discount_satang"],
-                            "total_satang": existing["total_satang"], "duplicate": True}
+                    return result
+                rejected = db.execute("SELECT actor_user_id,request_hash FROM sale_rejections WHERE store_id=? AND client_sale_id=?",
+                                      (actor["store_id"], str(payload.client_sale_id))).fetchone()
+                if rejected:
+                    if rejected["actor_user_id"] != actor["id"]:
+                        error(403, "Checkout belongs to another cashier")
+                    if rejected["request_hash"] != request_hash:
+                        error(409, "Checkout ID reused with different payload")
+                    error(409, "Sale cancelled before commit")
                 store = db.execute("""
                    SELECT sales_enabled,requires_authorization FROM stores WHERE id=?
                 """, (actor["store_id"],)).fetchone()
@@ -621,6 +642,10 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
                 except ValueError as exc:
                     error(422, str(exc))
                 total = subtotal - payload.discount_satang
+                if allocations is None:
+                    allocations = [{"payment_method": payload.payment_method, "amount_satang": total}]
+                elif sum(line["amount_satang"] for line in allocations) != total:
+                    error(422, "Split payment allocations must equal sale net")
                 db.execute("""
                   INSERT INTO sales(id,store_id,client_sale_id,request_hash,cashier_user_id,
                                     payment_method,authorization_ref,subtotal_satang,
@@ -629,6 +654,8 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
                 """, (sid, actor["store_id"], str(payload.client_sale_id), request_hash,
                       actor["id"], payload.payment_method, ref or None, subtotal,
                       payload.discount_satang, total, stamp))
+                db.executemany("INSERT INTO sale_payments(sale_id,payment_method,amount_satang) VALUES(?,?,?)",
+                               [(sid, line["payment_method"], line["amount_satang"]) for line in allocations])
                 for lot_id, qty, price, line_satang, unit_cost, line_cost in validated:
                     amounts = allocation[lot_id]
                     changed = db.execute("""
@@ -658,24 +685,66 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
                 raise
         return {"sale_id": sid, "client_sale_id": str(payload.client_sale_id),
                 "subtotal_satang": subtotal, "discount_satang": payload.discount_satang,
-                "total_satang": total, "duplicate": False}
+                "total_satang": total, "duplicate": False,
+                "payment_method": payload.payment_method, "payments": allocations}
+
+    @app.post("/v1/sales/reconcile")
+    def reconcile_sale(payload: SaleIn, actor: Annotated[dict, Depends(current)]):
+        try:
+            _, _, _, request_hash, legacy_hash = sale_input(payload)
+        except ValueError as exc:
+            error(422, str(exc))
+        client_id = str(payload.client_sale_id)
+        with connect(path) as db:
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute("SELECT * FROM sales WHERE store_id=? AND client_sale_id=?", (actor["store_id"], client_id)).fetchone()
+                if row:
+                    if row["cashier_user_id"] != actor["id"]:
+                        error(403, "Checkout belongs to another cashier")
+                    if row["request_hash"] != request_hash and not (payload.discount_satang == 0 and row["discount_satang"] == 0 and row["request_hash"] == legacy_hash):
+                        error(409, "Checkout ID reused with different payload")
+                    result = {"status": "completed", "result": stored_sale(db, row)}
+                    db.rollback()
+                    return result
+                rejected = db.execute("SELECT * FROM sale_rejections WHERE store_id=? AND client_sale_id=?",
+                                      (actor["store_id"], client_id)).fetchone()
+                if rejected:
+                    if rejected["actor_user_id"] != actor["id"]:
+                        error(403, "Checkout belongs to another cashier")
+                    if rejected["request_hash"] != request_hash:
+                        error(409, "Checkout ID reused with different payload")
+                    result = json.loads(rejected["result_json"])
+                    db.rollback()
+                    return result
+                result = {"status": "rejected", "client_sale_id": client_id, "code": "SALE_CANCELLED",
+                          "message": "Sale cancelled before commit", "committed": False}
+                db.execute("INSERT INTO sale_rejections(store_id,client_sale_id,actor_user_id,request_hash,result_json,created_at) VALUES(?,?,?,?,?,?)",
+                           (actor["store_id"], client_id, actor["id"], request_hash, json.dumps(result, sort_keys=True), now_utc()))
+                db.commit()
+                return result
+            except Exception:
+                db.rollback()
+                raise
 
     @app.get("/v1/sales/by-client/{client_sale_id}")
     def sale_lookup(client_sale_id: uuid.UUID, actor: Annotated[dict, Depends(current)]):
         with connect(path) as db:
             row = db.execute("""
               SELECT id,client_sale_id,subtotal_satang,discount_satang,
-                     total_satang,cashier_user_id FROM sales
+                     total_satang,cashier_user_id,payment_method FROM sales
                WHERE store_id=? AND client_sale_id=?
             """, (actor["store_id"], str(client_sale_id))).fetchone()
         if not row:
             error(404, "Sale not found")
         if row["cashier_user_id"] != actor["id"] and actor["role"] == "staff":
             error(403, "Not permitted to inspect this sale")
+        with connect(path) as db:
+            payments = recorded_payments(db, row["id"], row["payment_method"], row["total_satang"])
         return {"id": row["id"], "client_sale_id": row["client_sale_id"],
                 "subtotal_satang": row["subtotal_satang"],
                 "discount_satang": row["discount_satang"],
-                "total_satang": row["total_satang"]}
+                "total_satang": row["total_satang"], "payment_method": row["payment_method"], "payments": payments}
 
     @app.get("/v1/admin/sales-report")
     def sales_report(
@@ -708,6 +777,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
         return {"events": [dict(r) for r in rows]}
 
     register_stock_routes(app, path, connect, current, require_manager, error, now_utc, uuid_str)
+    register_evidence_routes(app, path, connect, current, require_manager, error, now_utc, uuid_str)
     return app
 
 app = create_app()

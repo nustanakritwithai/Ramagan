@@ -14,6 +14,7 @@ from migrations import (
     initialize_database, inspect_database, main, migrate_copy, restore_copy,
 )
 from cost_stock import EXTRA_SCHEMA
+from schema_v4 import SCHEMA_V4
 
 # Frozen pre-discount schema from 9c59899. No app import/module-level DB creation.
 LEGACY_SCHEMA = """
@@ -133,7 +134,7 @@ V2_SCHEMA = LEGACY_SCHEMA.replace(
     "  UNIQUE(sale_id, lot_id)",
     "  CHECK(line_subtotal_satang = line_discount_satang + line_total_satang),\n  UNIQUE(sale_id, lot_id)",
 )
-FRESH_SCHEMA = V2_SCHEMA.replace(
+V3_SCHEMA = V2_SCHEMA.replace(
     "  price_satang_per_gram INTEGER NOT NULL CHECK(price_satang_per_gram BETWEEN 0 AND 100000000),",
     "  price_satang_per_gram INTEGER NOT NULL CHECK(price_satang_per_gram BETWEEN 0 AND 100000000),\n"
     "  default_cost_satang_per_gram INTEGER CHECK(default_cost_satang_per_gram IS NULL OR (typeof(default_cost_satang_per_gram)='integer' AND default_cost_satang_per_gram BETWEEN 0 AND 100000000)),",
@@ -151,6 +152,8 @@ FRESH_SCHEMA = V2_SCHEMA.replace(
     "  unit_cost_satang_per_gram INTEGER CHECK(unit_cost_satang_per_gram IS NULL OR (typeof(unit_cost_satang_per_gram)='integer' AND unit_cost_satang_per_gram BETWEEN 0 AND 100000000)),\n"
     "  line_cost_satang INTEGER CHECK((line_cost_satang IS NULL AND unit_cost_satang_per_gram IS NULL) OR (typeof(line_cost_satang)='integer' AND line_cost_satang>=0 AND unit_cost_satang_per_gram IS NOT NULL)),",
 ) + EXTRA_SCHEMA
+FRESH_SCHEMA = V3_SCHEMA.replace("CHECK(payment_method IN ('cash','transfer'))",
+                                 "CHECK(payment_method IN ('cash','transfer','split'))") + SCHEMA_V4
 STORE_ID = "11111111-1111-4111-8111-111111111111"
 USER_ID = "22222222-2222-4222-8222-222222222222"
 PRODUCT_ID = "33333333-3333-4333-8333-333333333333"
@@ -412,7 +415,7 @@ class DiscountMigrationTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             backup_and_migrate_copy(failed, self.root / "failure-backups", confirmed_offline_copy=True, failure_hook=fail)
         self.assertEqual(failed_before, logical_snapshot(failed))
-        backups = list((self.root / "failure-backups").glob("ramagan-before-v3-*"))
+        backups = list((self.root / "failure-backups").glob("ramagan-before-v4-*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(failed_before, logical_snapshot(backups[0]))
 

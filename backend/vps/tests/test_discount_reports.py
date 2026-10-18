@@ -315,7 +315,10 @@ class DiscountReportTests(unittest.TestCase):
             "discounts": True, "discount_contract_version": 1,
             "promotions": False, "shift_reconciliation": False,
             "inventory_costs": True, "cost_contract_version": 1,
-            "stocktakes": True, "stocktake_contract_version": 1,
+            "stocktakes": True, "stocktake_contract_version": 2,
+            "stocktake_evidence": True, "evidence_contract_version": 1,
+            "split_payments": True, "payment_contract_version": 1,
+            "sale_reconciliation": True, "sale_reconciliation_contract_version": 1,
         })
 
     def test_rankings_remain_ordered_by_recorded_net_not_gross(self):

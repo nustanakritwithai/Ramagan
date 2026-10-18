@@ -98,7 +98,8 @@ class DiscountApiTests(unittest.TestCase):
             response = self.checkout(payload)
             self.assertEqual(response.status_code, 200)
             sale = response.json()
-            self.assertEqual(sale, {"sale_id": sale["sale_id"], "client_sale_id": payload["client_sale_id"], "subtotal_satang": 30000, "discount_satang": discount, "total_satang": 30000 - discount, "duplicate": False})
+            self.assertEqual(sale, {"sale_id": sale["sale_id"], "client_sale_id": payload["client_sale_id"], "subtotal_satang": 30000, "discount_satang": discount, "total_satang": 30000 - discount, "duplicate": False,
+                "payment_method": "cash", "payments": [{"payment_method": "cash", "amount_satang": 30000 - discount}]})
             with connect(self.path) as db:
                 lines = db.execute("SELECT quantity_mg,line_subtotal_satang,line_discount_satang,line_total_satang FROM sale_lines WHERE sale_id=?", (sale["sale_id"],)).fetchall()
                 self.assertEqual(sum(row[0] for row in lines), 2000)
@@ -169,7 +170,8 @@ class DiscountApiTests(unittest.TestCase):
         self.assertEqual(duplicate.json(), {**original, "duplicate": True})
         lookup = self.client.get("/v1/sales/by-client/" + payload["client_sale_id"], headers=self.headers["staff"])
         self.assertEqual(lookup.status_code, 200)
-        self.assertEqual(lookup.json(), {"id": original["sale_id"], "client_sale_id": payload["client_sale_id"], "subtotal_satang": 30000, "discount_satang": 17550, "total_satang": 12450})
+        self.assertEqual(lookup.json(), {"id": original["sale_id"], "client_sale_id": payload["client_sale_id"], "subtotal_satang": 30000, "discount_satang": 17550, "total_satang": 12450,
+            "payment_method": "cash", "payments": [{"payment_method": "cash", "amount_satang": 12450}]})
         self.assert_unchanged(before)
 
     def legacy_sale(self):
@@ -198,7 +200,8 @@ class DiscountApiTests(unittest.TestCase):
                 retry.pop("discount_satang")
             response = self.checkout(retry)
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json(), {"sale_id": sid, "client_sale_id": payload["client_sale_id"], "subtotal_satang": 30000, "discount_satang": 0, "total_satang": 30000, "duplicate": True})
+            self.assertEqual(response.json(), {"sale_id": sid, "client_sale_id": payload["client_sale_id"], "subtotal_satang": 30000, "discount_satang": 0, "total_satang": 30000, "duplicate": True,
+                "payment_method": "cash", "payments": [{"payment_method": "cash", "amount_satang": 30000}]})
             self.assert_unchanged(before)
         self.assertEqual(self.checkout({**payload, "discount_satang": 1}).status_code, 409)
         self.assertEqual(self.checkout({**payload, "authorization_ref": "WRONG"}).status_code, 409)
@@ -242,7 +245,7 @@ class DiscountApiTests(unittest.TestCase):
                     create_app(path, origins=["https://localhost"])
                 self.assert_unchanged(before, path)
                 migration = migrate_copy(path, confirmed_offline_copy=True)
-                self.assertEqual((migration["status"], migration["schema_version"]), ("PASS", 3))
+                self.assertEqual((migration["status"], migration["schema_version"]), ("PASS", 4))
                 self.assertEqual(migrate_copy(path, confirmed_offline_copy=True)["status"], "NOOP")
                 migrated = create_app(path, origins=["https://localhost"])
                 with TestClient(migrated) as client:
@@ -263,13 +266,15 @@ class DiscountApiTests(unittest.TestCase):
                     for request in (payload, {**payload, "discount_satang": 0}):
                         retry = client.post("/v1/sales", headers=headers, json=request)
                         self.assertEqual(retry.status_code, 200)
-                        self.assertEqual(retry.json(), {"sale_id": sale_id, "client_sale_id": client_id, "subtotal_satang": 45, "discount_satang": 0, "total_satang": 45, "duplicate": True})
+                        self.assertEqual(retry.json(), {"sale_id": sale_id, "client_sale_id": client_id, "subtotal_satang": 45, "discount_satang": 0, "total_satang": 45, "duplicate": True,
+                            "payment_method": "cash", "payments": [{"payment_method": "cash", "amount_satang": 45}]})
                         self.assert_unchanged(before_retry, path)
                     for request in ({**payload, "discount_satang": 1}, {**payload, "items": [{"lot_id": lots[0], "quantity_mg": 101}]}):
                         self.assertEqual(client.post("/v1/sales", headers=headers, json=request).status_code, 409)
                         self.assert_unchanged(before_retry, path)
                     lookup = client.get("/v1/sales/by-client/" + client_id, headers=headers)
-                    self.assertEqual(lookup.json(), {"id": sale_id, "client_sale_id": client_id, "subtotal_satang": 45, "discount_satang": 0, "total_satang": 45})
+                    self.assertEqual(lookup.json(), {"id": sale_id, "client_sale_id": client_id, "subtotal_satang": 45, "discount_satang": 0, "total_satang": 45,
+                        "payment_method": "cash", "payments": [{"payment_method": "cash", "amount_satang": 45}]})
                     self.assert_unchanged(before_retry, path)
 
     def test_lookup_and_checkout_preserve_cashier_and_tenant_boundaries(self):

@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from app import connect, create_app, create_store, create_user
 from cost_stock import inventory_value
 from migrations import _snapshot
+from evidence_fixture import upload_photo
 
 
 class CostStockTests(unittest.TestCase):
@@ -70,10 +71,12 @@ class CostStockTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200, result.text)
         return result.json()
 
-    def count_payload(self, lots, **extra):
-        return {"client_stocktake_id": str(uuid.uuid4()), "shift_label": "Synthetic morning",
+    def count_payload(self, lots, actor="owner", **extra):
+        count_id = extra.get("client_stocktake_id", str(uuid.uuid4()))
+        return {"client_stocktake_id": count_id, "shift_label": "Synthetic morning",
                 "reason": "Physical count fixture", "items": [{"lot_id": lot["id"],
                     "expected_revision": lot["stock_revision"],
+                    "evidence_id": upload_photo(self.client, self.headers[actor], lot["id"], count_id)["evidence_id"],
                     "counted_quantity_mg": lot["quantity_mg"]} for lot in lots], **extra}
 
     def count(self, payload, actor="owner"):
@@ -213,7 +216,7 @@ class CostStockTests(unittest.TestCase):
         for cost in (333, None, 0):
             self.receive(self.product(cost))
         lots = self.inventory()["lots"]
-        payload = self.count_payload(lots)
+        payload = self.count_payload(lots, actor="manager")
         payload["items"][0]["counted_quantity_mg"] -= 3
         payload["items"][1]["counted_quantity_mg"] += 7
         response = self.count(payload, "manager")
@@ -250,8 +253,9 @@ class CostStockTests(unittest.TestCase):
         first = self.count(self.count_payload(lots))
         self.assertEqual(first.status_code, 200)
         self.assertEqual(first.json()["items"][0]["variance_mg"], 0)
+        stale = self.count_payload(lots)
         before = self.state()
-        self.assertEqual(self.count(self.count_payload(lots)).status_code, 409)
+        self.assertEqual(self.count(stale).status_code, 409)
         self.unchanged(before)
         with connect(self.path) as db:
             self.assertEqual(db.execute("SELECT count(*) FROM ledger_events WHERE event_type='ADJUST'").fetchone()[0], 0)
@@ -266,8 +270,9 @@ class CostStockTests(unittest.TestCase):
         up["items"][0]["counted_quantity_mg"] += 1
         self.assertEqual(self.count(up).status_code, 200)
         self.assertEqual(self.inventory()["lots"][0]["quantity_mg"], old[0]["quantity_mg"])
+        stale = self.count_payload(old)
         before = self.state()
-        self.assertEqual(self.count(self.count_payload(old)).status_code, 409)
+        self.assertEqual(self.count(stale).status_code, 409)
         self.unchanged(before)
 
     def test_stocktake_invalid_types_duplicates_and_permissions_do_not_mutate(self):
@@ -334,8 +339,9 @@ class CostStockTests(unittest.TestCase):
         self.assertEqual([r[0] for r in results], [200, 200])
         self.assertEqual(sorted(r[1]["duplicate"] for r in results), [False, True])
         current = self.count_payload(self.inventory()["lots"])
+        parallel = self.count_payload(self.inventory()["lots"])
         with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(submit, [current, {**current, "client_stocktake_id": str(uuid.uuid4())}]))
+            results = list(pool.map(submit, [current, parallel]))
         self.assertEqual(sorted(r[0] for r in results), [200, 409])
 
     def test_concurrent_sale_and_count_do_not_apply_stale_absolute_quantity(self):
