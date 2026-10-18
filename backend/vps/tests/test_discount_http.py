@@ -181,9 +181,10 @@ class DiscountHttpAcceptanceTests(unittest.TestCase):
                                       summary["transfer_satang"]), (60000, 17650, 42350, 29900, 12450))
                     caps = reports["owner"]["capabilities"]
                     self.assertEqual(caps, {"discounts": True, "discount_contract_version": 1,
+                                            "sale_voids": True, "sale_void_contract_version": 1,
                                             "promotions": False, "shift_reconciliation": False, **cost_capabilities()})
                     with connect(db_path) as db:
-                        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 5)
+                        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], CURRENT_SCHEMA_VERSION)
                         sql = tuple(db.execute(
                             "SELECT sum(subtotal_satang),sum(discount_satang),sum(total_satang) "
                             "FROM sales WHERE store_id=?", (store,)).fetchone())

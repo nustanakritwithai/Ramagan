@@ -5,7 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from migrations import (SchemaUpgradeRequired, backup_and_migrate_copy, initialize_database,
+from migrations import (CURRENT_SCHEMA_VERSION, SchemaUpgradeRequired, backup_and_migrate_copy, initialize_database,
                         inspect_database, migrate_copy, restore_copy)
 from schema_v5 import SCHEMA_V5, TABLES_V5
 from test_discount_migrations import (FRESH_SCHEMA, V4_SCHEMA, fixture_connection,
@@ -47,9 +47,9 @@ class PinMigrationTests(unittest.TestCase):
         before = create_v4_fixture(self.path)
         self.assertEqual(inspect_database(self.path)["status"], "UPGRADE_REQUIRED")
         result = migrate_copy(self.path, confirmed_offline_copy=True)
-        self.assertEqual((result["status"], result["schema_version"]), ("PASS", 5))
+        self.assertEqual((result["status"], result["schema_version"]), ("PASS", CURRENT_SCHEMA_VERSION))
         after = logical_snapshot(self.path)
-        self.assertEqual(after["version"], 5)
+        self.assertEqual(after["version"], CURRENT_SCHEMA_VERSION)
         with fixture_connection(self.path) as db:
             for table, columns in before["columns"].items():
                 fields = ",".join('"' + name + '"' for name in columns)
@@ -121,7 +121,7 @@ class PinMigrationTests(unittest.TestCase):
                     elif mode == "unversioned":
                         db.executescript(SCHEMA_V5)
                     else:
-                        db.execute("PRAGMA user_version=6")
+                        db.execute("PRAGMA user_version=" + str(CURRENT_SCHEMA_VERSION + 1))
                 before = logical_snapshot(path)
                 with self.assertRaises(SchemaUpgradeRequired):
                     migrate_copy(path, confirmed_offline_copy=True)

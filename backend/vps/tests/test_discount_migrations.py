@@ -16,6 +16,7 @@ from migrations import (
 from cost_stock import EXTRA_SCHEMA
 from schema_v4 import SCHEMA_V4
 from schema_v5 import SCHEMA_V5
+from schema_v6 import SCHEMA_V6
 
 # Frozen pre-discount schema from 9c59899. No app import/module-level DB creation.
 LEGACY_SCHEMA = """
@@ -155,7 +156,7 @@ V3_SCHEMA = V2_SCHEMA.replace(
 ) + EXTRA_SCHEMA
 V4_SCHEMA = V3_SCHEMA.replace("CHECK(payment_method IN ('cash','transfer'))",
                                  "CHECK(payment_method IN ('cash','transfer','split'))") + SCHEMA_V4
-FRESH_SCHEMA = V4_SCHEMA + SCHEMA_V5
+FRESH_SCHEMA = V4_SCHEMA + SCHEMA_V5 + SCHEMA_V6
 STORE_ID = "11111111-1111-4111-8111-111111111111"
 USER_ID = "22222222-2222-4222-8222-222222222222"
 PRODUCT_ID = "33333333-3333-4333-8333-333333333333"

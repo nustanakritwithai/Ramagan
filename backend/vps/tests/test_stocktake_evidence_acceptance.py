@@ -759,7 +759,7 @@ class StocktakeEvidenceAcceptanceTests(unittest.TestCase):
             sock.close()
             self.assertFalse(worker.is_alive(), "Disposable loopback server did not stop")
 
-    def frozen_v3_fixture(self):
+    def frozen_v3_fixture(self, *, count_reason="Historical count without camera"):
         """Actual deployed schema SQL, historical hashes, custom SQL and FK graph."""
         lot = self.lot(quantity=5000)
         target = str(Path(self.tmp.name) / (uid() + "-offline-v3.sqlite3"))
@@ -769,7 +769,7 @@ class StocktakeEvidenceAcceptanceTests(unittest.TestCase):
         # Deliberately the original pre-discount fingerprint, not a new helper.
         sale_hash = hashlib.sha256(json.dumps({"items": sale_payload["items"], "payment_method": "cash", "authorization_ref": ""},
                                              sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        count_payload = {"client_stocktake_id": count_client, "shift_label": "Historical shift", "reason": "Historical count without camera",
+        count_payload = {"client_stocktake_id": count_client, "shift_label": "Historical shift", "reason": count_reason,
                          "items": [{"lot_id": lot["id"], "expected_revision": 1, "counted_quantity_mg": 4000}]}
         count_hash = hashlib.sha256(json.dumps({key: count_payload[key] for key in ("shift_label", "reason", "items")},
                                     sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
@@ -857,6 +857,32 @@ class StocktakeEvidenceAcceptanceTests(unittest.TestCase):
             self.assertEqual(lookup.json()["payments"], sale.json()["payments"])
         self.assertTrue(after == snapshot(path), "Legacy retries altered migrated history or stock")
         self.assertEqual(migrate_copy(path, confirmed_offline_copy=True)["status"], "NOOP")
+
+    def test_legacy_blank_reason_retries_normalize_without_requiring_new_evidence(self):
+        path, _, payload = self.frozen_v3_fixture(count_reason="")
+        self.assertEqual(migrate_copy(path, confirmed_offline_copy=True)["status"], "PASS")
+        before = snapshot(path)
+        with TestClient(create_app(path), raise_server_exceptions=False) as client:
+            for reason in (None, "", " \t "):
+                retry = {**payload, "reason": reason}
+                if reason is None:
+                    del retry["reason"]
+                response = client.post("/v1/stocktakes", headers=self.headers["owner"], json=retry)
+                self.assertEqual(response.status_code, 200, response.text)
+                saved = response.json()
+                self.assertTrue(saved["duplicate"])
+                self.assertEqual(saved["reason"], "")
+                self.assertIsNone(saved["items"][0]["evidence"])
+                reconciled = client.post("/v1/stocktakes/reconcile", headers=self.headers["owner"], json=retry)
+                self.assertEqual(reconciled.status_code, 200, reconciled.text)
+                self.assertEqual(reconciled.json(), {"status": "completed", "result": saved})
+            self.assertEqual(client.post("/v1/stocktakes", headers=self.headers["owner"],
+                                        json={**payload, "reason": "Changed"}).status_code, 409)
+            # Optional notes must not permit a new photo-free count.
+            fresh = {**payload, "client_stocktake_id": uid(),
+                     "items": [{**payload["items"][0], "expected_revision": 2}]}
+            self.assertEqual(client.post("/v1/stocktakes", headers=self.headers["owner"], json=fresh).status_code, 422)
+        self.assertTrue(before == snapshot(path), "Legacy optional-reason retries changed history or stock")
 
     def test_schema3_each_rebuild_failure_is_atomic_and_backup_restores_original(self):
         for stage in ("after_sales_copy", "after_sales_rebuild", "after_evidence_ddl", "after_version"):
