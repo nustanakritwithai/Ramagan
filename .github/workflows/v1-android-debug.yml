@@ -1,8 +1,12 @@
 name: Ramagan V1 Android debug APK
-# Android build on explicit manual dispatch OR edits to this workflow only.
+# Debug-only artifact build for application PRs and explicit manual dispatch.
 # This produces a DEBUG APK; not an approved or signed store release.
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'v1/**'
+      - '.github/workflows/v1-android-debug.yml'
   push:
     branches: [feat/v1-central-web-mobile]
     paths:
@@ -14,6 +18,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Record exact test artifact provenance
+        run: |
+          git rev-parse HEAD > BUILD_COMMIT.txt
+          printf 'DEBUG / TEST ONLY. Not a production release.\n' > BUILD_NOTICE.txt
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -32,10 +42,22 @@ jobs:
           "$SDKMGR" --install "platforms;android-36" "build-tools;36.0.0"
       - name: Build shared website
         working-directory: v1
+        env:
+          VITE_RAMAGAN_API_URL: https://157.85.96.139/ramagan-api
         run: |
-          npm install --ignore-scripts --no-audit --no-fund
+          npm ci --ignore-scripts --no-audit --no-fund
           npm test
           npm run build
+      - name: Save exact website build for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: ramagan-v1-web-cost-stock-TEST
+          path: |
+            v1/dist/
+            BUILD_COMMIT.txt
+            BUILD_NOTICE.txt
+          if-no-files-found: error
+          retention-days: 7
       - name: Generate Android wrapper
         working-directory: v1
         run: |
@@ -49,6 +71,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ramagan-v1-vps-android-configurable-TEST
-          path: v1/android/app/build/outputs/apk/debug/app-debug.apk
+          path: |
+            v1/android/app/build/outputs/apk/debug/app-debug.apk
+            BUILD_COMMIT.txt
+            BUILD_NOTICE.txt
           if-no-files-found: error
           retention-days: 7

@@ -85,3 +85,149 @@ test('shared Android/Web client talks to self-hosted REST contract', async () =>
     delete globalThis.sessionStorage;
   }
 });
+
+const checkoutBase = 'https://checkout.example.test/ramagan-api';
+const checkoutCashier = '11111111-1111-4111-8111-111111111111';
+const checkoutStore = '22222222-2222-4222-8222-222222222222';
+const checkoutLot = '33333333-3333-4333-8333-333333333333';
+const checkoutId = '44444444-4444-4444-8444-444444444444';
+const checkoutCaps = {discounts: true, discount_contract_version: 1};
+const checkoutIdentity = {api: checkoutBase, store: checkoutStore, cashier: checkoutCashier};
+const meResponse = caps => ({user: {id: checkoutCashier}, store_id: checkoutStore, role: 'cashier',
+  store: {name: 'Test Store', sales_enabled: true, requires_authorization: false}, capabilities: caps});
+const checkoutPayload = discount => ({client_sale_id: checkoutId,
+  items: [{lot_id: checkoutLot, quantity_mg: 1500}], payment_method: 'cash',
+  authorization_ref: null, discount_satang: discount});
+const checkoutSale = {id: 'server-sale', client_sale_id: checkoutId, store_id: checkoutStore,
+  subtotal_satang: 15000, discount_satang: 1200, total_satang: 13800};
+
+async function withMockClient(routes, task) {
+  const originalFetch = globalThis.fetch;
+  const originalStorage = globalThis.sessionStorage;
+  const sessions = new Map([['ramagan.v1.session.' + checkoutBase, 'fixture-session-token']]);
+  const requests = [];
+  globalThis.sessionStorage = {getItem: key => sessions.get(key) ?? null,
+    setItem: (key, value) => sessions.set(key, String(value)), removeItem: key => sessions.delete(key)};
+  globalThis.fetch = async (url, options) => {
+    assert.ok(String(url).startsWith(checkoutBase + '/'), 'all requests must use mock API base');
+    const route = String(url).slice(checkoutBase.length);
+    const request = {route, method: options.method, body: options.body ? JSON.parse(options.body) : undefined, options};
+    requests.push(request);
+    const entry = routes[route];
+    assert.notEqual(entry, undefined, `unexpected mock route: ${route}`);
+    const response = typeof entry === 'function' ? await entry(request) : entry;
+    return new Response(JSON.stringify(response.data), {status: response.status ?? 200, headers: {'Content-Type': 'application/json'}});
+  };
+  try { await task(createClient(checkoutBase), requests); }
+  finally { globalThis.fetch = originalFetch; if (originalStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = originalStorage; }
+}
+
+test('checkout capabilities always re-fetch /v1/me and verify exact cashier/store identity', async () => {
+  let currentMe = meResponse(checkoutCaps);
+  await withMockClient({'/v1/me': () => ({data: currentMe})}, async (client, requests) => {
+    assert.deepEqual(await client.checkoutTransport.capabilities(checkoutIdentity), checkoutCaps);
+    currentMe = {...meResponse(checkoutCaps), user: {id: 'different-cashier'}};
+    await assert.rejects(client.checkoutTransport.capabilities(checkoutIdentity));
+    currentMe = {...meResponse(checkoutCaps), store_id: 'different-store'};
+    await assert.rejects(client.checkoutTransport.capabilities(checkoutIdentity));
+    currentMe = {...meResponse(checkoutCaps), user: null};
+    await assert.rejects(client.checkoutTransport.capabilities(checkoutIdentity));
+    assert.equal(requests.length, 4);
+    for (const request of requests) {
+      assert.equal(request.method, 'GET');
+      assert.equal(request.options.cache, 'no-store');
+      assert.equal(request.options.headers.Authorization, 'Bearer fixture-session-token');
+    }
+  });
+});
+
+test('member mapping preserves discount capability and contract version fields without coercion', async () => {
+  const caps = {...checkoutCaps, future_contract: {version: 3}};
+  await withMockClient({'/v1/me': {data: meResponse(caps)}}, async client => {
+    const result = await client.from('ramagan_members').select('store_id,role,capabilities').eq('user_id', checkoutCashier).limit(1);
+    assert.equal(result.error, null);
+    assert.deepEqual(result.data[0].capabilities, caps);
+    assert.equal(result.data[0].store_id, checkoutStore);
+    assert.equal(result.data[0].role, 'cashier');
+  });
+});
+
+test('checkout POST sends exact frozen discount payload and returns authoritative response fields', async () => {
+  await withMockClient({'/v1/sales': {data: checkoutSale}}, async (client, requests) => {
+    const response = await client.checkoutTransport.post(checkoutPayload(1200));
+    assert.deepEqual(response, checkoutSale);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].method, 'POST');
+    assert.deepEqual(requests[0].body, checkoutPayload(1200));
+    assert.equal(requests[0].options.headers['Content-Type'], 'application/json');
+    assert.equal(requests[0].options.credentials, 'omit');
+  });
+});
+
+test('sale lookup preserves id, client ID, subtotal, discount and total for transport and query callers', async () => {
+  const route = '/v1/sales/by-client/' + checkoutId;
+  await withMockClient({[route]: {data: checkoutSale}}, async (client, requests) => {
+    assert.deepEqual(await client.checkoutTransport.lookup(checkoutId), checkoutSale);
+    const query = await client.from('ramagan_sales').select('id,client_sale_id,total_satang').eq('client_sale_id', checkoutId).maybeSingle();
+    assert.equal(query.error, null);
+    assert.deepEqual(query.data, checkoutSale);
+    assert.ok(requests.every(request => request.method === 'GET' && request.route === route));
+  });
+});
+
+test('only lookup 404 means absence; 401, 403 and 422 propagate errors', async () => {
+  for (const status of [404, 401, 403, 422]) {
+    const route = '/v1/sales/by-client/' + checkoutId;
+    await withMockClient({[route]: {status, data: {detail: 'mock failure'}}}, async client => {
+      if (status === 404) assert.equal(await client.checkoutTransport.lookup(checkoutId), null);
+      else await assert.rejects(client.checkoutTransport.lookup(checkoutId), {status});
+      const query = await client.from('ramagan_sales').select('id').eq('client_sale_id', checkoutId).maybeSingle();
+      assert.equal(query.data, null);
+      if (status === 404) assert.equal(query.error, null);
+      else assert.equal(query.error.status, status);
+    });
+  }
+});
+
+test('lookup client identifier is URL encoded rather than interpreted as route or query', async () => {
+  const id = 'fixture/with?query=unsafe&x=1';
+  const route = '/v1/sales/by-client/' + encodeURIComponent(id);
+  await withMockClient({[route]: {status: 404, data: {detail: 'not found'}}}, async (client, requests) => {
+    assert.equal(await client.checkoutTransport.lookup(id), null);
+    assert.equal(requests[0].route, route);
+  });
+});
+
+function checkoutRpcArgs(discount) {
+  return {p_store_id: checkoutStore, p_client_sale_id: checkoutId,
+    p_items: checkoutPayload(0).items, p_payment_method: 'cash', p_authorization_ref: null,
+    ...(discount === undefined ? {} : {p_discount_satang: discount})};
+}
+
+test('compatibility checkout RPC defaults omitted discount to exact zero payload', async () => {
+  await withMockClient({'/v1/sales': {data: {sale_id: 'legacy', total_satang: 15000}}}, async (client, requests) => {
+    const response = await client.rpc('ramagan_checkout', checkoutRpcArgs());
+    assert.equal(response.error, null);
+    assert.deepEqual(requests.find(request => request.method === 'POST').body, checkoutPayload(0));
+  });
+});
+
+test('compatibility checkout RPC blocks nonzero discount on absent or mismatched capability before POST', async () => {
+  for (const caps of [undefined, {}, {discounts: true}, {discounts: true, discount_contract_version: 2}, {discounts: true, discount_contract_version: '1'}]) {
+    await withMockClient({'/v1/me': {data: meResponse(caps)}, '/v1/sales': {data: checkoutSale}}, async (client, requests) => {
+      const response = await client.rpc('ramagan_checkout', checkoutRpcArgs(1200));
+      assert.ok(response.error);
+      assert.equal(response.data, null);
+      assert.equal(requests.filter(request => request.method === 'POST').length, 0);
+    });
+  }
+});
+
+test('compatibility checkout RPC passes approved version-one discount without changing its amount', async () => {
+  await withMockClient({'/v1/me': {data: meResponse(checkoutCaps)}, '/v1/sales': {data: checkoutSale}}, async (client, requests) => {
+    const response = await client.rpc('ramagan_checkout', checkoutRpcArgs(1200));
+    assert.equal(response.error, null);
+    assert.deepEqual(response.data, checkoutSale);
+    assert.deepEqual(requests.find(request => request.method === 'POST').body, checkoutPayload(1200));
+  });
+});

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101922">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src https:; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'">
+  <title>RAMAGAN — Admin Sales Reports</title>
+  <link rel="stylesheet" href="./dashboard.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">R</span><span>RAMAGAN <small>BACK OFFICE</small></span></div>
+    <div class="top-right">
+      <span id="connection-status" class="connection">ยังไม่เชื่อมต่อ</span>
+      <button type="button" class="button subtle" id="logout" hidden>ออกจากระบบ</button>
+    </div>
+  </header>
+  <main>
+    <section id="login-panel" class="login-layout" aria-label="เข้าสู่ระบบหลังบ้าน">
+      <div class="login-art">
+        <span class="eyebrow">PRIVATE REPORTING PORTAL</span>
+        <h1>รายงานหน้าร้าน<br><em>ที่อ่านจากยอดจริง</em></h1>
+        <p>สรุปยอดขายรายวัน เงินสด/โอน สินค้าขายดี สต็อกต่ำ และธุรกรรมล่าสุด จากฐานข้อมูลกลางบน VPS เท่านั้น</p>
+        <div class="feature-badges"><span>Owner / Manager</span><span>Live VPS Data</span><span>Bangkok Time</span></div>
+      </div>
+      <form class="login-card" id="login-form">
+        <span class="eyebrow">RAMAGAN POS V1</span>
+        <h2>เข้าสู่ระบบ Admin</h2>
+        <p class="muted">GitHub Pages เป็นหน้ารายงานเท่านั้น ยอดขายจริงเก็บบน VPS และต้องผ่านสิทธิ์ก่อนอ่านได้</p>
+        <label for="api-base">ที่อยู่ API กลาง (HTTPS)</label>
+        <input type="url" name="apiBase" id="api-base" required placeholder="https://your-server.example/ramagan-api" autocomplete="url" spellcheck="false">
+        <label for="email">อีเมลเจ้าของร้าน / ผู้จัดการ</label>
+        <input type="email" name="email" id="email" required autocomplete="username" placeholder="name@example.com">
+        <label for="password">รหัสผ่าน</label>
+        <input type="password" name="password" id="password" required autocomplete="current-password">
+        <button type="submit" id="login-button" class="button primary full">เข้าสู่ระบบและโหลดรายงาน</button>
+        <button type="button" id="api-check-button" class="button subtle full">ตรวจสอบการเชื่อมต่อ API (ไม่ใช้รหัสผ่าน)</button>
+        <p id="login-message" class="notice" role="status" aria-live="polite" hidden></p>
+        <a id="health-open-link" href="#" target="_blank" rel="noopener noreferrer" hidden>เปิดหน้า Health Check ในเบราว์เซอร์เพื่อตรวจสอบ HTTPS/TLS</a>
+        <p class="muted small">ไม่รองรับบัญชีพนักงานทั่วไป · ไม่บันทึกรหัสผ่านหรือโทเค็นในเบราว์เซอร์ · รีเฟรชแล้วต้องล็อกอินใหม่</p>
+      </form>
+    </section>
+
+    <section id="dashboard-panel" class="dashboard" hidden>
+      <div class="dashboard-head">
+        <div>
+          <div class="eyebrow">LIVE DATA · AUTHENTICATED VPS</div>
+          <h1>ภาพรวมยอดขาย</h1>
+          <p id="store-info" class="muted">กำลังตรวจสอบบัญชี...</p>
+        </div>
+        <div class="dashboard-actions">
+          <span id="sales-gate" class="gate">รอตรวจสอบสถานะร้าน</span>
+          <button type="button" class="button subtle" id="refresh">อัปเดต</button>
+        </div>
+      </div>
+      <nav class="section-nav" aria-label="ส่วนรายงาน">
+        <a href="#overview">ภาพรวม</a>
+        <a href="#daily-section">ยอดรายวัน</a>
+        <a href="#products-section">สินค้า</a>
+        <a href="#low-section">สต็อกต่ำ</a>
+        <a href="#recent-section">รายการล่าสุด</a>
+      </nav>
+
+      <form class="filters" id="filters">
+        <div><label for="from-date">ตั้งแต่วันที่</label><input id="from-date" name="from" type="date" required></div>
+        <div><label for="to-date">ถึงวันที่</label><input id="to-date" name="to" type="date" required></div>
+        <div><label for="low-stock">แจ้งเตือนสต็อกต่ำ (กรัม)</label><input id="low-stock" name="low" inputmode="decimal" value="10" type="text" required></div>
+        <button type="submit" class="button primary">แสดงรายงาน</button>
+        <button type="button" class="button subtle" id="export-csv" disabled>ส่งออก CSV รายวัน</button>
+      </form>
+
+      <p id="report-message" class="notice" role="status" aria-live="polite" hidden></p>
+      <p id="discount-status" class="notice" role="status">รอตรวจสอบความสามารถรายงานส่วนลดจาก VPS</p>
+      <p id="cost-status" class="notice" role="status" aria-live="polite">รอตรวจสอบความสามารถรายงานต้นทุนจาก VPS</p>
+      <div class="summary-grid" id="overview">
+        <article class="metric"><div>ยอดก่อนส่วนลด (Gross)</div><strong id="metric-gross">—</strong><small>ราคาขายก่อนหักส่วนลดหน้าบิล</small></article>
+        <article class="metric"><div>ส่วนลดหน้าบิล</div><strong id="metric-discount">—</strong><small>เฉพาะส่วนลดที่ยืนยันโดย VPS</small></article>
+        <article class="metric highlight"><div>ยอดสุทธิ (Net)</div><strong id="metric-sales">—</strong><small>บาท ในช่วงเวลาที่เลือก</small></article>
+        <article class="metric"><div>จำนวนบิล</div><strong id="metric-orders">—</strong><small>ธุรกรรมที่ยืนยันโดย VPS</small></article>
+        <article class="metric"><div>เงินสดสุทธิ</div><strong id="metric-cash">—</strong><small>ช่องทางที่บันทึกเป็นเงินสด</small></article>
+        <article class="metric"><div>โอนสุทธิ</div><strong id="metric-transfer">—</strong><small>ช่องทางที่บันทึกเป็นโอน</small></article>
+        <article class="metric"><div>ตัดสต็อก</div><strong id="metric-grams">—</strong><small>กรัมจากรายการขาย</small></article>
+        <article class="metric"><div>ยอดสุทธิเฉลี่ย / บิล</div><strong id="metric-average">—</strong><small>บาทต่อธุรกรรม</small></article>
+        <article class="metric"><div>ต้นทุนขายที่ทราบ</div><strong id="metric-known-cost">—</strong><small>เฉพาะบรรทัดที่มีต้นทุน อาจยังไม่ใช่ต้นทุนทั้งหมด</small></article>
+        <article class="metric"><div>ต้นทุนขายรวม</div><strong id="metric-cost">—</strong><small>แสดงเมื่อทุกบรรทัดมีต้นทุนที่บันทึกไว้</small></article>
+        <article class="metric"><div>กำไรขั้นต้นหลังส่วนลด</div><strong id="metric-profit">—</strong><small>ยอดสุทธิหักต้นทุนขาย อาจขาดทุนได้ ไม่รวมค่าใช้จ่ายอื่น</small></article>
+      </div>
+      <section id="daily-section" class="block">
+        <div class="block-heading"><div><h2>แนวโน้มยอดขายรายวัน</h2><p>ยอดสุทธิ · วันที่ตามเวลา Asia/Bangkok</p></div><span id="period-label" class="chip">—</span></div>
+        <div id="daily-chart" class="daily-chart" aria-label="กราฟแท่งยอดสุทธิรายวัน"></div>
+        <div class="table-scroll"><table><thead><tr><th>วันที่ (Bangkok)</th><th class="right">บิล</th><th class="right">ก่อนส่วนลด</th><th class="right">ส่วนลด</th><th class="right">สุทธิ</th><th class="right">ต้นทุนขาย</th><th class="right">กำไรหลังส่วนลด</th><th>ความครบถ้วนต้นทุน</th></tr></thead><tbody id="daily-rows"></tbody></table></div>
+      </section>
+      <div class="two-col">
+        <section id="products-section" class="block">
+          <div class="block-heading"><div><h2>สินค้าขายดี</h2><p>สุทธิจากการกระจายส่วนลดโดย VPS เท่านั้น · API เดิมแสดงเฉพาะก่อนส่วนลด</p></div></div>
+          <div class="table-scroll"><table><thead><tr><th>สินค้า</th><th class="right">ก่อนส่วนลด</th><th class="right">ส่วนลดที่กระจาย</th><th class="right">สุทธิที่กระจาย</th><th class="right">กรัมตัด</th><th class="right">ต้นทุนขาย</th><th class="right">กำไรหลังส่วนลด</th><th>ความครบถ้วนต้นทุน</th></tr></thead><tbody id="top-products"></tbody></table></div>
+        </section>
+        <section class="block">
+          <div class="block-heading"><div><h2>ยอดขายตามหมวดหมู่</h2><p>สุทธิจากการกระจายส่วนลดโดย VPS เท่านั้น · API เดิมแสดงเฉพาะก่อนส่วนลด</p></div></div>
+          <div class="table-scroll"><table><thead><tr><th>หมวด</th><th class="right">ก่อนส่วนลด</th><th class="right">ส่วนลดที่กระจาย</th><th class="right">สุทธิที่กระจาย</th><th class="right">กรัมตัด</th><th class="right">ต้นทุนขาย</th><th class="right">กำไรหลังส่วนลด</th><th>ความครบถ้วนต้นทุน</th></tr></thead><tbody id="top-categories"></tbody></table></div>
+        </section>
+      </div>
+      <section id="low-section" class="block">
+        <div class="block-heading"><div><h2>สต็อกต่ำ</h2><p>ยอดคงเหลือล่าสุดจากเซิร์ฟเวอร์ (ไม่ใช่ยอด ณ วันที่รายงาน)</p></div></div>
+        <div class="table-scroll"><table><thead><tr><th>สินค้า / SKU</th><th>Lot</th><th class="right">คงเหลือ</th><th>หมดอายุ</th></tr></thead><tbody id="low-stock-rows"></tbody></table></div>
+      </section>
+      <section id="recent-section" class="block">
+        <div class="block-heading"><div><h2>รายการขายล่าสุด</h2><p>แสดงสูงสุด 30 รายการภายในช่วงวันที่เลือก</p></div></div>
+        <div class="table-scroll"><table><thead><tr><th>วันเวลา</th><th>เลขรายการ</th><th>ชำระ</th><th class="right">จำนวนรายการ</th><th class="right">ก่อนส่วนลด</th><th class="right">ส่วนลด</th><th class="right">สุทธิ</th><th class="right">ต้นทุนขาย</th><th class="right">กำไรหลังส่วนลด</th><th>ความครบถ้วนต้นทุน</th></tr></thead><tbody id="recent-sales"></tbody></table></div>
+      </section>
+      <aside class="footnote">
+        <strong>ขอบเขตรายงาน:</strong> ส่วนลดแสดงเมื่อ VPS ยืนยัน contract v1 เท่านั้น ช่อง “—” หมายถึงไม่รองรับหรือไม่ทราบ ไม่ใช่ศูนย์
+        ยอดสุทธิรายสินค้าใช้การกระจายส่วนลดจาก VPS ไม่ได้คำนวณใหม่บนเบราว์เซอร์ อันดับ contract v1 เรียงตามยอดสุทธิที่กระจาย
+        ต้นทุนขายใช้ข้อมูลที่บันทึก ณ การขายจาก VPS ไม่ใช้ต้นทุนสินค้าในปัจจุบันแทนประวัติที่ไม่ทราบ
+        กำไรขั้นต้นหักส่วนลดแล้ว แต่ไม่รวมค่าใช้จ่ายอื่นและกำไร/ขาดทุนจากการปรับนับสต็อก
+        ข้อมูลต้นทุนไม่ครบจะแสดงยอดต้นทุนที่ทราบแยก และไม่เดากำไร โปรโมชั่น 5+2 และนับกะตรวจสอบความสามารถแยกต่างหาก
+
+      </aside>
+    </section>
+  </main>
+  <footer>RAMAGAN · Private Sales Administration · <span id="footer-year">2026</span></footer>
+  <script type="module" src="./dashboard.js"></script>
+</body>
+</html>

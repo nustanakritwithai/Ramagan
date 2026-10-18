@@ -46,6 +46,7 @@ CREATE TABLE sale_lines(
     line_subtotal_satang INTEGER NOT NULL,
     line_discount_satang INTEGER NOT NULL DEFAULT 0,
     line_total_satang INTEGER NOT NULL,
+    line_cost_satang INTEGER,
     CHECK(quantity_mg > 0),
     CHECK(line_subtotal_satang >= 0 AND line_discount_satang >= 0 AND line_total_satang >= 0),
     CHECK(line_subtotal_satang = line_discount_satang + line_total_satang)
@@ -164,9 +165,13 @@ class DiscountReportTests(unittest.TestCase):
                           report["summary"]["transfer_satang"]), (17000, 2000))
         self.assertEqual(report["daily"], [
             {"date": "2026-10-14", "sale_count": 1, "quantity_mg": 1700,
-             "subtotal_satang": 17550, "discount_satang": 550, "total_satang": 17000},
+             "subtotal_satang": 17550, "discount_satang": 550, "total_satang": 17000,
+             "known_cost_satang": 0, "cost_satang": None, "gross_profit_satang": None,
+             "unknown_cost_line_count": 3, "cost_complete": False},
             {"date": "2026-10-15", "sale_count": 1, "quantity_mg": 250,
-             "subtotal_satang": 2500, "discount_satang": 500, "total_satang": 2000},
+             "subtotal_satang": 2500, "discount_satang": 500, "total_satang": 2000,
+             "known_cost_satang": 0, "cost_satang": None, "gross_profit_satang": None,
+             "unknown_cost_line_count": 1, "cost_complete": False},
         ])
         products = {row["sku"]: row for row in report["top_products"]}
         self.assertEqual((products["flower"]["subtotal_satang"],
@@ -200,6 +205,8 @@ class DiscountReportTests(unittest.TestCase):
             "sale_count": 3, "subtotal_satang": 2500, "discount_satang": 500,
             "total_satang": 2000, "cash_satang": 2000, "transfer_satang": 0,
             "quantity_mg": 1750, "average_satang": 666,
+            "known_cost_satang": 0, "cost_satang": None, "gross_profit_satang": None,
+            "unknown_cost_line_count": 3, "cost_complete": False,
         })
         free = next(row for row in report["top_products"] if row["sku"] == "free")
         self.assertEqual((free["subtotal_satang"], free["discount_satang"],
@@ -294,7 +301,8 @@ class DiscountReportTests(unittest.TestCase):
     def test_no_sales_zero_fills_discount_fields_without_hiding_current_stock(self):
         self.item("unsold", "flowers", ["unsold-lot"], balance=5000)
         report = self.report()
-        self.assertTrue(all(value == 0 for value in report["summary"].values()))
+        self.assertTrue(all(value == 0 for key, value in report["summary"].items() if key != "cost_complete"))
+        self.assertTrue(report["summary"]["cost_complete"])
         self.assertEqual(len(report["daily"]), 2)
         for day in report["daily"]:
             self.assertEqual((day["subtotal_satang"], day["discount_satang"],
@@ -306,6 +314,8 @@ class DiscountReportTests(unittest.TestCase):
         self.assertEqual(report["capabilities"], {
             "discounts": True, "discount_contract_version": 1,
             "promotions": False, "shift_reconciliation": False,
+            "inventory_costs": True, "cost_contract_version": 1,
+            "stocktakes": True, "stocktake_contract_version": 1,
         })
 
     def test_rankings_remain_ordered_by_recorded_net_not_gross(self):
@@ -376,7 +386,7 @@ class DiscountReportTests(unittest.TestCase):
                              "transfer", 2000, 500, 1500),
                         )
                         writer.execute(
-                            "INSERT INTO sale_lines VALUES(?,?,?,?,?,?,?)",
+                            "INSERT INTO sale_lines(id,sale_id,lot_id,quantity_mg,line_subtotal_satang,line_discount_satang,line_total_satang) VALUES(?,?,?,?,?,?,?)",
                             ("concurrent-line", "concurrent-sale", "second-lot",
                              200, 2000, 500, 1500),
                         )
@@ -421,6 +431,8 @@ class DiscountReportTests(unittest.TestCase):
                     "sale_count": 1, "subtotal_satang": 1000, "discount_satang": 100,
                     "total_satang": 900, "cash_satang": 900, "transfer_satang": 0,
                     "quantity_mg": 100, "average_satang": 900,
+                    "known_cost_satang": 0, "cost_satang": None, "gross_profit_satang": None,
+                    "unknown_cost_line_count": 1, "cost_complete": False,
                 })
                 self.assertEqual([row["id"] for row in first["recent_sales"]], [first_sale])
                 self.assertEqual([row["sku"] for row in first["top_products"]], ["first-product"])
@@ -438,6 +450,8 @@ class DiscountReportTests(unittest.TestCase):
                     "sale_count": 2, "subtotal_satang": 3000, "discount_satang": 600,
                     "total_satang": 2400, "cash_satang": 900, "transfer_satang": 1500,
                     "quantity_mg": 300, "average_satang": 1200,
+                    "known_cost_satang": 0, "cost_satang": None, "gross_profit_satang": None,
+                    "unknown_cost_line_count": 2, "cost_complete": False,
                 })
                 self.assertEqual({row["id"] for row in second["recent_sales"]},
                                  {first_sale, "concurrent-sale"})

@@ -21,6 +21,7 @@ from app import connect, create_app, create_store, create_user
 from discounts import MAX_SALE_SATANG, legacy_checkout_request_hash
 from fastapi.testclient import TestClient
 from migrations import SchemaUpgradeRequired, migrate_copy
+from cost_stock import capabilities as cost_capabilities
 
 
 class DiscountApiTests(unittest.TestCase):
@@ -81,7 +82,8 @@ class DiscountApiTests(unittest.TestCase):
         me = self.client.get("/v1/me", headers=self.headers["staff"])
         self.assertEqual(me.status_code, 200)
         body = me.json()
-        self.assertEqual(body["capabilities"], {"discounts": True, "discount_contract_version": 1})
+        self.assertEqual(body["capabilities"], {"discounts": True, "discount_contract_version": 1,
+            "optional_document_references": True, "document_contract_version": 1, **cost_capabilities()})
         self.assertEqual(body["role"], "staff")
         self.assertEqual(body["store_id"], self.store)
         self.assertFalse(body["store"]["sales_enabled"])
@@ -240,7 +242,7 @@ class DiscountApiTests(unittest.TestCase):
                     create_app(path, origins=["https://localhost"])
                 self.assert_unchanged(before, path)
                 migration = migrate_copy(path, confirmed_offline_copy=True)
-                self.assertEqual((migration["status"], migration["schema_version"]), ("PASS", 2))
+                self.assertEqual((migration["status"], migration["schema_version"]), ("PASS", 3))
                 self.assertEqual(migrate_copy(path, confirmed_offline_copy=True)["status"], "NOOP")
                 migrated = create_app(path, origins=["https://localhost"])
                 with TestClient(migrated) as client:
@@ -248,7 +250,8 @@ class DiscountApiTests(unittest.TestCase):
                     self.assertEqual(login.status_code, 200)
                     headers = {"Authorization": "Bearer " + login.json()["token"]}
                     me = client.get("/v1/me", headers=headers)
-                    self.assertEqual(me.json()["capabilities"], {"discounts": True, "discount_contract_version": 1})
+                    self.assertEqual(me.json()["capabilities"], {"discounts": True, "discount_contract_version": 1,
+                        "optional_document_references": True, "document_contract_version": 1, **cost_capabilities()})
                     self.assertFalse(me.json()["store"]["sales_enabled"])
                     with connect(path) as db:
                         db.execute("UPDATE products SET price_satang_per_gram=50000")

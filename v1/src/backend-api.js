@@ -6,10 +6,17 @@
  * writes are verified by server-side roles; UI controls do not grant rights.
  */
 
+import {supportsDiscount} from './checkout.js';
+
 const PREFIX = 'ramagan.v1.session.';
 
 export function validateServerUrl(raw) {
-  const value = String(raw || '').trim();
+  const text = String(raw || '');
+  // URL() silently removes tabs/newlines and encodes invisible suffixes. Such a
+  // visually identical endpoint can reach a different route. Reject, never fix it.
+  if (/[\p{Cc}\p{Cf}]/u.test(text)) return null;
+  const value = text.trim();
+  if (/\s/u.test(value) || value.includes('\\')) return null;
   let u;
   try { u = new URL(value); } catch { return null; }
   if (u.username || u.password || u.search || u.hash) return null;
@@ -18,6 +25,10 @@ export function validateServerUrl(raw) {
     if (!localDev) return null;
   }
   if (!u.hostname || u.hostname === '0.0.0.0') return null;
+  try {
+    const path = decodeURIComponent(u.pathname);
+    if (/[\p{Cc}\p{Cf}\s\\?#]/u.test(path) || /%[0-9a-f]{2}/i.test(path)) return null;
+  } catch { return null; }
   // Backend may be proxied under /ramagan-api; preserve the path prefix.
   return u.origin + u.pathname.replace(/\/+$/, '');
 }
@@ -85,7 +96,7 @@ export function createClient(serverUrl) {
       return result(async () => {
         if (this.table === 'ramagan_members') {
           const me = await request('GET', '/v1/me');
-          return [{store_id: me.store_id, role: me.role,
+          return [{store_id: me.store_id, role: me.role, capabilities: me.capabilities,
                    ramagan_stores: {
                      name: me.store.name,
                      sales_enabled: me.store.sales_enabled,
@@ -132,6 +143,41 @@ export function createClient(serverUrl) {
   return {
     base,
     health: () => result(() => request('GET', '/health')),
+    inventory: () => result(() => request('GET', '/v1/inventory')),
+    stocktakes: () => result(() => request('GET', '/v1/stocktakes')),
+    stocktake: id => result(() => request('GET', '/v1/stocktakes/by-client/' + encodeURIComponent(id))),
+    inventoryTransport(kind) {
+      return {
+        async capabilities(identity) {
+          const me = await request('GET', '/v1/me');
+          if (me.user?.id !== identity.actor || me.store_id !== identity.store ||
+              !['owner', 'manager'].includes(me.role)) {
+            throw new Error('บัญชี ร้าน หรือสิทธิ์เปลี่ยนไป กรุณาใช้บัญชีผู้จัดการเดิม');
+          }
+          return me.capabilities;
+        },
+        post: payload => request('POST', kind === 'stocktake' ? '/v1/stocktakes' : '/v1/lots/receive', payload),
+        reconcile: payload => request('POST', kind === 'stocktake' ? '/v1/stocktakes/reconcile' : '/v1/lots/receive/reconcile', payload),
+        ...(kind === 'stocktake' ? {async lookup(id) {
+          try { return await request('GET', '/v1/stocktakes/by-client/' + encodeURIComponent(id)); }
+          catch (error) { if (error.status === 404) return null; throw error; }
+        }} : {})
+      };
+    },
+    checkoutTransport: {
+      async capabilities(identity) {
+        const me = await request('GET', '/v1/me');
+        if (me.user?.id !== identity.cashier || me.store_id !== identity.store) {
+          throw new Error('บัญชีหรือร้านเปลี่ยนไป กรุณาเข้าสู่ระบบบัญชีเดิม');
+        }
+        return me.capabilities;
+      },
+      post: payload => request('POST', '/v1/sales', payload),
+      async lookup(id) {
+        try { return await request('GET', '/v1/sales/by-client/' + encodeURIComponent(id)); }
+        catch (error) { if (error.status === 404) return null; throw error; }
+      }
+    },
     auth: {
       async getUser() {
         if (!token) return {data: {user: null}, error: null};
@@ -175,13 +221,16 @@ export function createClient(serverUrl) {
           endpoint: '/v1/sales', payload: {
             client_sale_id: a.p_client_sale_id,
             items: a.p_items, payment_method: a.p_payment_method,
-            authorization_ref: a.p_authorization_ref
+            authorization_ref: a.p_authorization_ref,
+            discount_satang: a.p_discount_satang ?? 0
           }
         },
         ramagan_create_product: {
           endpoint: '/v1/products', payload: {
             sku: a.p_sku, name: a.p_name, category: a.p_category,
-            price_satang_per_gram: a.p_price_satang_per_gram
+            price_satang_per_gram: a.p_price_satang_per_gram,
+            ...(a.p_default_cost_satang_per_gram === undefined ? {} :
+              {default_cost_satang_per_gram: a.p_default_cost_satang_per_gram})
           }
         },
         ramagan_receive_lot: {
@@ -196,7 +245,18 @@ export function createClient(serverUrl) {
       };
       if (!routes[name]) return {data: null, error: new Error('Unknown action')};
       const r = routes[name];
-      return result(() => request('POST', r.endpoint, r.payload));
+      return result(async () => {
+        if (name === 'ramagan_checkout') {
+          if (!Number.isSafeInteger(r.payload.discount_satang) || r.payload.discount_satang < 0) {
+            throw new Error('Invalid discount');
+          }
+          if (r.payload.discount_satang > 0) {
+            const me = await request('GET', '/v1/me');
+            if (!supportsDiscount(me.capabilities)) throw new Error('เซิร์ฟเวอร์ยังไม่รองรับส่วนลดรุ่นนี้');
+          }
+        }
+        return request('POST', r.endpoint, r.payload);
+      });
     }
   };
 }
