@@ -29,6 +29,31 @@ function groups(data) {
     ...data.top_categories, ...data.recent_sales];
 }
 
+test('one split bill reconciles cash and transfer to net and rejects malformed allocations', () => {
+  const data = fixture();
+  Object.assign(data.capabilities, {split_payments:true, payment_contract_version:1});
+  Object.assign(data.summary, {cash_satang:5000, transfer_satang:7450});
+  Object.assign(data.recent_sales[0], {payment_method:'split', payments:[
+    {payment_method:'cash', amount_satang:5000},
+    {payment_method:'transfer', amount_satang:7450}
+  ]});
+  const result = prepareReport(data);
+  assert.equal(result.summary.sale_count, 1);
+  assert.equal(result.summary.net, 12450);
+  assert.equal(result.recent_sales[0].payment_method, 'split');
+  for (const payments of [undefined, [],
+    [{payment_method:'cash',amount_satang:12450}],
+    [{payment_method:'cash',amount_satang:0},{payment_method:'transfer',amount_satang:12450}],
+    [{payment_method:'cash',amount_satang:5000},{payment_method:'cash',amount_satang:7450}],
+    [{payment_method:'cash',amount_satang:5000},{payment_method:'transfer',amount_satang:7451}],
+    [{payment_method:'cash',amount_satang:'5000'},{payment_method:'transfer',amount_satang:7450}],
+    [{payment_method:'cash',amount_satang:true},{payment_method:'transfer',amount_satang:12449}]]) {
+    const invalid = structuredClone(data);
+    invalid.recent_sales[0].payments = payments;
+    assert.throws(() => prepareReport(invalid));
+  }
+});
+
 test('cost capability requires true and integer version 1; old schema2 remains usable', () => {
   for (const capabilities of [undefined, {}, {inventory_costs:false, cost_contract_version:1},
     {inventory_costs:1, cost_contract_version:1}, {inventory_costs:true},

@@ -135,6 +135,27 @@ export function costCoverage(row) {
   return row.costComplete ? 'ต้นทุนครบ' :
     'ไม่ทราบต้นทุน ' + row.unknownCostLines + ' บรรทัด · ต้นทุนที่ทราบ ' + money(row.knownCost);
 }
+function paymentRow(row, capabilities) {
+  if (capabilities?.split_payments !== true || capabilities?.payment_contract_version !== 1) return row;
+  const expected = row.payment_method === 'split' ? ['cash', 'transfer'] : [row.payment_method];
+  if (expected.some(method => !['cash', 'transfer'].includes(method)) ||
+      !Array.isArray(row.payments) || row.payments.length !== expected.length) {
+    throw new Error('ข้อมูลช่องทางชำระจาก VPS ไม่ครบ');
+  }
+  const seen = new Set();
+  let sum = 0n;
+  for (const payment of row.payments) {
+    requireAmount(payment?.amount_satang);
+    if (!expected.includes(payment.payment_method) || seen.has(payment.payment_method) ||
+        (row.payment_method === 'split' && payment.amount_satang === 0)) {
+      throw new Error('ข้อมูลแยกจ่ายจาก VPS ไม่ถูกต้อง');
+    }
+    seen.add(payment.payment_method);
+    sum += BigInt(payment.amount_satang);
+  }
+  if (sum !== BigInt(row.total_satang)) throw new Error('ยอดช่องทางชำระของบิลไม่ตรงกับยอดสุทธิ');
+  return row;
+}
 // Validate an entire response before rendering anything. Never partially replace
 // a previous snapshot with new totals or infer zero from absent fields.
 export function prepareReport(data) {
@@ -173,7 +194,7 @@ export function prepareReport(data) {
   return {...data, supported, costsSupported, summary, daily,
     top_products: data.top_products.map(row => prepareRow(row, true)),
     top_categories: data.top_categories.map(row => prepareRow(row, true)),
-    recent_sales: data.recent_sales.map(row => prepareRow(row))
+    recent_sales: data.recent_sales.map(row => paymentRow(prepareRow(row), data.capabilities))
   };
 }
 export function dailyCsv(report) {
