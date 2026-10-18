@@ -14,12 +14,14 @@ const lot = '33333333-3333-4333-8333-333333333333';
 const mainURL = new URL('../src/main.js', import.meta.url);
 const source = (await readFile(mainURL, 'utf8'))
   .replace("import './style.css';", '')
+  .replaceAll('https://157.85.96.139/ramagan-api', API)
   .replaceAll('import.meta.env.VITE_RAMAGAN_API_URL', "''")
   .replaceAll('import.meta.env.BASE_URL', "'/Ramagan/v1/'")
   .replace(/from '(\.\/[^']+)'/g, (_, path) => `from '${new URL(path, mainURL).href}'`);
 let instance = 0;
 const fixture = (changes = {}) => ({role: 'owner', capabilities: true, failPost: false,
-  failCatalog: false, subtotal: 20000, posts: [], committed: null, ...changes});
+  failCatalog: false, failHealth: false, healthVersion: '1.1.0-vps-preview', subtotal: 20000,
+  posts: [], requests: [], committed: null, ...changes});
 async function until(check) {
   for (let i = 0; i < 150; i++) {
     if (check()) return;
@@ -27,7 +29,7 @@ async function until(check) {
   }
   assert.fail('DOM did not reach expected state');
 }
-async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
+async function boot(f, snapshot, {configured = true, signedIn = true, waitFor, extraOrigins = []} = {}) {
   const errors = [], virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', e => errors.push(e.message));
   const dom = new JSDOM('<!doctype html><div id="app"></div>', {
@@ -46,10 +48,16 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
   }});
   const fetchMock = async (url, options = {}) => {
     const parsed = new URL(url);
-    assert.equal(parsed.origin, API, 'Unexpected external request');
-    const path = parsed.pathname;
+    const allowedOrigins = [new URL(API).origin, ...extraOrigins];
+    assert(allowedOrigins.includes(parsed.origin), 'Unexpected external request');
+    f.requests.push({url: parsed.href, method: options.method || 'GET',
+      hasAuthorization: Boolean(options.headers?.Authorization)});
+    const path = parsed.pathname.replace(/^\/ramagan-api(?=\/|$)/, '') || '/';
     let data, status = 200;
-    if (path === '/health') data = {status: 'ok'};
+    if (path === '/health') {
+      status = f.failHealth ? 503 : 200;
+      data = {status: f.failHealth ? 'unavailable' : 'ok', version: f.healthVersion};
+    }
     else if (path === '/v1/auth/login') data = {token: 'offline-test-token', user: {id: user}};
     else if (path === '/v1/auth/logout') data = {ok: true};
     else if (path === '/v1/me') data = {user: {id: user}, store_id: store, role: f.role,
@@ -98,7 +106,7 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
       assert.deepEqual(errors, [], 'Unhandled DOM errors');
     }
   };
-  await until(() => app.q(configured ? (signedIn ? '[data-add]' : '#login-form') : '#server-form'));
+  await until(() => app.q(waitFor || (signedIn ? '[data-add]' : '#login-form')));
   return app;
 }
 function fillCart(app, discount = '0') {
@@ -110,15 +118,108 @@ function assertLocked(app) {
   }
 }
 
-test('offline endpoint setup and login reach the real POS screen', async () => {
+test('first launch verifies the default server automatically and keeps staff sign-in manual', async () => {
   const f = fixture(), app = await boot(f, null, {configured: false, signedIn: false});
   try {
-    app.input('[name=server]', API); app.submit('#server-form');
-    await until(() => app.q('#login-form'));
+    assert(app.q('#login-form'));
+    assert.equal(app.snapshot().local.find(([key]) => key === 'ramagan.v1.server.url'), undefined);
+    assert.equal(f.requests.filter(x => new URL(x.url).pathname.endsWith('/health')).length, 1);
     app.input('[name=email]', 'mock@example.test'); app.input('[name=password]', 'offline');
     app.submit('#login-form'); await until(() => app.q('[data-add]'));
     assert.match(app.text(), /OFFLINE MOCK STORE/); assert.equal(f.posts.length, 0);
     assert(!JSON.stringify(app.snapshot().local).includes('offline-test-token'));
+  } finally { app.close(); }
+});
+
+test('relaunch uses a valid saved custom endpoint', async () => {
+  const endpoint = 'https://custom.invalid/ramagan-api';
+  const f = fixture(), app = await boot(f, {
+    local: [['ramagan.v1.server.url', endpoint]], session: []
+  }, {signedIn: false, extraOrigins: ['https://custom.invalid']});
+  try {
+    assert(app.q('#login-form'));
+    assert(f.requests.length > 0);
+    assert(f.requests.every(x => new URL(x.url).origin === 'https://custom.invalid'));
+    assert.equal(app.snapshot().local.find(([key]) => key === 'ramagan.v1.server.url')?.[1], endpoint);
+  } finally { app.close(); }
+});
+
+test('invalid saved endpoint falls back to the verified default with a visible notice', async () => {
+  const f = fixture(), app = await boot(f, {
+    local: [['ramagan.v1.server.url', 'http://untrusted.invalid/ramagan-api']], session: []
+  }, {signedIn: false});
+  try {
+    assert(app.q('#login-form'));
+    assert.match(app.text(), /saved server address was invalid/i);
+    assert.equal(app.snapshot().local.find(([key]) => key === 'ramagan.v1.server.url'), undefined);
+    assert(f.requests.every(x => new URL(x.url).origin === new URL(API).origin));
+  } finally { app.close(); }
+});
+
+test('Settings verifies and remembers a selected endpoint without signing in staff', async () => {
+  const endpoint = 'https://selected.invalid/ramagan-api';
+  const f = fixture(), app = await boot(f, null, {
+    extraOrigins: ['https://selected.invalid']
+  });
+  try {
+    app.click('#open-settings');
+    app.input('[name=server]', endpoint);
+    app.submit('#server-form');
+    await until(() => app.q('#login-form'));
+    assert.equal(app.q('[data-add]'), null);
+    assert.equal(app.snapshot().local.find(([key]) => key === 'ramagan.v1.server.url')?.[1], endpoint);
+    assert(!JSON.stringify(app.snapshot().local).includes('offline-test-token'));
+    assert(f.requests.some(x => x.url.startsWith(endpoint)));
+    assert(f.requests.filter(x => new URL(x.url).origin === 'https://selected.invalid')
+      .every(x => !x.hasAuthorization), 'The previous server session must not reach the selected endpoint');
+  } finally { app.close(); }
+});
+
+test('failed endpoint check keeps the attempted URL for retry and never probes the placeholder', async () => {
+  const endpoint = 'https://attempted.invalid/ramagan-api';
+  const f = fixture(), app = await boot(f, null, {
+    extraOrigins: ['https://attempted.invalid']
+  });
+  try {
+    app.click('#open-settings');
+    app.input('[name=server]', endpoint);
+    f.failHealth = true;
+    app.submit('#server-form');
+    await until(() => app.q('#connection-error'));
+    assert.equal(app.q('[name=server]').value, endpoint);
+    assert.match(app.text(), /Active server: https:\/\/fixture\.invalid/);
+    assert(f.requests.some(x => x.url.startsWith(endpoint)));
+    assert(!f.requests.some(x => x.url.includes('your-domain.com')));
+    f.failHealth = false;
+    app.submit('#server-form');
+    await until(() => app.q('#login-form'));
+    assert.equal(app.snapshot().local.find(([key]) => key === 'ramagan.v1.server.url')?.[1], endpoint);
+    assert.equal(f.posts.length, 0);
+  } finally { app.close(); }
+});
+
+test('unreachable server stays on connection settings and retry can recover', async () => {
+  const f = fixture({failHealth: true});
+  const app = await boot(f, null, {configured: false, signedIn: false, waitFor: '#server-form'});
+  try {
+    assert.equal(app.q('#login-form'), null);
+    assert.match(app.text(), /Could not reach the RAMAGAN API/);
+    f.failHealth = false;
+    app.click('#retry-connection');
+    await until(() => app.q('#login-form'));
+    assert.equal(f.posts.length, 0);
+    assert(!f.requests.some(x => new URL(x.url).pathname.includes('/v1/sales')));
+  } finally { app.close(); }
+});
+
+test('incompatible server version is rejected before sign-in', async () => {
+  const f = fixture({healthVersion: '0.9.0'});
+  const app = await boot(f, null, {configured: false, signedIn: false, waitFor: '#server-form'});
+  try {
+    assert.equal(app.q('#login-form'), null);
+    assert.match(app.text(), /Incompatible server version/);
+    assert.match(app.text(), /0\.9\.0/);
+    assert.equal(f.posts.length, 0);
   } finally { app.close(); }
 });
 
@@ -149,8 +250,20 @@ test('pending bill locks edits, restores on restart, retries frozen payload and 
     await until(() => f.posts.length === 1); assertLocked(app);
     release(); f.holdPost = null;
     await until(() => app.q('#retry') && !app.q('#retry').disabled); assertLocked(app);
-    const saved = app.snapshot(), pending = saved.local.find(([k]) => k.startsWith('ramagan.v1.pending.v2.'));
+    const pending = app.snapshot().local.find(([k]) => k.startsWith('ramagan.v1.pending.v2.'));
     assert(pending); assert(!pending[1].includes('offline-test-token'));
+    const pendingText = pending[1];
+    app.click('#open-settings');
+    assert(app.q('#pending-server-warning'));
+    app.input('[name=server]', 'https://other.invalid/ramagan-api');
+    app.submit('#server-form');
+    await until(() => app.q('#connection-error'));
+    assert.match(app.q('#connection-error').textContent, /Endpoint change blocked/);
+    assert.equal(app.snapshot().local.find(([k]) => k === pending[0])?.[1], pendingText);
+    assert.equal(app.snapshot().local.find(([k]) => k === 'ramagan.v1.server.url')?.[1], API);
+    assert(!f.requests.some(x => new URL(x.url).origin === 'https://other.invalid'));
+    app.click('#settings-back'); assertLocked(app);
+    const saved = app.snapshot();
     app.close(); app = null; app = await boot(f, saved);
     assert.equal(app.q('#discount').value, '175.50'); assert.equal(app.q('#payment').value, 'transfer');
     assert.equal(app.q('#auth-ref').value, 'MOCK-DOC'); assertLocked(app);

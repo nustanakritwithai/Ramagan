@@ -8,17 +8,30 @@ const root = document.getElementById('app');
 // A change of VPS/domain does not require rebuilding the APK.
 const ADMIN_REPORT_URL = 'https://nustanakritwithai.github.io/Ramagan/admin/';
 const ENDPOINT_STORAGE = 'ramagan.v1.server.url';
+const DEFAULT_API_URL = 'https://157.85.96.139/ramagan-api';
+const REQUIRED_API_VERSION = '1.1.0-vps-preview';
 let savedEndpoint = '';
+let endpointNotice = '';
 try { savedEndpoint = localStorage.getItem(ENDPOINT_STORAGE) || ''; } catch { /* checkout will fail closed if storage is unavailable */ }
-let apiUrl = validateServerUrl(savedEndpoint || import.meta.env.VITE_RAMAGAN_API_URL || '');
+const validatedSavedEndpoint = validateServerUrl(savedEndpoint);
+if (savedEndpoint && !validatedSavedEndpoint) {
+  endpointNotice = 'The saved server address was invalid. Using the verified RAMAGAN server.';
+  try { localStorage.removeItem(ENDPOINT_STORAGE); } catch { /* Keep running with the in-memory default. */ }
+}
+const buildEndpoint = validateServerUrl(import.meta.env.VITE_RAMAGAN_API_URL || '');
+let apiUrl = validatedSavedEndpoint || buildEndpoint || validateServerUrl(DEFAULT_API_URL);
+let endpointInput = apiUrl || '';
 let configured = Boolean(apiUrl);
 let api = configured ? createClient(apiUrl) : null;
-let setupError = '';
+let connectionReady = false;
+let connectionChecking = false;
+let setupError = endpointNotice;
+let authSubscription = null;
 
 const state = {
   user: null, store: null, role: null, lots: [], cart: new Map(),
   payment: 'cash', authRef: '', busy: false, message: '', error: false,
-  pendingId: null, checkout: null, pendingBlocked: false, capabilities: null, discount: '0', lastSale: null, products: [], view: 'sales'
+  pendingId: null, checkout: null, pendingBlocked: false, capabilities: null, discount: '0', lastSale: null, products: [], view: 'sales', settingsReturnView: 'sales'
 };
 
 function h(value) {
@@ -68,7 +81,8 @@ function statusChip() {
     '<span class="status offline">ออฟไลน์ · ดูข้อมูลเท่านั้น</span>';
 }
 function render() {
-  if (!configured) return renderSetup();
+  if (state.view === 'settings') return renderSettings();
+  if (!configured || !connectionReady) return renderSettings({blocking: true});
   if (!state.user) return renderLogin();
   if (!state.store) {
     root.innerHTML = '<div class="setup"><h1>RAMAGAN POS</h1><p>' +
@@ -80,72 +94,185 @@ function render() {
   if (state.view === 'inventory' && canManage()) return renderInventory();
   renderDashboard();
 }
-function renderSetup() {
+function renderSettings({blocking = !connectionReady} = {}) {
+  const pending = hasStoredPendingCheckout();
   root.innerHTML = [
     '<main class="login-wrap"><section class="login-card">',
     '<div class="brand">R<span>●</span> RAMAGAN</div>',
-    '<div class="muted">ระบบหน้าร้าน · เว็บไซต์ + Android</div>',
-    '<h1>เชื่อมต่อเซิร์ฟเวอร์ร้าน</h1>',
-    '<p class="muted">ใช้ URL HTTPS ของ Ramagan API บน VPS ที่ผู้ดูแลร้านตั้งค่าไว้</p>',
-    '<form id="server-form"><label>ที่อยู่เซิร์ฟเวอร์ HTTPS',
-    '<input name="server" type="url" required autocomplete="url" ',
-    'placeholder="https://your-domain.com/ramagan-api" value="',
-    h(apiUrl || ''), '" /></label>',
-    '<button type="submit" class="primary">ตรวจสอบและเชื่อมต่อ</button></form>',
-    setupError ? '<p class="alert danger">' + h(setupError) + '</p>' : '',
-    '<p class="footnote">ไม่จำเป็นต้องมี Supabase และไม่ต้องใส่ API secret',
-    ' · เซิร์ฟเวอร์ของร้านจะเก็บข้อมูลสินค้าและบัญชีพนักงาน</p>',
-    '<p class="footnote">ก่อนใช้งานจริงต้องเปิด HTTPS, ตั้งบัญชี Owner และทดสอบระบบบน VPS</p>',
+    '<h1>', blocking ? 'Connect to RAMAGAN' : 'Settings', '</h1>',
+    '<p class="muted">Choose and verify the RAMAGAN API server. Staff credentials are entered only on the sign-in screen.</p>',
+    apiUrl ? '<p class="footnote">Active server: <code>' + h(apiUrl) + '</code></p>' : '',
+    connectionChecking ? '<p class="alert">Checking server health and compatibility…</p>' : '',
+    setupError ? '<p class="alert danger" id="connection-error">' + h(setupError) + '</p>' : '',
+    pending ? '<p class="alert danger" id="pending-server-warning">An unfinished checkout is stored on this device. Resolve it on its original server before changing endpoints.</p>' : '',
+    '<form id="server-form"><label>RAMAGAN API URL (HTTPS)',
+    '<input name="server" type="url" required autocomplete="url" value="', h(endpointInput), '" /></label>',
+    '<button type="submit" class="primary" ', connectionChecking ? 'disabled' : '', '>Verify and use server</button></form>',
+    apiUrl ? '<button class="ghost" id="retry-connection" type="button" ' + (connectionChecking ? 'disabled' : '') + '>Retry current server</button>' : '',
+    !blocking ? '<button class="ghost" id="settings-back" type="button">Back to app</button>' : '',
     '</section></main>'
   ].join('');
-  root.querySelector('#server-form').addEventListener('submit', async (event) => {
+  root.querySelector('[name="server"]').addEventListener('input', (event) => {
+    endpointInput = event.currentTarget.value;
+  });
+  root.querySelector('#server-form').addEventListener('submit', (event) => {
     event.preventDefault();
-    const button = root.querySelector('#server-form button');
-    const endpoint = validateServerUrl(event.currentTarget.elements.server.value);
-    if (!endpoint) {
-      setupError = 'กรุณาระบุ URL HTTPS ที่ถูกต้อง (HTTP ใช้ได้เฉพาะ localhost สำหรับทดสอบ)';
-      return renderSetup();
-    }
-    button.disabled = true;
+    applyEndpoint(event.currentTarget.elements.server.value);
+  });
+  root.querySelector('#retry-connection')?.addEventListener('click', probeCurrentEndpoint);
+  root.querySelector('#settings-back')?.addEventListener('click', () => {
+    state.view = state.settingsReturnView || 'sales';
     setupError = '';
-    const candidate = createClient(endpoint);
-    const result = await candidate.health();
-    button.disabled = false;
-    if (result.error || result.data?.status !== 'ok') {
-      setupError = 'ยังติดต่อ Ramagan API ไม่ได้: ' +
-        (result.error?.message || 'ปลายทางไม่ใช่ Ramagan API');
-      return renderSetup();
-    }
-    apiUrl = endpoint;
-    configured = true;
-    api = candidate;
-    localStorage.setItem(ENDPOINT_STORAGE, endpoint);
-    await startSession();
+    render();
   });
 }
 
-async function changeServer() {
-  if (state.pendingId || state.busy) {
-    return setMessage('ต้องตรวจสอบรายการขายค้างก่อนเปลี่ยนเซิร์ฟเวอร์', true);
+function hasStoredPendingCheckout() {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i) || '';
+      if (key.startsWith('ramagan.v1.pending.v2.') && !key.endsWith('.completed')) return true;
+      if (key.startsWith('ramagan.v1.pending.') && !key.startsWith('ramagan.v1.pending.v2.')) return true;
+    }
+    return false;
+  } catch {
+    return true;
   }
+}
+
+function hasPendingCheckoutForDifferentEndpoint(endpoint) {
+  try {
+    const endpointPrefix = 'ramagan.v1.pending.v2.' + encodeURIComponent(endpoint) + '.';
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i) || '';
+      if (key.startsWith('ramagan.v1.pending.v2.') && !key.endsWith('.completed') &&
+          !key.startsWith(endpointPrefix)) return true;
+      if (key.startsWith('ramagan.v1.pending.') && !key.startsWith('ramagan.v1.pending.v2.')) return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function endpointHealthError(result) {
+  if (result.error) return 'Could not reach the RAMAGAN API: ' + result.error.message;
+  if (result.data?.status !== 'ok') return 'The server health check did not return status ok.';
+  if (result.data?.version !== REQUIRED_API_VERSION) {
+    return 'Incompatible server version. Expected ' + REQUIRED_API_VERSION +
+      ' but received ' + String(result.data?.version || 'no version') + '.';
+  }
+  return '';
+}
+
+async function probeCurrentEndpoint() {
+  if (!api) return;
+  const wasReady = connectionReady;
+  connectionChecking = true;
+  setupError = '';
+  render();
+  const result = await api.health();
+  connectionChecking = false;
+  const problem = endpointHealthError(result);
+  if (problem) {
+    connectionReady = false;
+    setupError = problem;
+    return render();
+  }
+  connectionReady = true;
+  setupError = '';
+  if (!wasReady) {
+    if (endpointNotice) state.message = endpointNotice;
+    await startSession();
+  } else render();
+}
+
+async function applyEndpoint(raw) {
+  endpointInput = String(raw || '').trim();
+  const endpoint = validateServerUrl(raw);
+  if (!endpoint) {
+    setupError = 'Enter a valid HTTPS URL without credentials, query parameters, or a fragment.';
+    return render();
+  }
+  if (endpoint !== apiUrl && (state.pendingId || state.pendingBlocked || state.busy ||
+      hasPendingCheckoutForDifferentEndpoint(endpoint))) {
+    setupError = 'Endpoint change blocked because an unfinished checkout is stored. Resolve it on its original server first.';
+    return render();
+  }
+  const wasReady = connectionReady;
+  const candidate = endpoint === apiUrl && api ? api : createClient(endpoint);
+  connectionChecking = true;
+  setupError = '';
+  render();
+  const result = await candidate.health();
+  connectionChecking = false;
+  const problem = endpointHealthError(result);
+  if (problem) {
+    if (endpoint === apiUrl) connectionReady = false;
+    setupError = problem;
+    return render();
+  }
+  if (endpoint === apiUrl) {
+    api = candidate;
+    endpointInput = endpoint;
+    configured = true;
+    connectionReady = true;
+    try {
+      localStorage.setItem(ENDPOINT_STORAGE, endpoint);
+      setupError = '';
+    } catch {
+      setupError = 'The server is active for this session, but the selected address could not be saved.';
+      state.message = setupError;
+      state.error = true;
+    }
+    if (!wasReady) await startSession();
+    else render();
+    return;
+  }
+
+  if (authSubscription?.unsubscribe) authSubscription.unsubscribe();
   if (api) await api.auth.signOut();
-  localStorage.removeItem(ENDPOINT_STORAGE);
-  apiUrl = null;
-  api = null;
-  configured = false;
+  apiUrl = endpoint;
+  endpointInput = endpoint;
+  api = candidate;
+  configured = true;
+  connectionReady = true;
   state.user = null;
   state.store = null;
   state.role = null;
+  state.capabilities = null;
   state.products = [];
   state.lots = [];
   state.cart.clear();
   state.lastSale = null;
+  state.pendingId = null;
+  state.checkout = null;
+  state.pendingBlocked = false;
+  state.view = 'sales';
+  state.message = '';
+  state.error = false;
+  try {
+    localStorage.setItem(ENDPOINT_STORAGE, endpoint);
+    setupError = '';
+  } catch {
+    setupError = 'The server is active for this session, but the selected address could not be saved.';
+    state.message = setupError;
+    state.error = true;
+  }
+  await startSession();
+}
+
+function openSettings() {
+  if (state.busy) return setMessage('Wait for the current operation to finish before opening settings.', true);
+  state.settingsReturnView = state.view;
+  state.view = 'settings';
   setupError = '';
   render();
 }
 
 async function startSession() {
-  api.auth.onAuthStateChange((event) => {
+  if (authSubscription?.unsubscribe) authSubscription.unsubscribe();
+  const subscription = api.auth.onAuthStateChange((event) => {
     if (event === 'SIGNED_OUT') {
       state.user = null;
       state.store = null;
@@ -153,11 +280,11 @@ async function startSession() {
       render();
     }
   });
+  authSubscription = subscription?.data?.subscription || null;
   const {data, error} = await api.auth.getUser();
   if (!error && data?.user) await loadProfile(data.user);
   else render();
 }
-
 function canManage() {
   return state.role === 'owner' || state.role === 'manager';
 }
@@ -174,7 +301,7 @@ function renderLogin() {
     '<button class="primary" type="submit" ', state.busy ? 'disabled' : '', '>เข้าสู่ระบบ</button>',
     '</form>',
     '<button class="ghost" id="signup" type="button">วิธีขอบัญชีพนักงาน</button>',
-    '<button class="ghost" id="server-change" type="button">เปลี่ยนเซิร์ฟเวอร์</button>',
+    '<button class="ghost" id="open-settings" type="button">Settings</button>',
     '<p class="footnote">บัญชีพนักงานสร้างโดยเจ้าของร้านผ่านเครื่อง VPS เท่านั้น</p>',
     state.message ? '<p class="alert ' + (state.error ? 'danger' : '') + '">' + h(state.message) + '</p>' : '',
     '<p class="footnote">ข้อมูลขายจะถูกบันทึกในฐานข้อมูลกลางเท่านั้น</p>',
@@ -195,7 +322,7 @@ function renderLogin() {
   root.querySelector('#signup').addEventListener('click', () => {
     setMessage('ให้เจ้าของร้านเพิ่มบัญชีผ่านคำสั่ง VPS: python admin.py add-user', false);
   });
-  root.querySelector('#server-change').addEventListener('click', changeServer);
+  root.querySelector('#open-settings').addEventListener('click', openSettings);
 }
 function cartItems() {
   return [...state.cart.entries()].map(([lot_id, quantity_mg]) => ({ lot_id, quantity_mg }))
@@ -244,7 +371,7 @@ function renderDashboard() {
   root.innerHTML = [
     '<header class="topbar"><div class="brand">R<span>●</span> RAMAGAN <small>V1</small></div>',
     '<div class="top-actions">', statusChip(),
-    '<button id="change-server" class="ghost">เซิร์ฟเวอร์</button>',
+    '<button id="open-settings" class="ghost" type="button">Settings</button>',
     '<button id="logout" class="ghost">ออกจากระบบ</button></div></header>',
     '<main class="layout"><section class="main-panel">',
     '<div class="view-links"><strong>หน้าขาย</strong>',
@@ -288,7 +415,7 @@ function renderDashboard() {
   ].join('');
 
   root.querySelector('#logout').addEventListener('click', logout);
-  root.querySelector('#change-server')?.addEventListener('click', changeServer);
+  root.querySelector('#open-settings')?.addEventListener('click', openSettings);
   root.querySelector('#open-inventory')?.addEventListener('click', () => {
     state.view = 'inventory';
     state.message = '';
@@ -352,7 +479,7 @@ function renderInventory() {
   root.innerHTML = [
     '<header class="topbar"><div class="brand">R<span>●</span> RAMAGAN <small>V1</small></div>',
     '<div class="top-actions">', statusChip(),
-    '<button id="change-server" class="ghost">เซิร์ฟเวอร์</button>',
+    '<button id="open-settings" class="ghost" type="button">Settings</button>',
     '<button id="logout" class="ghost">ออกจากระบบ</button></div></header>',
     '<main class="manager-layout"><div class="view-links">',
     '<button id="open-sales" class="ghost">หน้าขาย</button><strong>จัดการสต็อก</strong>',
@@ -391,7 +518,7 @@ function renderInventory() {
     '</main>'
   ].join('');
   root.querySelector('#logout').addEventListener('click', logout);
-  root.querySelector('#change-server')?.addEventListener('click', changeServer);
+  root.querySelector('#open-settings')?.addEventListener('click', openSettings);
   root.querySelector('#refresh').addEventListener('click', refreshLots);
   root.querySelector('#open-sales').addEventListener('click', () => {
     state.view = 'sales';
@@ -586,8 +713,10 @@ window.addEventListener('online', () => {
   else render();
 });
 window.addEventListener('offline', render);
-if (api) startSession();
-else render();
+if (api) {
+  render();
+  probeCurrentEndpoint();
+} else render();
 
 if ('serviceWorker' in navigator && !window.Capacitor?.isNativePlatform?.()) {
   window.addEventListener('load', () => {
