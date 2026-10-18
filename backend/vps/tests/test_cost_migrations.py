@@ -4,7 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from migrations import (SchemaUpgradeRequired, backup_and_migrate_copy, initialize_database,
+from migrations import (CURRENT_SCHEMA_VERSION, SchemaUpgradeRequired, backup_and_migrate_copy, initialize_database,
                         inspect_database, migrate_copy, restore_copy)
 from test_discount_migrations import (FRESH_SCHEMA, V2_SCHEMA, STORE_ID, USER_ID, LOT_IDS,
     create_legacy_fixture, fixture_connection, logical_snapshot)
@@ -48,7 +48,7 @@ class CostMigrationTests(unittest.TestCase):
             initialize_database(self.path, FRESH_SCHEMA)
         self.assertEqual(before, logical_snapshot(self.path))
         result = migrate_copy(self.path, confirmed_offline_copy=True)
-        self.assertEqual((result["status"], result["schema_version"]), ("PASS", 5))
+        self.assertEqual((result["status"], result["schema_version"]), ("PASS", CURRENT_SCHEMA_VERSION))
         after = logical_snapshot(self.path)
         with fixture_connection(self.path) as db:
             for table, columns in before["columns"].items():

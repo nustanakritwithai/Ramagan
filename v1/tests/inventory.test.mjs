@@ -50,6 +50,15 @@ test('count intent survives restart and retries identical UUID, count and origin
   await resumed.acknowledge(); assert.equal(resumed.read(), null);
   assert(!JSON.stringify([...f.map]).includes('token'));
 });
+test('stocktake reason is optional while wrong type and overlong reason fail before network',async()=>{
+  for(const reason of ['', '   ', 'นับจริง']){
+    const f=fixture(),p={...payload(),reason};
+    const result=await f.create().start(p);assert(result.result);assert.equal(f.calls.length,1);assert.equal(f.calls[0].reason,reason);
+  }
+  for(const reason of [null, 1, false, 'x'.repeat(301)]){
+    const f=fixture();await assert.rejects(f.create().start({...payload(),reason}));assert.equal(f.calls.length,0);
+  }
+});
 test('lost response reconciles committed count by UUID without another POST', async () => {
   const f = fixture({fail: true}), op = f.create();
   await op.start(payload()); f.saved = response(f.calls[0]);

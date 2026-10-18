@@ -15,13 +15,37 @@ test('draft UUID and exact photo bytes survive reload without a submitted-mutati
   assert.equal(await restored.photos.lot.blob.text(),'exact-photo-bytes');
   assert.equal(restored.snapshot[0].stock_revision,3);assert.equal(restored.counts.lot,'100');
 });
-test('changed count invalidates photo and binding mismatch cannot attach an unrelated photo',async()=>{
+test('count edits preserve exact draft/Lot photo binding while unrelated upload metadata is rejected',async()=>{
   const drafts=createEvidenceDraft(options());await drafts.ensure(snapshot,meta);await drafts.setCount('lot','100');
   const selected=await drafts.select('lot',new Blob(['photo'],{type:'image/png'}));const upload=selected.photos.lot.client_upload_id;
   await assert.rejects(drafts.uploaded('lot',upload,{client_upload_id:upload,client_stocktake_id:'wrong',lot_id:'lot',evidence_id:'id'}));
   const saved=await drafts.uploaded('lot',upload,{client_upload_id:upload,client_stocktake_id:selected.id,lot_id:'lot',evidence_id:'id'});
   assert.equal(saved.photos.lot.metadata.evidence_id,'id');
-  assert.equal((await drafts.setCount('lot','99.999')).photos.lot,undefined);
+  const edited=await drafts.setCount('lot','99.999');
+  assert.equal(edited.photos.lot.client_upload_id,upload);assert.equal(edited.photos.lot.metadata.evidence_id,'id');
+  assert.equal(await edited.photos.lot.blob.text(),'photo');
+  for(const wrong of [{client_upload_id:'other'},{client_stocktake_id:'other'},{lot_id:'other'}]){
+    await assert.rejects(drafts.uploaded('lot',upload,{client_upload_id:upload,client_stocktake_id:selected.id,lot_id:'lot',evidence_id:'id',...wrong}));
+  }
+});
+test('photo can upload before a count without inventing zero and survives subsequent edits and reload',async()=>{
+  const config=options(),drafts=createEvidenceDraft(config);await drafts.ensure(snapshot,meta);
+  const selected=await drafts.select('lot',new Blob(['photo-first'],{type:'image/jpeg'}));
+  assert.equal(selected.counts.lot,undefined);const upload=selected.photos.lot.client_upload_id;
+  await drafts.uploaded('lot',upload,{client_upload_id:upload,client_stocktake_id:selected.id,lot_id:'lot',evidence_id:'photo-first-id'});
+  for(const value of ['1','10','100','100.125',''])await drafts.setCount('lot',value);
+  const restored=await createEvidenceDraft(config).read();
+  assert.equal(restored.counts.lot,'');assert.equal(restored.photos.lot.metadata.evidence_id,'photo-first-id');
+  assert.equal(restored.photos.lot.client_upload_id,upload);assert.equal(await restored.photos.lot.blob.text(),'photo-first');
+});
+test('new photo selection changes upload UUID and rejects the previous delayed upload response',async()=>{
+  const drafts=createEvidenceDraft(options());await drafts.ensure(snapshot,meta);
+  const first=await drafts.select('lot',new Blob(['first'],{type:'image/jpeg'}));
+  const old=first.photos.lot.client_upload_id;
+  const second=await drafts.select('lot',new Blob(['second'],{type:'image/jpeg'}));
+  assert.notEqual(second.photos.lot.client_upload_id,old);
+  await assert.rejects(drafts.uploaded('lot',old,{client_upload_id:old,client_stocktake_id:first.id,lot_id:'lot',evidence_id:'old'}));
+  const restored=await drafts.read();assert.equal(restored.photos.lot.metadata,null);assert.equal(await restored.photos.lot.blob.text(),'second');
 });
 test('drafts are isolated by API/store/actor and only matching draft UUID may be cleared',async()=>{
   const config=options(),drafts=createEvidenceDraft(config),first=await drafts.ensure(snapshot,meta);

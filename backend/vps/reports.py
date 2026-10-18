@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
+from payments import recorded_payments
 
 BANGKOK = ZoneInfo("Asia/Bangkok")
 MAX_RANGE_DAYS = 93
@@ -62,10 +63,52 @@ def build_sales_report(db, store_id: str, start: date, end: date,
     known_cost_satang = 0
     unknown_cost_line_count = 0
     recent = []
+    voided = {"sale_count": 0, "subtotal_satang": 0, "discount_satang": 0,
+              "total_satang": 0, "quantity_mg": 0}
+    void_activity = {"basis": "void_created_at", "sale_count": 0, "subtotal_satang": 0,
+                     "discount_satang": 0, "total_satang": 0, "quantity_mg": 0,
+                     "cash_satang": 0, "transfer_satang": 0,
+                     "known_cost_satang": 0, "unknown_cost_line_count": 0}
+    recent_voids = []
+    for day in days.values():
+        day.update({"voided_" + key: 0 for key in voided})
 
     # Transaction-consistent read snapshot for all report sections.
     db.execute("BEGIN")
     try:
+        has_voids = bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sale_voids'").fetchone())
+        active_only = " AND NOT EXISTS(SELECT 1 FROM sale_voids v WHERE v.sale_id=s.id)" if has_voids else ""
+        if has_voids:
+            void_columns = """s.id,s.created_at,s.subtotal_satang,s.discount_satang,s.total_satang,
+                s.payment_method,coalesce(sum(sl.quantity_mg),0) AS quantity_mg,
+                coalesce(sum(sl.line_cost_satang),0) AS known_cost_satang,
+                count(sl.id)-count(sl.line_cost_satang) AS unknown_cost_line_count"""
+            # Financial sections are restated on the ORIGINAL sale day at this
+            # read snapshot. Separate activity is attributed to the void day.
+            for row in db.execute("SELECT " + void_columns + " FROM sales s JOIN sale_voids v ON v.sale_id=s.id "
+                    "LEFT JOIN sale_lines sl ON sl.sale_id=s.id WHERE s.store_id=? AND s.created_at>=? AND s.created_at<? "
+                    "GROUP BY s.id", (store_id, lower, upper)):
+                day = to_bangkok_day(row["created_at"])
+                if day in days:
+                    for key in voided:
+                        amount = 1 if key == "sale_count" else int(row[key])
+                        voided[key] += amount
+                        days[day]["voided_" + key] += amount
+            activity = db.execute("SELECT " + void_columns + ",v.id AS void_id,v.client_void_id,v.reason,"
+                "v.actor_user_id,v.actor_email,v.actor_role,v.created_at AS voided_at FROM sale_voids v "
+                "JOIN sales s ON s.id=v.sale_id LEFT JOIN sale_lines sl ON sl.sale_id=s.id "
+                "WHERE v.store_id=? AND s.store_id=? AND v.created_at>=? AND v.created_at<? "
+                "GROUP BY v.id ORDER BY v.created_at DESC,v.id DESC", (store_id, store_id, lower, upper))
+            for row in activity:
+                payments = recorded_payments(db, row["id"], row["payment_method"], row["total_satang"])
+                void_activity["sale_count"] += 1
+                for key in ("subtotal_satang", "discount_satang", "total_satang", "quantity_mg",
+                            "known_cost_satang", "unknown_cost_line_count"):
+                    void_activity[key] += int(row[key])
+                for payment in payments:
+                    void_activity[payment["payment_method"] + "_satang"] += payment["amount_satang"]
+                if len(recent_voids) < 30:
+                    recent_voids.append({**dict(row), "sale_id": row["id"], "payments": payments})
         payment_rows = {}
         if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sale_payments'").fetchone():
             for row in db.execute("""SELECT p.sale_id,p.payment_method,p.amount_satang
@@ -83,6 +126,7 @@ def build_sales_report(db, store_id: str, start: date, end: date,
                    COUNT(sl.id)-COUNT(sl.line_cost_satang) AS unknown_cost_line_count
               FROM sales s LEFT JOIN sale_lines sl ON sl.sale_id = s.id
              WHERE s.store_id=? AND s.created_at>=? AND s.created_at<?
+        """ + active_only + """
              GROUP BY s.id
              ORDER BY s.created_at DESC, s.id DESC
         """, (store_id, lower, upper))
@@ -150,6 +194,7 @@ def build_sales_report(db, store_id: str, start: date, end: date,
               JOIN lots l ON l.id=sl.lot_id AND l.store_id=s.store_id
               JOIN products p ON p.id=l.product_id AND p.store_id=s.store_id
              WHERE s.store_id=? AND s.created_at>=? AND s.created_at<?
+        """ + active_only + """
              GROUP BY p.id
              ORDER BY total_satang DESC, p.name ASC
              LIMIT 10
@@ -168,6 +213,7 @@ def build_sales_report(db, store_id: str, start: date, end: date,
               JOIN lots l ON l.id=sl.lot_id AND l.store_id=s.store_id
               JOIN products p ON p.id=l.product_id AND p.store_id=s.store_id
              WHERE s.store_id=? AND s.created_at>=? AND s.created_at<?
+        """ + active_only + """
              GROUP BY p.category ORDER BY total_satang DESC, p.category ASC
              LIMIT 10
         """, (store_id, lower, upper))]
@@ -189,6 +235,7 @@ def build_sales_report(db, store_id: str, start: date, end: date,
         "period": {"from": start.isoformat(), "to": end.isoformat(),
                    "timezone": "Asia/Bangkok"},
         "summary": add_cost_totals({
+            **{"voided_" + key: value for key, value in voided.items()},
             "sale_count": count,
             "total_satang": total_satang,
             "subtotal_satang": subtotal_satang,
@@ -205,6 +252,9 @@ def build_sales_report(db, store_id: str, start: date, end: date,
         "top_categories": top_categories,
         "low_stock": low_stock,
         "recent_sales": recent,
+        "voids": add_cost_totals(void_activity),
+        "recent_voids": recent_voids,
+        "sales_basis": "original_sale_created_at_excluding_voided_at_snapshot",
         "capabilities": {
             "discounts": True, "discount_contract_version": 1,
             "inventory_costs": True, "cost_contract_version": 1,
@@ -212,6 +262,7 @@ def build_sales_report(db, store_id: str, start: date, end: date,
             "stocktake_evidence": True, "evidence_contract_version": 1,
             "split_payments": True, "payment_contract_version": 1,
             "sale_reconciliation": True, "sale_reconciliation_contract_version": 1,
+            "sale_voids": has_voids, "sale_void_contract_version": 1,
             "promotions": False,
             "shift_reconciliation": False
         }

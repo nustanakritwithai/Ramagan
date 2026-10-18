@@ -260,6 +260,57 @@ class CostStockTests(unittest.TestCase):
         with connect(self.path) as db:
             self.assertEqual(db.execute("SELECT count(*) FROM ledger_events WHERE event_type='ADJUST'").fetchone()[0], 0)
 
+    def test_optional_count_reason_normalizes_in_history_retries_and_reconciliation(self):
+        self.receive(self.product(100))
+        for index, reason in enumerate((None, "", " \t\n ")):
+            with self.subTest(reason=reason):
+                actor = "manager" if index == 1 else "owner"
+                payload = self.count_payload(self.inventory()["lots"], actor=actor)
+                if reason is None:
+                    del payload["reason"]
+                else:
+                    payload["reason"] = reason
+                payload["items"][0]["counted_quantity_mg"] -= 1
+                result = self.count(payload, actor)
+                self.assertEqual(result.status_code, 200, result.text)
+                saved = result.json()
+                self.assertEqual(saved["reason"], "")
+                self.assertEqual(saved["items"][0]["variance_mg"], -1)
+                before = self.state()
+                for retry_reason in (None, "", " \t\n "):
+                    retry_payload = {**payload, "reason": retry_reason}
+                    if retry_reason is None:
+                        del retry_payload["reason"]
+                    replay = self.count(retry_payload, actor)
+                    self.assertEqual(replay.status_code, 200, replay.text)
+                    self.assertEqual(replay.json(), {**saved, "duplicate": True})
+                    reconciled = self.client.post("/v1/stocktakes/reconcile", headers=self.headers[actor], json=retry_payload)
+                    self.assertEqual(reconciled.status_code, 200, reconciled.text)
+                    self.assertEqual(reconciled.json(), {"status": "completed", "result": replay.json()})
+                changed = self.count({**payload, "reason": "Added after commit"}, actor)
+                self.assertEqual(changed.status_code, 409)
+                self.unchanged(before)
+        history = self.client.get("/v1/stocktakes", headers=self.headers["manager"]).json()["stocktakes"]
+        self.assertEqual(len(history), 3)
+        self.assertTrue(all(row["reason"] == "" for row in history))
+        with connect(self.path) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM ledger_events WHERE event_type='ADJUST'").fetchone()[0], 3)
+            self.assertFalse(db.execute("PRAGMA foreign_key_check").fetchall())
+
+    def test_count_reason_maximum_remains_supported_and_is_part_of_saved_payload(self):
+        self.receive(self.product(100))
+        reason = "ร" * 300
+        payload = self.count_payload(self.inventory()["lots"], reason=reason)
+        response = self.count(payload)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["reason"], reason)
+        before = self.state()
+        replay = self.count(payload)
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json(), {**response.json(), "duplicate": True})
+        self.assertEqual(self.count({**payload, "reason": ""}).status_code, 409)
+        self.unchanged(before)
+
     def test_aba_balance_returning_to_same_quantity_still_rejects_old_revision(self):
         self.receive(self.product(100))
         old = self.inventory()["lots"]
@@ -287,7 +338,9 @@ class CostStockTests(unittest.TestCase):
                 self.unchanged(before)
         before = self.state()
         self.assertEqual(self.count({**payload, "items": payload["items"] * 2}).status_code, 422)
-        self.assertEqual(self.count({**payload, "reason": "  "}).status_code, 422)
+        for reason in (None, True, 1, 1.0, [], {}, "x" * 301):
+            self.assertEqual(self.count({**payload, "reason": reason}).status_code, 422)
+        self.assertEqual(self.count({**payload, "shift_label": "  "}).status_code, 422)
         self.assertEqual(self.count(payload, "staff").status_code, 403)
         self.assertEqual(self.count(payload, "other").status_code, 422)
         self.assertEqual(self.client.get("/v1/stocktakes", headers=self.headers["staff"]).status_code, 403)

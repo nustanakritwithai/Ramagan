@@ -19,7 +19,8 @@ atexit.register(_bootstrap.cleanup)
 os.environ["RAMAGAN_DB_PATH"]=str(Path(_bootstrap.name)/"import.sqlite3")
 import httpx
 import uvicorn
-from app import connect,create_app,create_store,create_user
+from app import APP_VERSION,connect,create_app,create_store,create_user
+from migrations import CURRENT_SCHEMA_VERSION
 
 class CostStockHttpTests(unittest.TestCase):
     def test_http_intake_sale_cost_count_replay_reports_and_roles(self):
@@ -59,8 +60,8 @@ class CostStockHttpTests(unittest.TestCase):
                     self.assertTrue(me["capabilities"]["optional_document_references"])
                     self.assertFalse(me["store"]["requires_authorization"])
                     health=client.get("/health").json()
-                    self.assertEqual(health["schema_version"],5)
-                    self.assertEqual(health["version"],"1.4.0-vps-preview")
+                    self.assertEqual(health["schema_version"],CURRENT_SCHEMA_VERSION)
+                    self.assertEqual(health["version"],APP_VERSION)
                     product=client.post("/v1/products",headers=headers["owner"],json={"sku":"WIRE","name":"SYNTHETIC","category":"fixture","price_satang_per_gram":10000,"default_cost_satang_per_gram":4000})
                     self.assertEqual(product.status_code,200)
                     pid=product.json()["product_id"]
@@ -99,15 +100,16 @@ class CostStockHttpTests(unittest.TestCase):
                     row=inventory.json()["lots"][0]
                     self.assertEqual((row["quantity_mg"],row["stock_revision"],row["cost_satang_per_gram"]),(9000,1,4000))
                     self.assertEqual(inventory.json()["summary"]["inventory_value_satang"],36000)
-                    count={"client_stocktake_id":str(uuid.uuid4()),"shift_label":"Morning","reason":"Physical count fixture","items":[{"lot_id":lot,"expected_revision":1,"counted_quantity_mg":8500}]}
+                    count={"client_stocktake_id":str(uuid.uuid4()),"shift_label":"Morning","items":[{"lot_id":lot,"expected_revision":1,"counted_quantity_mg":8500}]}
                     count["items"][0]["evidence_id"]=upload_photo(client,headers["owner"],lot,count["client_stocktake_id"])["evidence_id"]
                     count_result=client.post("/v1/stocktakes",headers=headers["owner"],json=count)
                     self.assertEqual(count_result.status_code,200,count_result.text)
                     saved=count_result.json()
+                    self.assertEqual(saved["reason"],"")
                     self.assertEqual(saved["actor_user_id"],me["user"]["id"])
                     self.assertEqual(saved["items"][0]["variance_mg"],-500)
                     self.assertEqual(saved["items"][0]["inventory_delta_satang"],-2000)
-                    replay=client.post("/v1/stocktakes",headers=headers["owner"],json=count)
+                    replay=client.post("/v1/stocktakes",headers=headers["owner"],json={**count,"reason":" \t "})
                     self.assertEqual(replay.status_code,200)
                     self.assertEqual(replay.json(),{**saved,"duplicate":True})
                     lookup=client.get("/v1/stocktakes/by-client/"+count["client_stocktake_id"],headers=headers["owner"])
@@ -151,6 +153,7 @@ class CostStockHttpTests(unittest.TestCase):
                         self.assertEqual((section["subtotal_satang"],section["discount_satang"],section["total_satang"],section["cost_satang"],section["gross_profit_satang"]),(10000,100,9900,4000,5900))
                     self.assertEqual(client.get("/v1/admin/sales-report",headers=headers["staff"]).status_code,403)
                     with connect(path) as db:
+                        self.assertEqual(db.execute("SELECT reason FROM stocktakes").fetchone()[0],"")
                         self.assertEqual(db.execute("SELECT count(*) FROM lots").fetchone()[0],1)
                         self.assertEqual(db.execute("SELECT count(*) FROM sales").fetchone()[0],1)
                         self.assertEqual(db.execute("SELECT count(*) FROM stocktakes").fetchone()[0],1)

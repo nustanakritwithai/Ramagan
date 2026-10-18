@@ -5,7 +5,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import Depends
-from pydantic import BaseModel, Field, StrictInt
+from pydantic import BaseModel, Field, StrictInt, StrictStr
 from stocktake_evidence import METADATA_COLUMNS, metadata as evidence_metadata
 
 COST_CONTRACT_VERSION = 1
@@ -176,7 +176,7 @@ class StocktakeLineIn(BaseModel):
 class StocktakeIn(BaseModel):
     client_stocktake_id: uuid.UUID
     shift_label: str = Field(min_length=1, max_length=80)
-    reason: str = Field(min_length=1, max_length=300)
+    reason: StrictStr = Field(default="", max_length=300)
     items: list[StocktakeLineIn] = Field(min_length=1, max_length=200)
 
 
@@ -199,8 +199,8 @@ def stocktake_result(db, header, *, duplicate: bool) -> dict:
 
 def prepare_stocktake(payload: StocktakeIn, error) -> tuple:
     shift, reason = payload.shift_label.strip(), payload.reason.strip()
-    if not shift or not reason:
-        error(422, "Shift label and reason are required")
+    if not shift:
+        error(422, "Shift label is required")
     items = sorted([{"lot_id": str(line.lot_id), "expected_revision": line.expected_revision,
                      "counted_quantity_mg": line.counted_quantity_mg,
                      **({"evidence_id": str(line.evidence_id)} if line.evidence_id else {})} for line in payload.items],

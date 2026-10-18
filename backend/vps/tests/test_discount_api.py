@@ -20,7 +20,7 @@ import app as api_module
 from app import connect, create_app, create_store, create_user
 from discounts import MAX_SALE_SATANG, legacy_checkout_request_hash
 from fastapi.testclient import TestClient
-from migrations import SchemaUpgradeRequired, migrate_copy
+from migrations import CURRENT_SCHEMA_VERSION, SchemaUpgradeRequired, migrate_copy
 from cost_stock import capabilities as cost_capabilities
 from receipts import capabilities as receipt_capabilities
 from pin_auth import capabilities as pin_capabilities
@@ -247,7 +247,7 @@ class DiscountApiTests(unittest.TestCase):
                     create_app(path, origins=["https://localhost"])
                 self.assert_unchanged(before, path)
                 migration = migrate_copy(path, confirmed_offline_copy=True)
-                self.assertEqual((migration["status"], migration["schema_version"]), ("PASS", 5))
+                self.assertEqual((migration["status"], migration["schema_version"]), ("PASS", CURRENT_SCHEMA_VERSION))
                 self.assertEqual(migrate_copy(path, confirmed_offline_copy=True)["status"], "NOOP")
                 migrated = create_app(path, origins=["https://localhost"])
                 with TestClient(migrated) as client:

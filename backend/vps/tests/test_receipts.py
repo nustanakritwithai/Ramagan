@@ -23,7 +23,7 @@ os.environ["RAMAGAN_DB_PATH"] = str(Path(_bootstrap.name) / "import.sqlite3")
 import httpx
 import uvicorn
 from fastapi.testclient import TestClient
-from app import connect, create_app, create_store
+from app import APP_VERSION, connect, create_app, create_store
 from migrations import _snapshot
 from receipts import date_window
 
@@ -132,8 +132,9 @@ class ReceiptTests(unittest.TestCase):
         headers = self.listing().json()
         self.assertEqual(set(headers), {"sales", "next_cursor", "from_date", "to_date", "timezone", "scope"})
         header_keys = {"id", "client_sale_id", "created_at", "cashier_id", "payment_method", "payments",
-                       "subtotal_satang", "discount_satang", "total_satang"}
+                       "subtotal_satang", "discount_satang", "total_satang", "status", "void"}
         self.assertTrue(all(set(row) == header_keys for row in headers["sales"]))
+        self.assertTrue(all(row["status"] == "completed" and row["void"] is None for row in headers["sales"]))
         detail = self.detail(discounted).json()
         self.assertEqual(set(detail), header_keys | {"store_name", "lines"})
         self.assertEqual((detail["subtotal_satang"], detail["discount_satang"], detail["total_satang"]), (10000, 1755, 8245))
@@ -156,7 +157,7 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(me["capabilities"]["receipt_contract_version"], 1)
         catalog = self.client.get("/v1/catalog", headers=self.headers["staff"]).json()
         self.assertTrue(all("product_id" in lot for lot in catalog["lots"]))
-        self.assertEqual(self.client.get("/health").json()["version"], "1.4.0-vps-preview")
+        self.assertEqual(self.client.get("/health").json()["version"], APP_VERSION)
         self.assertTrue(before == self.state(), "Receipt rendering changed persisted prices or money")
 
     def test_bangkok_boundaries_defaults_and_date_limits(self):

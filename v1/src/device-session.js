@@ -27,6 +27,8 @@ export function pendingDeviceActor(storage,base,store){
   const add=(text,kind)=>{const op=JSON.parse(text),actor=op?.identity?.[kind];
     if(!UUID.test(actor)||op.identity.api!==base||op.identity.store!==store)throw new Error('อ่านเจ้าของรายการค้างไม่ได้ ต้องเข้าบัญชีเดิมเพื่อตรวจสอบ');ids.add(actor);};
   const raw=storage.getItem(sale);if(raw!==null)add(raw,'cashier');
+  const voidRaw=storage.getItem('ramagan.v1.sale-void.v1.'+encodeURIComponent(base)+'.'+store);
+  if(voidRaw!==null)add(voidRaw,'actor');
   if(storage.getItem('ramagan.v1.pending.'+store)!==null)throw new Error('มีรายการค้างรุ่นเก่า ต้องเข้าบัญชีเดิมก่อน');
   if(!Number.isSafeInteger(storage.length)||storage.length<0)throw new Error('อ่านพื้นที่เก็บรายการค้างไม่ได้');
   for(let i=0;i<storage.length;i++){const key=storage.key(i);if(key?.startsWith(inventory)&&!key.endsWith('.completed')){const value=storage.getItem(key);if(value!==null)add(value,'actor');}}

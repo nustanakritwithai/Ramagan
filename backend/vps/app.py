@@ -30,6 +30,7 @@ from migrations import CURRENT_SCHEMA_VERSION, initialize_database
 from reports import build_sales_report
 from schema_v4 import SCHEMA_V4
 from schema_v5 import SCHEMA_V5
+from schema_v6 import SCHEMA_V6
 from pin_auth import DeviceAuth, capabilities as pin_capabilities
 from payments import PaymentIn, normalize_payments, recorded_payments, split_request_hash
 from receipts import capabilities as receipt_capabilities, register_receipt_routes
@@ -40,7 +41,7 @@ from cost_stock import (
     product_rows, register_stock_routes,
 )
 
-APP_VERSION = "1.4.0-vps-preview"
+APP_VERSION = "1.5.0-vps-preview"
 BKK = ZoneInfo("Asia/Bangkok")
 ROLES = ("owner", "manager", "staff")
 DEFAULT_PATH = str(Path.home() / "Ramagan" / "data" / "ramagan.sqlite3")
@@ -158,7 +159,7 @@ BEGIN SELECT RAISE(ABORT, 'Immutable sale lines'); END;
 CREATE INDEX IF NOT EXISTS sales_store_created ON sales(store_id,created_at);
 CREATE INDEX IF NOT EXISTS ledger_store_lot_created ON ledger_events(store_id,lot_id,created_at);
 CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions(user_id);
-""" + EXTRA_SCHEMA + SCHEMA_V4 + SCHEMA_V5
+""" + EXTRA_SCHEMA + SCHEMA_V4 + SCHEMA_V5 + SCHEMA_V6
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -322,26 +323,37 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
-    def current(authorization: Annotated[str | None, Header()] = None) -> dict:
+    def authenticated_actor(db, authorization):
         if not authorization or not authorization.startswith("Bearer "):
             error(401, "Login required")
         token = authorization[7:].strip()
         if len(token) < 32 or len(token) > 256:
             error(401, "Invalid session")
         token_hash = hashlib.sha256(token.encode()).hexdigest()
-        with connect(path) as db:
-            db.execute("BEGIN")
-            row = db.execute("""
+        row = db.execute("""
               SELECT u.id,u.store_id,u.email,u.role,u.is_active,s.expires_at
                 FROM sessions s JOIN users u ON u.id=s.user_id
                WHERE s.token_hash=? AND s.revoked=0
             """, (token_hash,)).fetchone()
-            if row and not device_auth.valid_session(db, token_hash, row, int(time.time())):
-                row = None
-            db.rollback()
+        if row and not device_auth.valid_session(db, token_hash, row, int(time.time())):
+            row = None
         if not row or not row["is_active"] or row["expires_at"] <= int(time.time()):
             error(401, "Session expired or revoked")
         return dict(row)
+
+    def current(authorization: Annotated[str | None, Header()] = None) -> dict:
+        with connect(path) as db:
+            db.execute("BEGIN")
+            try:
+                return authenticated_actor(db, authorization)
+            finally:
+                db.rollback()
+
+    def recheck_actor(db, authorization, prior):
+        active = authenticated_actor(db, authorization)
+        if active["id"] != prior["id"] or active["store_id"] != prior["store_id"]:
+            error(403, "Session identity changed during request")
+        return active
 
     @app.get("/health")
     def health():
@@ -356,6 +368,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
                 "cost_contract_version": COST_CONTRACT_VERSION,
                 "stocktake_contract_version": STOCKTAKE_CONTRACT_VERSION,
                 "evidence_contract_version": 1, "payment_contract_version": 1,
+                "sale_voids": True, "sale_void_contract_version": 1,
                 **pin_capabilities(device_auth.enabled)}
 
     @app.post("/v1/auth/login")
@@ -788,7 +801,8 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
 
     register_stock_routes(app, path, connect, current, require_manager, error, now_utc, uuid_str)
     register_evidence_routes(app, path, connect, current, require_manager, error, now_utc, uuid_str)
-    register_receipt_routes(app, path, connect, current, error)
+    register_receipt_routes(app, path, connect, current, error, recheck_actor=recheck_actor,
+                            require_manager=require_manager, now_utc=now_utc, uuid_str=uuid_str)
     device_auth.register(app, current)
     return app
 
