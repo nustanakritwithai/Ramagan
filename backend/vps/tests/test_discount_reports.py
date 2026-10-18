@@ -16,6 +16,11 @@ from pathlib import Path
 from reports import build_sales_report
 
 
+NO_VOID_TOTALS = {"voided_sale_count": 0, "voided_subtotal_satang": 0,
+                  "voided_discount_satang": 0, "voided_total_satang": 0,
+                  "voided_quantity_mg": 0}
+
+
 SCHEMA = """
 CREATE TABLE stores(id TEXT PRIMARY KEY);
 CREATE TABLE products(
@@ -164,11 +169,11 @@ class DiscountReportTests(unittest.TestCase):
         self.assertEqual((report["summary"]["cash_satang"],
                           report["summary"]["transfer_satang"]), (17000, 2000))
         self.assertEqual(report["daily"], [
-            {"date": "2026-10-14", "sale_count": 1, "quantity_mg": 1700,
+            {**NO_VOID_TOTALS, "date": "2026-10-14", "sale_count": 1, "quantity_mg": 1700,
              "subtotal_satang": 17550, "discount_satang": 550, "total_satang": 17000,
              "known_cost_satang": 0, "cost_satang": None, "gross_profit_satang": None,
              "unknown_cost_line_count": 3, "cost_complete": False},
-            {"date": "2026-10-15", "sale_count": 1, "quantity_mg": 250,
+            {**NO_VOID_TOTALS, "date": "2026-10-15", "sale_count": 1, "quantity_mg": 250,
              "subtotal_satang": 2500, "discount_satang": 500, "total_satang": 2000,
              "known_cost_satang": 0, "cost_satang": None, "gross_profit_satang": None,
              "unknown_cost_line_count": 1, "cost_complete": False},
@@ -202,6 +207,7 @@ class DiscountReportTests(unittest.TestCase):
         self.sale("2026-10-14T03:00:00+00:00", [("free-lot", 250, 0, 0)])
         report = self.report()
         self.assertEqual(report["summary"], {
+            **NO_VOID_TOTALS,
             "sale_count": 3, "subtotal_satang": 2500, "discount_satang": 500,
             "total_satang": 2000, "cash_satang": 2000, "transfer_satang": 0,
             "quantity_mg": 1750, "average_satang": 666,
@@ -319,7 +325,17 @@ class DiscountReportTests(unittest.TestCase):
             "stocktake_evidence": True, "evidence_contract_version": 1,
             "split_payments": True, "payment_contract_version": 1,
             "sale_reconciliation": True, "sale_reconciliation_contract_version": 1,
+            "sale_voids": False, "sale_void_contract_version": 1,
         })
+        self.assertEqual(report["voids"], {
+            "basis": "void_created_at", "sale_count": 0, "subtotal_satang": 0,
+            "discount_satang": 0, "total_satang": 0, "quantity_mg": 0,
+            "cash_satang": 0, "transfer_satang": 0, "known_cost_satang": 0,
+            "unknown_cost_line_count": 0, "cost_complete": True,
+            "cost_satang": 0, "gross_profit_satang": 0,
+        })
+        self.assertEqual(report["recent_voids"], [])
+        self.assertEqual(report["sales_basis"], "original_sale_created_at_excluding_voided_at_snapshot")
 
     def test_rankings_remain_ordered_by_recorded_net_not_gross(self):
         self.item("high-gross", "high-gross-category", ["high-gross-lot"])
@@ -431,6 +447,7 @@ class DiscountReportTests(unittest.TestCase):
                 self.assertEqual(reader.execute("SELECT COUNT(*) FROM sales").fetchone()[0], 2)
 
                 self.assertEqual(first["summary"], {
+                    **NO_VOID_TOTALS,
                     "sale_count": 1, "subtotal_satang": 1000, "discount_satang": 100,
                     "total_satang": 900, "cash_satang": 900, "transfer_satang": 0,
                     "quantity_mg": 100, "average_satang": 900,
@@ -450,6 +467,7 @@ class DiscountReportTests(unittest.TestCase):
                 second = build_sales_report(reader, "store-a", date(2026, 10, 14),
                                             date(2026, 10, 14))
                 self.assertEqual(second["summary"], {
+                    **NO_VOID_TOTALS,
                     "sale_count": 2, "subtotal_satang": 3000, "discount_satang": 600,
                     "total_satang": 2400, "cash_satang": 900, "transfer_satang": 1500,
                     "quantity_mg": 300, "average_satang": 1200,

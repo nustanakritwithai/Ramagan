@@ -418,7 +418,7 @@ class DiscountMigrationTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             backup_and_migrate_copy(failed, self.root / "failure-backups", confirmed_offline_copy=True, failure_hook=fail)
         self.assertEqual(failed_before, logical_snapshot(failed))
-        backups = list((self.root / "failure-backups").glob("ramagan-before-v5-*"))
+        backups = list((self.root / "failure-backups").glob(f"ramagan-before-v{CURRENT_SCHEMA_VERSION}-*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(failed_before, logical_snapshot(backups[0]))
 
