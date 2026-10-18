@@ -280,7 +280,7 @@ function renderReport(value) {
   rows('recent-sales', value.recent_sales, (x) => [
     {value:formatTime(x.created_at)},
     {value:String(x.id).slice(0,12), title:String(x.id)},
-    {value:x.payment_method === 'cash' ? 'เงินสด' : x.payment_method === 'transfer' ? 'โอน' : 'ไม่ทราบ'},
+    {value:x.payment_method === 'cash' ? 'เงินสด' : x.payment_method === 'transfer' ? 'โอน' : x.payment_method === 'split' ? 'เงินสด + โอน' : 'ไม่ทราบ'},
     {value:String(x.line_count),right:true},
     {value:currency(x.gross),right:true},
     {value:currency(x.discount),right:true},
