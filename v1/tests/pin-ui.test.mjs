@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {JSDOM} from 'jsdom';
-import {renderPinLock,pinSettingsHtml,bindPinSettings} from '../src/pin-ui.js';
+import {renderPinLock,renderPinSetup,pinSettingsHtml,bindPinSettings} from '../src/pin-ui.js';
 const device=()=>({store:{id:'store',name:'Fixture shop'},roles:['owner','manager','staff'],expires_at:Math.floor(Date.now()/1000)+3600,label:'Fixture device'});
 function fixture(changes={}) {
   const dom=new JSDOM('<!doctype html><div id="app"></div>',{url:'https://fixture.invalid/ramagan-v1/'});
   const root=dom.window.document.querySelector('#app'),calls={unlock:[],enroll:[],forget:0,password:0,lock:0};
   const ctx={root,device:device(),busy:false,error:'',capability:true,passwordSession:true,isOwner:true,
+    configuration:{configured:false,roles:[],device_enrollment_contract_version:2},
     onUnlock:async(role,pin)=>{calls.unlock.push({role,pin});},onEnroll:async payload=>{calls.enroll.push(payload);},
     onForget:()=>{calls.forget++;},onPasswordLogin:()=>{calls.password++;},onLock:()=>{calls.lock++;},...changes};
   return {dom,root,ctx,calls,q:s=>root.querySelector(s),
@@ -103,9 +104,9 @@ test('error/store strings are escaped and callback errors produce generic messag
 });
 test('Owner can recover shared PINs with password reauthentication and all sensitive forms clear before await',async()=>{
   let release;const calls=[];
-  const f=fixture({onChangePins:payload=>{for(const input of f.root.querySelectorAll('input[type=password]'))assert.equal(input.value,'');calls.push(payload);return new Promise(resolve=>{release=resolve;});}});
+  const f=fixture({configuration:{configured:true,roles:['owner','manager','staff'],device_enrollment_contract_version:2},onChangePins:payload=>{for(const input of f.root.querySelectorAll('input[type=password]'))assert.equal(input.value,'');calls.push(payload);return new Promise(resolve=>{release=resolve;});}});
   try{
-    f.settings();assert(f.q('#pin-change-pins'));enroll(f);
+    f.settings();assert(f.q('#pin-change-pins'));f.input('#pin-device-label','Counter');f.input('#pin-owner-password','unused-reauth');
     f.input('#pin-change-owner-password','owner-reauth');
     for(const [role,pin]of Object.entries({owner:'2345',manager:'6789',staff:'0123'})){f.input('#pin-change-'+role,pin);f.input('#pin-change-confirm-'+role,pin);}
     f.submit('#pin-change-pins');assert.deepEqual(calls,[{owner_password:'owner-reauth',pins:{owner:'2345',manager:'6789',staff:'0123'}}]);
@@ -129,5 +130,34 @@ test('PIN sessions cannot see change/revoke even if role is owner; missing devic
   const callbacks={onChangePins:async()=>{},onRevoke:async()=>{}};
   const f=fixture({...callbacks,passwordSession:false,device:{...device(),device_id:'current-device'}});
   try{f.settings();assert.equal(f.q('#pin-device-enroll'),null);assert.equal(f.q('#pin-change-pins'),null);assert.equal(f.q('#pin-revoke-device'),null);assert(f.q('#pin-lock-device'));}finally{f.close();}
-  const noID=fixture(callbacks);try{noID.settings();assert(noID.q('#pin-change-pins'));assert.equal(noID.q('#pin-revoke-device'),null);}finally{noID.close();}
+  const noID=fixture({...callbacks,configuration:{configured:true,roles:['owner','manager','staff'],device_enrollment_contract_version:2}});try{noID.settings();assert(noID.q('#pin-change-pins'));assert.equal(noID.q('#pin-revoke-device'),null);}finally{noID.close();}
+});
+test('configured store enrolls a fresh device with its existing PINs and no PIN input or PIN payload',async()=>{
+  const f=fixture({device:null,configuration:{configured:true,roles:['owner','manager','staff'],device_enrollment_contract_version:2}});
+  try{
+    f.settings();assert.equal(f.root.querySelector('[name^=pin_],[name^=confirm_]'),null);assert.match(f.root.textContent,/PIN ชุดเดิม/);
+    f.input('#pin-device-label',' New phone ');f.input('#pin-owner-password','synthetic-owner-reauth');f.submit('#pin-device-enroll');await tick();
+    assert.deepEqual(f.calls.enroll,[{owner_password:'synthetic-owner-reauth',label:'New phone'}]);assert.equal(f.q('#pin-owner-password').value,'');
+    assert.equal(f.dom.window.localStorage.length,0);assert.equal(f.dom.window.sessionStorage.length,0);
+  }finally{f.close();}
+});
+test('unknown, wrong-version and partial role configuration fails closed until explicit status refresh',async()=>{
+  for(const configuration of [null,{configured:true,roles:['owner'],device_enrollment_contract_version:2},
+    {configured:'true',roles:['owner','manager','staff'],device_enrollment_contract_version:2},
+    {configured:false,roles:[],device_enrollment_contract_version:1}]){
+    let refreshed=0;const f=fixture({configuration,onRefreshConfiguration:async()=>{refreshed++;}});
+    try{f.settings();assert.equal(f.q('#pin-device-enroll'),null);assert.equal(f.q('#pin-change-pins'),null);
+      f.q('#pin-refresh-configuration').click();await tick();assert.equal(refreshed,1);assert.equal(f.calls.enroll.length,0);
+    }finally{f.close();}
+  }
+});
+test('mandatory setup keeps PIN recovery closed and separate from preserving enrollment, without business navigation',async()=>{
+  const exits=[];const f=fixture({device:null,configuration:{configured:true,roles:['owner','manager','staff'],device_enrollment_contract_version:2},
+    onChangePins:async()=>{},onRevoke:async()=>{},onLogout:()=>exits.push('logout'),onChangeServer:()=>exits.push('server')});
+  try{renderPinSetup(f.ctx);assert(f.q('.pin-setup-card'));assert(f.q('#pin-device-enroll'));
+    const recovery=f.q('details.pin-owner-recovery');assert(recovery);assert.equal(recovery.open,false);assert(recovery.querySelector('#pin-change-pins'));assert.equal(f.q('#pin-revoke-device'),null);
+    assert.equal(f.root.querySelector('nav,[data-navigation-trigger],#checkout,#confirm-count'),null);
+    assert.equal(f.q('#pin-device-enroll').querySelector('[name^=pin_],[name^=confirm_]'),null);f.q('#pin-setup-server').click();f.q('#pin-setup-logout').click();assert.deepEqual(exits,['server','logout']);
+    assert.match(f.root.textContent,/ปลดล็อกด้วย PIN ก่อนเริ่มงาน/);
+  }finally{f.close();}
 });

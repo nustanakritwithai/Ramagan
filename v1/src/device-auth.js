@@ -8,7 +8,7 @@ export function createDeviceAuth({api,storage,isBusy=()=>false,clearDisplay=()=>
   loadProfile=async()=>{},canConfigure=()=>false,currentStore=()=>null,cartEmpty=()=>true,
   exclusive=async task=>task(),now=()=>Date.now(),setTimer=setTimeout,clearTimer=clearTimeout}) {
   const store=createDeviceStore(storage,api.base);
-  let device=null,locked=false,passwordOverride=false,busy=false,error='',epoch=0,timer=null,expires=0,disposed=false,activeActor=null;
+  let device=null,locked=false,passwordOverride=false,busy=false,error='',epoch=0,timer=null,expires=0,disposed=false,activeActor=null,configuration=null;
   const alive=n=>!disposed&&epoch===n;
   const stopTimer=()=>{if(timer!==null)clearTimer(timer);timer=null;expires=0;};
   const guard=()=>{const n=epoch;return()=>alive(n);};
@@ -22,17 +22,17 @@ export function createDeviceAuth({api,storage,isBusy=()=>false,clearDisplay=()=>
       return role;
     }catch{error='อ่านเจ้าของรายการค้างไม่ได้ กรุณาเข้าด้วยบัญชีเดิมเพื่อตรวจสอบ';return 'blocked';}
   }
-  function snapshot(){const pendingRole=restriction();return {device,locked,passwordOverride,busy:busy||isBusy(),error,pendingRole,isPinSession:api.auth.isPinSession()};}
+  function snapshot(){const pendingRole=restriction();return {device,locked,passwordOverride,busy:busy||isBusy(),error,pendingRole,configuration,isPinSession:api.auth.isPinSession()};}
   function fail(message){error=message;render();return false;}
   async function lock(message=''){
     if(disposed)return;
-    ++epoch;stopTimer();activeActor=null;locked=Boolean(device);passwordOverride=false;error=message;
+    ++epoch;stopTimer();activeActor=null;configuration=null;locked=Boolean(device);passwordOverride=false;error=message;
     const request=api.auth.isPinSession()?api.auth.lockDevice():api.auth.signOut();
     api.auth.forgetSession();clearDisplay();render();
     await request; // A failed remote lock never restores local authorization.
   }
   async function boot(){
-    const n=++epoch;busy=true;error='';
+    const n=++epoch;busy=true;error='';configuration=null;
     try{
       // Discard the legacy password-session token BEFORE parsing a remembered
       // device or making its unauthenticated status request.
@@ -81,7 +81,24 @@ export function createDeviceAuth({api,storage,isBusy=()=>false,clearDisplay=()=>
   }
   function passwordLogin(){
     if(busy||isBusy())return fail('รอรายการเดิมให้สิ้นสุดก่อนเปลี่ยนวิธีเข้าสู่ระบบ');
-    ++epoch;stopTimer();activeActor=null;api.auth.forgetSession();passwordOverride=true;locked=false;clearDisplay();error='';render();return true;
+    ++epoch;stopTimer();activeActor=null;configuration=null;api.auth.forgetSession();passwordOverride=true;locked=false;clearDisplay();error='';render();return true;
+  }
+  async function refreshConfiguration(){
+    if(disposed||busy||!canConfigure()||api.auth.isPinSession())return fail('ต้องใช้รหัสผ่านบัญชี Owner เพื่อตรวจการเชื่อมต่อเครื่อง');
+    const n=epoch;busy=true;error='';configuration=null;render();
+    try{
+      const response=await api.auth.deviceConfiguration();
+      if(!alive(n))return false;
+      if(response.error)throw response.error;
+      const data=response.data;
+      if(typeof data?.configured!=='boolean'||data.device_enrollment_contract_version!==2||!Array.isArray(data.roles)||
+          (data.configured?(data.roles.length!==3||new Set(data.roles).size!==3||ROLES.some(role=>!data.roles.includes(role))):data.roles.length!==0)){
+        throw new Error('Incomplete device configuration');
+      }
+      configuration={configured:data.configured,roles:[...data.roles],device_enrollment_contract_version:2};
+      return true;
+    }catch(problem){if(alive(n)){configuration=null;error=problem.status===409?'สถานะ PIN ของร้านไม่ครบ กรุณาให้ผู้ดูแลตรวจสอบก่อนเชื่อมต่อเครื่อง':'ตรวจสถานะ PIN ไม่สำเร็จ กรุณาลองใหม่หรือให้ผู้ดูแลตรวจสอบ';}return false;}
+    finally{busy=false;if(!disposed)render();}
   }
   async function configure(method,payload){
     if(disposed||busy||isBusy()||!canConfigure()||api.auth.isPinSession())return fail('ต้องใช้รหัสผ่านบัญชี Owner เพื่อจัดการ PIN');
@@ -89,7 +106,13 @@ export function createDeviceAuth({api,storage,isBusy=()=>false,clearDisplay=()=>
     try{
       return await exclusive(async()=>{
         if(!alive(n)||!canConfigure()||api.auth.isPinSession()||!cartEmpty()||pending())throw new Error('ต้องไม่มีตะกร้าหรือรายการค้างก่อนจัดการ PIN');
-        const response=await api.auth[method](payload);
+        let request=payload;
+        if(method==='enrollDevice'){
+          if(!configuration||configuration.device_enrollment_contract_version!==2)throw new Error('ต้องตรวจสถานะ PIN ของร้านให้สำเร็จก่อนเชื่อมต่อเครื่อง');
+          request={label:payload.label,owner_password:payload.owner_password,
+            ...(!configuration.configured?{pins:payload.pins}:{})};
+        }
+        const response=await api.auth[method](request);
         if(!alive(n))return false;
         if(response.error)throw response.error;
         if(method==='enrollDevice'){
@@ -128,8 +151,8 @@ export function createDeviceAuth({api,storage,isBusy=()=>false,clearDisplay=()=>
     }catch{void lock('อ่านข้อมูลเครื่องหรือรายการค้างไม่ได้ กรุณาเข้าด้วยบัญชีเดิม');device=null;locked=false;passwordOverride=true;render();}
   }
   const subscription=api.auth.onAuthStateChange(event=>{if(event==='PIN_LOCKED')void lock('สิทธิ์ PIN หมดอายุหรือถูกเพิกถอน กรุณาปลดล็อกใหม่');});
-  return {boot,unlock,lock,passwordLogin,forget,snapshot,guard,checkExpiry,storageChanged,
+  return {boot,unlock,lock,passwordLogin,forget,snapshot,guard,checkExpiry,storageChanged,refreshConfiguration,
     enroll:payload=>configure('enrollDevice',payload),changePins:payload=>configure('changePins',payload),revoke:payload=>configure('revokeDevice',payload),
     pendingActor:pending,
-    invalidate(){++epoch;disposed=true;stopTimer();subscription?.data?.subscription?.unsubscribe();api.auth.forgetSession();}};
+    invalidate(){++epoch;disposed=true;configuration=null;stopTimer();subscription?.data?.subscription?.unsubscribe();api.auth.forgetSession();}};
 }

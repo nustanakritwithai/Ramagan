@@ -150,7 +150,7 @@ def _header(db, row):
 
 
 def register_receipt_routes(app, path, connect, current, error, *, recheck_actor,
-                            require_manager, now_utc, uuid_str):
+                            require_manager, now_utc, uuid_str, authorize_pos_write):
     # One API process owns this key. A restart invalidates paging cursors only;
     # it never changes authorization, stored receipts or checkout idempotency.
     cursor_key = secrets.token_bytes(32)
@@ -185,6 +185,8 @@ def register_receipt_routes(app, path, connect, current, error, *, recheck_actor
                     error(404, "Sale not found")
                 if db.execute("SELECT id FROM sale_voids WHERE sale_id=?", (sale_id,)).fetchone():
                     error(409, "Sale already voided")
+                actor = authorize_pos_write(db, request.headers.get("authorization"), actor)
+                require_manager(actor)
                 # Validate recorded proof without recomputing current prices or
                 # depending on whether the shop currently permits new sales.
                 _void_payments(db, sale_id, sale)
@@ -217,6 +219,8 @@ def register_receipt_routes(app, path, connect, current, error, *, recheck_actor
                     after_cost = inventory_value(line["cost_satang_per_gram"], before + qty)
                     delta = None if before_cost is None else after_cost - before_cost
                     validated.append((line, before, revision, delta))
+                actor = authorize_pos_write(db, request.headers.get("authorization"), actor)
+                require_manager(actor)
                 vid, stamp = uuid_str(), now_utc()
                 db.execute("""INSERT INTO sale_voids(id,store_id,sale_id,client_void_id,request_hash,
                     actor_user_id,actor_email,actor_role,reason,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)""",

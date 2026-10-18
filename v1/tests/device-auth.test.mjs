@@ -19,7 +19,7 @@ const settle=async()=>{await new Promise(setImmediate);await new Promise(setImme
 const reply=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json'}});
 function saleIntent(actor=ACTORS.staff){return JSON.stringify({version:2,status:'pending',identity:{api:BASE,store:STORE,cashier:actor},payload:{client_sale_id:SALE}});}
 
-function fixture({remember=true,legacy=false,fetchHandler,actors=ACTORS}={}) {
+function fixture({remember=true,legacy=false,fetchHandler,actors=ACTORS,configuration={configured:false,roles:[],device_enrollment_contract_version:2}}={}) {
   const oldFetch=globalThis.fetch,oldSession=globalThis.sessionStorage;
   const local=new Storage(),session=new Storage(),calls=[],timers=new Map();let clock=Date.UTC(2026,9,18),nextTimer=0,nextToken=0;
   const metadata={device_id:DEVICE,store:{id:STORE,name:'Synthetic PIN store'},roles:['owner','manager','staff'],expires_at:Math.floor(clock/1000)+86400};
@@ -46,6 +46,7 @@ function fixture({remember=true,legacy=false,fetchHandler,actors=ACTORS}={}) {
     if(path==='/v1/auth/device/lock'||path==='/v1/auth/logout'){tokens.delete(token);return reply({ok:true});}
     if(path==='/v1/auth/device/revoke'||path==='/v1/auth/device/pins')return reply({ok:true});
     const actor=tokens.get(token);if(!actor)return reply({detail:'Login required'},401);
+    if(path==='/v1/auth/device/configuration')return actor.id===ORIGINAL?reply(configuration):reply({detail:'Owner password required'},403);
     if(path==='/v1/me')return reply({user:{id:actor.id,email:'fixture@role.invalid'},store_id:STORE,role:actor.role,
       store:metadata.store,capabilities:{discounts:true,discount_contract_version:1,shared_role_pin:true,shared_role_pin_contract_version:1}});
     return reply({});
@@ -166,6 +167,7 @@ test('Owner password override stays memory-only and enrollment persists only cre
     const login=await f.api.auth.signInWithPassword({email:'fixture@invalid',password:'fixture-only-password',memoryOnly:true});
     assert.equal(login.error,null);assert.equal(f.session.getItem(SESSION),null);
     f.state.user=login.data.user;f.state.role='owner';f.state.store=f.metadata.store;
+    assert.equal(await f.controller.refreshConfiguration(),true);
     assert.equal(await f.controller.enroll({label:'Synthetic desk',owner_password:'fixture-only-password',pins:{owner:'1729',manager:'2846',staff:'3957'}}),true);
     assert.equal(f.controller.snapshot().locked,true);assert.equal(f.session.getItem(SESSION),null);
     const record=JSON.parse(f.local.getItem(deviceKey(BASE)));assert.equal(record.device_credential,CREDENTIAL);assert.deepEqual(record.actors,{});
@@ -175,6 +177,54 @@ test('Owner password override stays memory-only and enrollment persists only cre
     await f.api.auth.signInWithPassword({email:'fixture@invalid',password:'fixture-only-password',memoryOnly:true});assert.equal(f.session.getItem(SESSION),null);
     const reloaded=createClient(BASE);assert.equal((await reloaded.auth.getUser()).data.user,null);
   }finally{f.close();}
+});
+test('fresh device with configured server PINs enrolls without supplying or replacing the three existing PINs, then immediately locks',async()=>{
+  const f=fixture({remember:false,configuration:{configured:true,roles:['owner','manager','staff'],device_enrollment_contract_version:2}});try{
+    await f.controller.boot();const login=await f.api.auth.signInWithPassword({email:'fixture@invalid',password:'synthetic-owner-reauth',memoryOnly:true});
+    f.state.user=login.data.user;f.state.role='owner';f.state.store=f.metadata.store;
+    assert.equal(await f.controller.refreshConfiguration(),true);assert.equal(f.controller.snapshot().configuration.configured,true);
+    assert.equal(f.local.length,0);assert.equal(f.session.getItem(SESSION),null);
+    const beforeProfiles=f.state.profileLoads;
+    assert.equal(await f.controller.enroll({label:'Synthetic new device',owner_password:'synthetic-owner-reauth',pins:{owner:'unused',manager:'unused',staff:'unused'}}),true);
+    const post=f.calls.find(x=>x.path==='/v1/auth/device/enroll');assert.deepEqual(post.body,{label:'Synthetic new device',owner_password:'synthetic-owner-reauth'});
+    assert.equal(f.controller.snapshot().locked,true);assert.equal(f.state.profileLoads,beforeProfiles);assert.equal(f.state.user,null);assert.equal(f.api.auth.isPinSession(),false);
+    assert.equal(f.controller.snapshot().configuration,null);const saved=JSON.parse(f.local.getItem(deviceKey(BASE)));assert.equal(saved.device_credential,CREDENTIAL);
+    assert(!JSON.stringify(saved).includes('owner_password'));assert(!JSON.stringify(saved).includes('unused'));assert.equal(f.privateDrafts.size,1);
+    assert.equal(await f.controller.unlock('manager','2846'),true);assert.equal(f.state.user.id,ACTORS.manager);
+  }finally{f.close();}
+});
+test('enrollment cannot proceed before configuration is known and malformed or partial configuration remains blocked',async()=>{
+  for(const configuration of [{configured:'true',roles:['owner','manager','staff'],device_enrollment_contract_version:2},
+    {configured:true,roles:['owner'],device_enrollment_contract_version:2},
+    {configured:false,roles:['staff'],device_enrollment_contract_version:2},
+    {configured:true,roles:['owner','manager','staff'],device_enrollment_contract_version:1}]){
+    const f=fixture({remember:false,configuration});try{
+      await f.controller.boot();const login=await f.api.auth.signInWithPassword({email:'fixture@invalid',password:'synthetic-owner-reauth',memoryOnly:true});
+      f.state.user=login.data.user;f.state.role='owner';f.state.store=f.metadata.store;
+      assert.equal(await f.controller.enroll({label:'Synthetic',owner_password:'synthetic-owner-reauth'}),false);
+      assert.equal(await f.controller.refreshConfiguration(),false);assert.equal(f.controller.snapshot().configuration,null);
+      assert.equal(await f.controller.enroll({label:'Synthetic',owner_password:'synthetic-owner-reauth'}),false);
+      assert.equal(f.calls.filter(x=>x.path==='/v1/auth/device/enroll').length,0);assert.equal(f.local.length,0);assert.equal(f.privateDrafts.size,1);
+    }finally{f.close();}
+  }
+});
+test('configuration can be inspected with a pending old account intent but enrollment never clears or migrates it',async()=>{
+  const f=fixture({remember:false,configuration:{configured:true,roles:['owner','manager','staff'],device_enrollment_contract_version:2}});try{
+    await f.controller.boot();const login=await f.api.auth.signInWithPassword({email:'fixture@invalid',password:'synthetic-owner-reauth',memoryOnly:true});
+    f.state.user=login.data.user;f.state.role='owner';f.state.store=f.metadata.store;
+    const key=pendingKey({api:BASE,store:STORE}),pending=saleIntent(ORIGINAL);f.local.setItem(key,pending);
+    assert.equal(await f.controller.refreshConfiguration(),true);assert.equal(await f.controller.enroll({label:'Synthetic',owner_password:'synthetic-owner-reauth'}),false);
+    assert.equal(f.local.getItem(key),pending);assert.equal(f.privateDrafts.size,1);assert.equal(f.calls.filter(x=>x.path==='/v1/auth/device/enroll').length,0);
+  }finally{f.close();}
+});
+test('late configuration response after locking cannot restore password mode or cached setup permission',async()=>{
+  const delayed=deferred(),f=fixture({remember:false,fetchHandler:call=>call.path==='/v1/auth/device/configuration'?delayed.promise:undefined});try{
+    await f.controller.boot();const login=await f.api.auth.signInWithPassword({email:'fixture@invalid',password:'synthetic-owner-reauth',memoryOnly:true});
+    f.state.user=login.data.user;f.state.role='owner';f.state.store=f.metadata.store;
+    const request=f.controller.refreshConfiguration();await settle();await f.controller.lock();
+    delayed.resolve(reply({configured:true,roles:['owner','manager','staff'],device_enrollment_contract_version:2}));
+    assert.equal(await request,false);assert.equal(f.controller.snapshot().configuration,null);assert.equal(f.state.user,null);assert.equal(f.local.length,0);assert.equal(f.privateDrafts.size,1);
+  }finally{delayed.resolve(reply({}));f.close();}
 });
 
 test('legacy password-client compatibility remains available only without automatic device unlock, and invalidation ignores late endpoint responses',async()=>{

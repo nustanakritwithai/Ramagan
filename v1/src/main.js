@@ -11,7 +11,7 @@ import {createPageState, renderSidePage, loadReceipts, supportsReceipts} from '.
 import {createDeviceAuth} from './device-auth.js';
 import {createSaleVoid,voidPendingKey} from './sale-void.js';
 import {supportsSharedPin,pendingDeviceActor} from './device-session.js';
-import {renderPinLock,pinSettingsHtml,bindPinSettings} from './pin-ui.js';
+import {renderPinLock,renderPinSetup,pinSettingsHtml,bindPinSettings} from './pin-ui.js';
 import './style.css';
 import './navigation.css';
 import './pages.css';
@@ -68,9 +68,64 @@ function clearBusinessDisplay(){
 function pinFlags(){
   const pin=deviceAuth?.snapshot();
   return {capability:supportsSharedPin(state.capabilities),passwordSession:!api?.auth.isPinSession(),isOwner:state.role==='owner',
-    device:pin?.device,role:state.role,busy:Boolean(pin?.busy),error:pin?.error||'',
+    device:pin?.device,configuration:pin?.configuration,role:state.role,busy:Boolean(pin?.busy||state.busy),error:pin?.error||'',
+    onRefreshConfiguration:()=>deviceAuth.refreshConfiguration(),onLogout:logout,onChangeServer:changeServer,
     onEnroll:payload=>deviceAuth.enroll(payload),onLock:()=>deviceAuth.lock(),onForget:()=>deviceAuth.forget(),
     onChangePins:payload=>deviceAuth.changePins(payload),onRevoke:payload=>deviceAuth.revoke(payload)};
+}
+function pinSetupRequired(){
+  return !api?.auth.isPinSession()&&(state.capabilities?.pos_pin_required===true||supportsSharedPin(state.capabilities));
+}
+function assertPosUnlocked(){
+  if(pinSetupRequired())throw new Error('ต้องผูกเครื่องและปลดล็อกด้วย PIN ก่อนทำรายการหน้าร้าน');
+}
+function renderRequiredPinSetup(){
+  renderPinSetup({root,...pinFlags(),setupOnly:true});
+  const card=root.querySelector('.pin-setup-card')||root.querySelector('.pin-card');
+  if(!card)return;
+  const operations={sale:state.checkout,receive:state.receive,stocktake:state.stocktake,void:state.saleVoid};
+  const titles={sale:'รายการขาย',receive:'รับสินค้า',stocktake:'นับสต็อก',void:'ยกเลิกใบเสร็จ'};
+  let html=state.message?'<p class="'+(state.error?'pin-error':'pin-note')+'" role="status">'+h(state.message)+'</p>':'';
+  if(hasPendingMutation()){
+    card.querySelectorAll('#pin-device-enroll input,#pin-device-enroll button').forEach(node=>{node.disabled=true;});
+    html+='<p class="pin-error">ต้องตรวจสอบรายการค้างด้านล่างให้ทราบผลก่อนเชื่อมต่อเครื่อง เก็บรายการและรูปเดิมไว้ครบ</p>';
+  }
+  for(const [kind,controller] of Object.entries(operations)){
+    let op;try{op=controller?.read();}catch(error){html+='<p class="pin-error">'+h(error.message)+'</p>';continue;}
+    if(!op)continue;
+    const id=op.payload.client_sale_id||op.payload.client_receive_id||op.payload.client_stocktake_id||op.payload.client_void_id;
+    html+='<article class="pin-recovery-item"><h3>'+titles[kind]+'เดิมที่ยังไม่ปิด</h3><p class="receipt-id">'+h(id)+'</p><p>ตรวจสอบด้วยบัญชีเดิมก่อนเชื่อมเครื่อง ไม่ส่งรายการใหม่หรือเปลี่ยนเลขอ้างอิง</p><button class="pin-secondary" data-pin-recover="'+kind+'" '+(state.busy?'disabled':'')+'>ตรวจสอบผลรายการเดิม</button></article>';
+  }
+  if(state.pendingBlocked||state.inventoryBlocked||state.voidBlocked)html+='<p class="pin-error">ข้อมูลค้างอ่านไม่ได้หรือเป็นของบัญชีอื่น ต้องใช้บัญชีเดิมให้ผู้ดูแลตรวจสอบ ห้ามล้างข้อมูลแอป</p>';
+  if(html){const panel=document.createElement('section');panel.className='pin-recovery';panel.innerHTML=html;card.append(panel);}
+  card.querySelectorAll('[data-pin-recover]').forEach(button=>button.addEventListener('click',()=>recoverPasswordIntent(button.dataset.pinRecover)));
+}
+async function recoverPasswordIntent(kind){
+  if(!pinSetupRequired()||state.busy||!navigator.onLine||!navigator.locks)return;
+  const controllers={sale:state.checkout,receive:state.receive,stocktake:state.stocktake,void:state.saleVoid};
+  const operation=controllers[kind],current=authGuard();if(!operation)return;
+  try{
+    await navigator.locks.request(mutationScopeKey({api:api.base,store:state.store.id}),{ifAvailable:true},async held=>{
+      if(!held)throw new Error('อีกหน้าต่างกำลังทำรายการ กรุณารอ');if(!current())return;
+      state.busy=true;activeIO++;render();
+      try{
+        const result=await operation.verify();if(!current())return;
+        const resolved=result&&(result.result||result.sale||result.rejected);
+        if(resolved){
+          // Preserve the original frozen payload and confirmed outcome BEFORE
+          // acknowledging it. Never re-key it to a shared-role PIN actor.
+          const op=operation.read();if(!op)throw new Error('อ่านหลักฐานรายการเดิมไม่ได้');
+          const id=op.payload.client_sale_id||op.payload.client_receive_id||op.payload.client_stocktake_id||op.payload.client_void_id;
+          const key='ramagan.v1.recovery-record.v1.'+encodeURIComponent(api.base)+'.'+state.store.id+'.'+state.user.id+'.'+kind+'.'+id,raw=JSON.stringify(op);
+          localStorage.setItem(key,raw);if(localStorage.getItem(key)!==raw)throw new Error('เก็บหลักฐานรายการเดิมไม่ได้ จึงยังไม่ปิดรายการ');
+          await operation.acknowledge();if(!current())return;
+          if(kind==='sale'){state.cart.clear();state.discount='0';state.authRef='';}
+          restorePending();restoreInventoryPending();restoreVoidPending();
+          state.message='ตรวจสอบและปิดรายการเดิมที่ทราบผลแล้ว เก็บหลักฐานและแบบร่างเดิมไว้ครบ';state.error=false;
+        }else{state.message='ยังไม่ทราบผลรายการเดิม เก็บเลขอ้างอิงและรูปไว้ ต้องให้ผู้ดูแลตรวจสอบก่อนเชื่อมเครื่อง ห้ามส่งรายการใหม่หรือล้างข้อมูล';state.error=true;}
+      }finally{activeIO--;state.busy=false;if(current())render();}
+    });
+  }catch(error){if(current())setMessage(error.message,true);}
 }
 function restorePending() {
   state.pendingBlocked = false;
@@ -124,6 +179,7 @@ function render() {
     root.querySelector('#logout').addEventListener('click', logout);
     return;
   }
+  if(pinSetupRequired())return renderRequiredPinSetup();
   if (['receipts','products','settings','apps','support'].includes(state.view)) return renderSidePage(navigationContext());
   if (state.view === 'inventory' && canManage()) return renderManagerPage(renderInventory, 'รับเข้าและตั้งค่าสินค้า');
   if (state.view === 'stocktake' && canManage()) return renderManagerPage(renderStocktake, 'นับสต็อก');
@@ -204,7 +260,7 @@ async function startSession() {
   deviceAuth?.invalidate();authSubscription?.unsubscribe();
   deviceAuth=createDeviceAuth({api:client,storage:localStorage,render,clearDisplay:clearBusinessDisplay,loadProfile,
     isBusy:()=>Boolean(state.busy||activeIO),currentStore:()=>state.store?.id,cartEmpty:()=>state.cart.size===0,
-    canConfigure:()=>state.role==='owner'&&!client.auth.isPinSession()&&supportsSharedPin(state.capabilities)&&!hasPendingMutation(),
+    canConfigure:()=>state.role==='owner'&&!client.auth.isPinSession()&&supportsSharedPin(state.capabilities),
     exclusive:task=>{
       if(!navigator.locks||!state.store)throw new Error('ต้องใช้เบราว์เซอร์ที่ล็อกรายการร้านได้ก่อนจัดการ PIN');
       return navigator.locks.request(mutationScopeKey({api:client.base,store:state.store.id}),{ifAvailable:true},lock=>{
@@ -234,11 +290,13 @@ async function withNewMutation(task) {
   if (state.busy) return;
   const current=authGuard();
   try {
+    assertPosUnlocked();
     if (!navigator.locks) throw new Error('เบราว์เซอร์นี้ไม่รองรับการล็อกรายการอย่างปลอดภัย');
     const identity = {api: api.base, store: state.store.id, actor: state.user.id};
     return await navigator.locks.request(mutationScopeKey(identity), {ifAvailable: true}, async lock => {
       if (!lock) throw new Error('มีรายการกำลังทำงานในอีกหน้าต่าง กรุณารอสักครู่');
       if(!current())return;
+      assertPosUnlocked();
       restorePending(); restoreInventoryPending(); restoreVoidPending();
       assertNoPendingMutation(localStorage, identity);
       if (hasPendingMutation()) throw new Error('มีรายการค้าง ต้องตรวจสอบรายการเดิมก่อน');
@@ -280,6 +338,7 @@ function restoreVoidPending(){
 }
 async function runReceiptVoid(action,receipt,reason){
   if(state.busy||!canManage()||!state.saleVoid)return null;
+  if(pinSetupRequired()&&!['verify','close'].includes(action))return setMessage('ต้องปลดล็อก PIN ก่อนยกเลิกใบเสร็จ',true);
   const current=authGuard(),controller=state.saleVoid;
   const run=async()=>{
     state.busy=true;activeIO++;render();
@@ -367,7 +426,7 @@ function renderDashboard() {
 function navigationContext() {
   return {root,state,api,currentApi:()=>api,render,canManage,openView,logout,changeServer,
     voidReceipt:runReceiptVoid,hasPending:hasPendingMutation,
-    adminUrl:ADMIN_REPORT_URL,apiUrl,appVersion:'1.5.0',pinSettingsHtml:()=>pinSettingsHtml(pinFlags()),bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
+    adminUrl:ADMIN_REPORT_URL,apiUrl,appVersion:'1.5.1',pinSettingsHtml:()=>pinSettingsHtml(pinFlags()),bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
       if(!canManage())return;
       openView('inventory');
       const form=root.querySelector('#'+section);
@@ -376,6 +435,7 @@ function navigationContext() {
     }};
 }
 function openView(view) {
+  if(pinSetupRequired())return render();
   if(!['sales','receipts','products','settings','apps','support','inventory','stocktake'].includes(view))return;
   if(['inventory','stocktake'].includes(view)&&!canManage())return;
   state.closeEvidenceViewer?.();state.posMenuOpen=false;state.view=view;state.message='';
@@ -691,6 +751,7 @@ async function saveCountDraft(field, lot, value) {
   finally{if(current()){state.draftSaving=Math.max(0,state.draftSaving-1);countFormUpdate?.();}activeIO--;}
 }
 async function uploadCountPhoto(lot) {
+  if(pinSetupRequired())return setMessage('ต้องปลดล็อก PIN ก่อนอัปโหลดหลักฐานใหม่',true);
   if(state.photoBusy||state.draftSaving||state.busy||hasPendingMutation()||!navigator.onLine||state.draftStale)return;
   const draftStore=state.draftStore,draftId=state.countDraft?.id,photo=state.countDraft?.photos[lot],client=api,current=authGuard();
   if(!photo)return;
@@ -809,6 +870,7 @@ async function receiveLot(event) {
   });
 }
 async function runInventory(kind, action, payload) {
+  if(pinSetupRequired())return setMessage('ให้ตรวจสอบรายการเดิมในหน้าเชื่อมต่อเครื่อง หรือปลดล็อก PIN ก่อนทำรายการ',true);
   if (action === 'start') {
     if (state.busy || hasPendingMutation()) return;
     return withNewMutation(() => performInventory(kind, action, payload));
@@ -911,11 +973,17 @@ async function loadProfile(user,{current:sessionCurrent=()=>true,role:expectedRo
   restorePending();
   restoreVoidPending();
   if(state.voidPending||state.voidBlocked)state.view='receipts';
+  if(pinSetupRequired()){
+    state.view='settings';render();
+    if(state.role==='owner'&&supportsSharedPin(state.capabilities))await deviceAuth.refreshConfiguration();
+    return;
+  }
   await refreshLots();
   function profileCurrent(){return current()&&sessionCurrent();}
 }
 async function refreshLots() {
   if (!state.store) return;
+  if(pinSetupRequired())return render();
   if (!navigator.onLine) return setMessage('ออฟไลน์: ไม่สามารถตรวจสอบสต็อกล่าสุดได้', true);
   const enhanced = canManage() && (supportsCosts(state.capabilities) || supportsStocktakes(state.capabilities));
   const load = ++state.inventoryLoad, userId = state.user.id, storeId = state.store.id;
@@ -995,6 +1063,7 @@ async function startCheckout() {
     authorization_ref: state.authRef.trim() || null, discount_satang: totals.discount}, totals.subtotal);
 }
 async function runCheckout(action, payload, subtotal) {
+  if(pinSetupRequired())return setMessage('ให้ตรวจสอบรายการเดิมในหน้าเชื่อมต่อเครื่อง หรือปลดล็อก PIN ก่อนทำรายการ',true);
   if (action === 'start') {
     if (state.busy || hasPendingMutation()) return;
     return withNewMutation(() => performCheckout(action, payload, subtotal));

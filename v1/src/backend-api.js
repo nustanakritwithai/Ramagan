@@ -217,6 +217,7 @@ export function createClient(serverUrl) {
       isPinSession:()=>memoryPinSession,
       forgetSession:clearSession,
       deviceStatus: device_credential => result(()=>request('POST','/v1/auth/device/status',{device_credential},false,'json',false)),
+      deviceConfiguration:()=>result(()=>request('GET','/v1/auth/device/configuration')),
       enrollDevice: payload => result(()=>request('POST','/v1/auth/device/enroll',payload)),
       revokeDevice: payload => result(()=>request('POST','/v1/auth/device/revoke',payload)),
       changePins: payload => result(()=>request('POST','/v1/auth/device/pins',payload)),
