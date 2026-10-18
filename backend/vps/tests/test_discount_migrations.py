@@ -13,6 +13,7 @@ from migrations import (
     CURRENT_SCHEMA_VERSION, SchemaUpgradeRequired, backup_and_migrate_copy,
     initialize_database, inspect_database, main, migrate_copy, restore_copy,
 )
+from cost_stock import EXTRA_SCHEMA
 
 # Frozen pre-discount schema from 9c59899. No app import/module-level DB creation.
 LEGACY_SCHEMA = """
@@ -116,7 +117,7 @@ CREATE INDEX IF NOT EXISTS sales_store_created ON sales(store_id,created_at);
 CREATE INDEX IF NOT EXISTS ledger_store_lot_created ON ledger_events(store_id,lot_id,created_at);
 CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions(user_id);
 """
-FRESH_SCHEMA = LEGACY_SCHEMA.replace(
+V2_SCHEMA = LEGACY_SCHEMA.replace(
     "  total_satang INTEGER NOT NULL CHECK(total_satang >= 0),",
     "  discount_satang INTEGER NOT NULL DEFAULT 0 CHECK(discount_satang >= 0),\n"
     "  total_satang INTEGER NOT NULL CHECK(total_satang >= 0),",
@@ -132,6 +133,24 @@ FRESH_SCHEMA = LEGACY_SCHEMA.replace(
     "  UNIQUE(sale_id, lot_id)",
     "  CHECK(line_subtotal_satang = line_discount_satang + line_total_satang),\n  UNIQUE(sale_id, lot_id)",
 )
+FRESH_SCHEMA = V2_SCHEMA.replace(
+    "  price_satang_per_gram INTEGER NOT NULL CHECK(price_satang_per_gram BETWEEN 0 AND 100000000),",
+    "  price_satang_per_gram INTEGER NOT NULL CHECK(price_satang_per_gram BETWEEN 0 AND 100000000),\n"
+    "  default_cost_satang_per_gram INTEGER CHECK(default_cost_satang_per_gram IS NULL OR (typeof(default_cost_satang_per_gram)='integer' AND default_cost_satang_per_gram BETWEEN 0 AND 100000000)),",
+).replace(
+    "  supplier_document_ref TEXT NOT NULL,",
+    "  supplier_document_ref TEXT NOT NULL,\n"
+    "  cost_satang_per_gram INTEGER CHECK(cost_satang_per_gram IS NULL OR (typeof(cost_satang_per_gram)='integer' AND cost_satang_per_gram BETWEEN 0 AND 100000000)),",
+).replace(
+    "  quantity_mg INTEGER NOT NULL CHECK(quantity_mg >= 0),",
+    "  quantity_mg INTEGER NOT NULL CHECK(quantity_mg >= 0),\n"
+    "  stock_revision INTEGER NOT NULL DEFAULT 0 CHECK(typeof(stock_revision)='integer' AND stock_revision BETWEEN 0 AND 9000000000000000000),",
+).replace(
+    "  line_total_satang INTEGER NOT NULL CHECK(line_total_satang >= 0),",
+    "  line_total_satang INTEGER NOT NULL CHECK(line_total_satang >= 0),\n"
+    "  unit_cost_satang_per_gram INTEGER CHECK(unit_cost_satang_per_gram IS NULL OR (typeof(unit_cost_satang_per_gram)='integer' AND unit_cost_satang_per_gram BETWEEN 0 AND 100000000)),\n"
+    "  line_cost_satang INTEGER CHECK((line_cost_satang IS NULL AND unit_cost_satang_per_gram IS NULL) OR (typeof(line_cost_satang)='integer' AND line_cost_satang>=0 AND unit_cost_satang_per_gram IS NOT NULL)),",
+) + EXTRA_SCHEMA
 STORE_ID = "11111111-1111-4111-8111-111111111111"
 USER_ID = "22222222-2222-4222-8222-222222222222"
 PRODUCT_ID = "33333333-3333-4333-8333-333333333333"
@@ -216,11 +235,12 @@ class DiscountMigrationTests(unittest.TestCase):
                 self.assertEqual(result["status"], "PASS")
                 after = logical_snapshot(path)
                 self.assertEqual(after["version"], CURRENT_SCHEMA_VERSION)
-                self.assertEqual(before["fks"], after["fks"])
-                self.assertEqual(before["indexes"], after["indexes"])
-                changed_tables = {"sales", "sale_lines"}
+                self.assertEqual(before["fks"], {t: after["fks"][t] for t in before["fks"]})
+                self.assertEqual(before["indexes"], {t: after["indexes"][t] for t in before["indexes"]})
+                changed_tables = {"sales", "sale_lines", "products", "lots", "lot_balances"}
+                original_objects = {(r[0], r[1]) for r in before["schema"]}
                 self.assertEqual([r for r in before["schema"] if not (r[0] == "table" and r[1] in changed_tables)],
-                                 [r for r in after["schema"] if not (r[0] == "table" and r[1] in changed_tables)])
+                                 [r for r in after["schema"] if (r[0], r[1]) in original_objects and not (r[0] == "table" and r[1] in changed_tables)])
                 with fixture_connection(path) as db:
                     for table, columns in before["columns"].items():
                         projection = ",".join('"' + c + '"' for c in columns)
@@ -303,7 +323,7 @@ class DiscountMigrationTests(unittest.TestCase):
                     db.execute(sql, ("bad", "none", "bad", "hash", "none", "cash", subtotal, discount, total, "fixture"))
             for gross, discount, net in ((10, -1, 11), (10, 2, 9)):
                 with self.assertRaises(sqlite3.IntegrityError):
-                    db.execute("INSERT INTO sale_lines VALUES(?,?,?,?,?,?,?,?)",
+                    db.execute("INSERT INTO sale_lines(id,sale_id,lot_id,quantity_mg,unit_price_satang_per_gram,line_subtotal_satang,line_discount_satang,line_total_satang) VALUES(?,?,?,?,?,?,?,?)",
                                ("bad", "none", "none", 1, 1, gross, discount, net))
 
     def test_existing_ready_factory_preserves_delete_journal_and_file(self):
@@ -392,7 +412,7 @@ class DiscountMigrationTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             backup_and_migrate_copy(failed, self.root / "failure-backups", confirmed_offline_copy=True, failure_hook=fail)
         self.assertEqual(failed_before, logical_snapshot(failed))
-        backups = list((self.root / "failure-backups").glob("ramagan-before-v2-*"))
+        backups = list((self.root / "failure-backups").glob("ramagan-before-v3-*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(failed_before, logical_snapshot(backups[0]))
 

@@ -6,20 +6,26 @@ operations, live migrations, or blind restore overwrites occur in this module.
 from __future__ import annotations
 import argparse
 import hashlib
+from functools import lru_cache
 import json
 from pathlib import Path
 import re
 import sqlite3
 from typing import Callable
 import uuid
+from cost_stock import COST_STOCK_TABLES, COST_STOCK_TRIGGERS, EXTRA_SCHEMA
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 APP_TABLES = frozenset({"stores", "users", "sessions", "products", "lots",
                        "lot_balances", "sales", "sale_lines", "ledger_events"})
 IMMUTABLE_TRIGGERS = frozenset({"ledger_no_update", "ledger_no_delete",
     "sales_no_update", "sales_no_delete", "lines_no_update", "lines_no_delete"})
 NEW_FIELDS = {"sales": {"discount_satang"},
               "sale_lines": {"line_subtotal_satang", "line_discount_satang"}}
+COST_FIELDS = {"products": {"default_cost_satang_per_gram"},
+               "lots": {"cost_satang_per_gram"},
+               "lot_balances": {"stock_revision"},
+               "sale_lines": {"unit_cost_satang_per_gram", "line_cost_satang"}}
 
 
 class SchemaUpgradeRequired(RuntimeError):
@@ -135,6 +141,66 @@ def _v2_schema_issues(db: sqlite3.Connection) -> list[str]:
     return issues
 
 
+def _v3_issues(db: sqlite3.Connection) -> list[str]:
+    issues = []
+    for table, names in COST_FIELDS.items():
+        info = {row[1]: row for row in db.execute("PRAGMA table_info(" + _quote(table) + ")")}
+        sql = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()[0]
+        compact = re.sub(r"[\s\"'\[\]\x60()]", "", sql.lower())
+        for name in names:
+            row = info[name]
+            if row[2].upper() != "INTEGER":
+                issues.append(f"{table}.{name} must be INTEGER")
+            if name == "stock_revision":
+                if row[3] != 1 or str(row[4]).strip("()'\" ") != "0":
+                    issues.append("stock_revision must be NOT NULL DEFAULT 0")
+                if "stock_revisionbetween0and9000000000000000000" not in compact:
+                    issues.append("stock_revision is missing bounds CHECK")
+            elif row[3] != 0 or row[4] is not None:
+                issues.append(f"{table}.{name} must preserve unknown costs as nullable without default")
+            if "typeof" + name + "=integer" not in compact:
+                issues.append(f"{table}.{name} is missing strict integer CHECK")
+            if name != "line_cost_satang" and name != "stock_revision" and name + "between0and100000000" not in compact:
+                issues.append(f"{table}.{name} is missing cost bounds CHECK")
+        if table == "sale_lines" and not all(part in compact for part in (
+                "line_cost_satangisnullandunit_cost_satang_per_gramisnull",
+                "line_cost_satang>=0andunit_cost_satang_per_gramisnotnull")):
+            issues.append("Sale-line known/unknown cost CHECK is missing")
+    for table, name in (("products", "default_cost_satang_per_gram"), ("lots", "cost_satang_per_gram"),
+                        ("sale_lines", "unit_cost_satang_per_gram")):
+        if db.execute("SELECT count(*) FROM " + table + " WHERE " + name + " IS NOT NULL AND "
+                      "(typeof(" + name + ")<>'integer' OR " + name + " NOT BETWEEN 0 AND 100000000)").fetchone()[0]:
+            issues.append("Invalid stored cost in " + table)
+    if db.execute("SELECT count(*) FROM lot_balances WHERE typeof(stock_revision)<>'integer' "
+                  "OR stock_revision NOT BETWEEN 0 AND 9000000000000000000").fetchone()[0]:
+        issues.append("Invalid stock revision")
+    if db.execute("SELECT count(*) FROM sale_lines WHERE "
+                  "(unit_cost_satang_per_gram IS NULL)<>(line_cost_satang IS NULL) OR "
+                  "(line_cost_satang IS NOT NULL AND (typeof(line_cost_satang)<>'integer' OR line_cost_satang<0))").fetchone()[0]:
+        issues.append("Invalid sale-line known/unknown cost")
+    expected = _cost_schema_objects()
+    actual = {(row[0], row[1]): row[3] for row in _objects(db)}
+    for key, sql in expected.items():
+        normalize = lambda value: re.sub(r"\s+", "", value or "").lower().replace("ifnotexists", "")
+        if normalize(actual.get(key)) != normalize(sql):
+            issues.append("Missing or unexpected cost/stocktake schema object: " + key[1])
+    return issues
+
+
+@lru_cache(maxsize=1)
+def _cost_schema_objects() -> dict:
+    """Canonical new table columns/checks/FKs/indexes and immutable trigger bodies."""
+    db = sqlite3.connect(":memory:")
+    try:
+        db.executescript("CREATE TABLE stores(id TEXT);CREATE TABLE users(id TEXT);"
+            "CREATE TABLE lots(id TEXT,cost_satang_per_gram INTEGER);CREATE TABLE ledger_events(id TEXT);")
+        db.executescript(EXTRA_SCHEMA)
+        return {(row[0], row[1]): row[3] for row in _objects(db)
+                if row[1] in COST_STOCK_TABLES or row[1] in COST_STOCK_TRIGGERS or row[1] == "stocktakes_store_created"}
+    finally:
+        db.close()
+
+
 def _assessment(db: sqlite3.Connection) -> dict:
     version = db.execute("PRAGMA user_version").fetchone()[0]
     tables = set(_tables(db))
@@ -151,30 +217,43 @@ def _assessment(db: sqlite3.Connection) -> dict:
     if not all_new and not none_new:
         report["issues"].append("Partial discount schema; operator investigation required")
         return report
+    present_cost = {t: COST_FIELDS[t].intersection(_columns(db, t)) for t in COST_FIELDS}
+    all_cost = all(present_cost[t] == COST_FIELDS[t] for t in COST_FIELDS)
+    any_cost = any(present_cost.values()) or bool(tables.intersection(COST_STOCK_TABLES))
+    if any_cost and (not all_cost or not COST_STOCK_TABLES.issubset(tables)):
+        report["issues"].append("Partial cost/stocktake schema; operator investigation required")
+        return report
     triggers = {r[1] for r in _objects(db) if r[0] == "trigger"}
     if not IMMUTABLE_TRIGGERS.issubset(triggers):
         report["issues"].append("Required immutable triggers are missing")
-    if version not in (0, 1, CURRENT_SCHEMA_VERSION):
+    if version not in (0, 1, 2, CURRENT_SCHEMA_VERSION):
         report["issues"].append("Unsupported schema version")
-    if version == CURRENT_SCHEMA_VERSION and not all_new:
-        report["issues"].append("Schema version 2 lacks discount fields")
+    if version >= 2 and not all_new:
+        report["issues"].append("Versioned schema lacks discount fields")
+    if version == CURRENT_SCHEMA_VERSION and (not all_cost or not COST_STOCK_TRIGGERS.issubset(triggers)):
+        report["issues"].append("Schema version 3 lacks cost/stocktake fields or immutable triggers")
     try:
         report["issues"].extend(_integrity_issues(db))
+        if db.execute("SELECT count(*) FROM lot_balances WHERE typeof(quantity_mg)<>'integer' "
+                      "OR quantity_mg NOT BETWEEN 0 AND 100000000").fetchone()[0]:
+            report["issues"].append("Stock quantities must be integer milligrams within supported bounds; no automatic conversion")
         report["issues"].extend(_money_issues(db, v2=all_new))
         if all_new:
             report["issues"].extend(_v2_schema_issues(db))
+        if all_cost:
+            report["issues"].extend(_v3_issues(db))
     except sqlite3.DatabaseError:
         report["issues"].append("Schema cannot satisfy the required money proof")
-    report["classification"] = "discount_v2" if all_new else "legacy"
+    report["classification"] = "cost_stock_v3" if all_cost else ("discount_v2" if all_new else "legacy")
     report["table_counts"] = {t: db.execute("SELECT count(*) FROM " + _quote(t)).fetchone()[0] for t in sorted(tables)}
     if not report["issues"]:
-        if all_new and version == CURRENT_SCHEMA_VERSION:
+        if all_new and all_cost and version == CURRENT_SCHEMA_VERSION:
             report["status"] = "READY"
-        elif none_new and version in (0, 1):
+        elif (none_new and not any_cost and version in (0, 1)) or (all_new and not any_cost and version == 2):
             report["status"] = "UPGRADE_REQUIRED"
-            report["issues"] = ["Legacy schema requires explicit backed-up offline-copy migration"]
+            report["issues"] = ["Schema upgrade requires explicit backed-up offline-copy migration"]
         else:
-            report["issues"] = ["Unversioned discount schema requires operator proof; automatic adoption refused"]
+            report["issues"] = ["Unversioned or inconsistent schema requires operator proof; automatic adoption refused"]
     return report
 
 
@@ -259,14 +338,17 @@ def _copy_guard(path: Path, confirmed: bool) -> None:
 def _preservation_issues(db: sqlite3.Connection, before: dict) -> list[str]:
     after = _snapshot(db)
     issues = []
-    if set(after["rows"]) != set(before["rows"]):
-        issues.append("Original table set changed")
+    if not set(before["rows"]).issubset(after["rows"]) or set(after["rows"]) - set(before["rows"]) - COST_STOCK_TABLES:
+        issues.append("Original table set changed unexpectedly")
     original_objects = {(r[0], r[1]): r for r in before["objects"]}
     current_objects = {(r[0], r[1]): r for r in after["objects"]}
-    if set(original_objects) != set(current_objects):
-        issues.append("Original schema object set changed")
+    allowed_new = ({("table", name) for name in COST_STOCK_TABLES} |
+                   {("trigger", name) for name in COST_STOCK_TRIGGERS} |
+                   {("index", "stocktakes_store_created")})
+    if not set(original_objects).issubset(current_objects) or set(current_objects) - set(original_objects) - allowed_new:
+        issues.append("Original schema object set changed unexpectedly")
     for key, original in original_objects.items():
-        if key not in {("table", "sales"), ("table", "sale_lines")} and current_objects.get(key) != original:
+        if key not in {("table", name) for name in ("sales", "sale_lines", "products", "lots", "lot_balances")} and current_objects.get(key) != original:
             issues.append("Original trigger/index/view/other-table SQL changed")
             break
     for table, columns in before["columns"].items():
@@ -297,27 +379,44 @@ def migrate_copy(path: str | Path, *, confirmed_offline_copy: bool = False,
             return {**report, "status": "NOOP", "changed": False}
         if report["status"] != "UPGRADE_REQUIRED":
             raise SchemaUpgradeRequired(report)
-        # Proof above is inside BEGIN IMMEDIATE and precedes all DDL.
-        db.execute("ALTER TABLE sales ADD COLUMN discount_satang INTEGER NOT NULL DEFAULT 0 "
-                   "CHECK(discount_satang >= 0 AND subtotal_satang = total_satang + discount_satang)")
-        db.execute("ALTER TABLE sale_lines ADD COLUMN line_subtotal_satang INTEGER NOT NULL DEFAULT 0 "
-                   "CHECK(line_subtotal_satang >= 0)")
+        # Every version step shares this transaction and the original backup proof.
+        if report["classification"] == "legacy":
+            db.execute("ALTER TABLE sales ADD COLUMN discount_satang INTEGER NOT NULL DEFAULT 0 "
+                       "CHECK(discount_satang >= 0 AND subtotal_satang = total_satang + discount_satang)")
+            db.execute("ALTER TABLE sale_lines ADD COLUMN line_subtotal_satang INTEGER NOT NULL DEFAULT 0 "
+                       "CHECK(line_subtotal_satang >= 0)")
+            if failure_hook:
+                failure_hook("after_ddl")
+            trigger_sql = db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' "
+                "AND name='lines_no_update' AND tbl_name='sale_lines'").fetchone()
+            if not trigger_sql or not trigger_sql[0]:
+                raise SchemaUpgradeRequired({"status": "HOLD", "issues": ["Exact sale-line immutable trigger not found"]})
+            db.execute("DROP TRIGGER lines_no_update")
+            if failure_hook:
+                failure_hook("after_trigger_drop")
+            db.execute("UPDATE sale_lines SET line_subtotal_satang = line_total_satang")
+            db.execute(trigger_sql[0])
+            if failure_hook:
+                failure_hook("after_backfill")
+            db.execute("ALTER TABLE sale_lines ADD COLUMN line_discount_satang INTEGER NOT NULL DEFAULT 0 "
+                       "CHECK(line_discount_satang >= 0 AND line_subtotal_satang = line_total_satang + line_discount_satang)")
+        for table, name in (("products", "default_cost_satang_per_gram"), ("lots", "cost_satang_per_gram"),
+                            ("sale_lines", "unit_cost_satang_per_gram")):
+            db.execute("ALTER TABLE " + table + " ADD COLUMN " + name + " INTEGER CHECK(" + name +
+                " IS NULL OR (typeof(" + name + ")='integer' AND " + name + " BETWEEN 0 AND 100000000))")
+        db.execute("ALTER TABLE sale_lines ADD COLUMN line_cost_satang INTEGER CHECK("
+            "(line_cost_satang IS NULL AND unit_cost_satang_per_gram IS NULL) OR "
+            "(typeof(line_cost_satang)='integer' AND line_cost_satang>=0 AND unit_cost_satang_per_gram IS NOT NULL))")
+        db.execute("ALTER TABLE lot_balances ADD COLUMN stock_revision INTEGER NOT NULL DEFAULT 0 "
+                   "CHECK(typeof(stock_revision)='integer' AND stock_revision BETWEEN 0 AND 9000000000000000000)")
         if failure_hook:
-            failure_hook("after_ddl")
-        trigger_sql = db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' "
-            "AND name='lines_no_update' AND tbl_name='sale_lines'").fetchone()
-        if not trigger_sql or not trigger_sql[0]:
-            raise SchemaUpgradeRequired({"status": "HOLD", "issues": ["Exact sale-line immutable trigger not found"]})
-        db.execute("DROP TRIGGER lines_no_update")
+            failure_hook("after_cost_ddl")
+        for statement in _schema_statements(EXTRA_SCHEMA):
+            db.execute(statement)
         if failure_hook:
-            failure_hook("after_trigger_drop")
-        db.execute("UPDATE sale_lines SET line_subtotal_satang = line_total_satang")
-        db.execute(trigger_sql[0])
-        if failure_hook:
-            failure_hook("after_backfill")
-        db.execute("ALTER TABLE sale_lines ADD COLUMN line_discount_satang INTEGER NOT NULL DEFAULT 0 "
-                   "CHECK(line_discount_satang >= 0 AND line_subtotal_satang = line_total_satang + line_discount_satang)")
-        issues = _preservation_issues(db, before) + _integrity_issues(db) + _money_issues(db, v2=True) + _v2_schema_issues(db)
+            failure_hook("after_cost_tables")
+        issues = (_preservation_issues(db, before) + _integrity_issues(db) +
+                  _money_issues(db, v2=True) + _v2_schema_issues(db) + _v3_issues(db))
         if issues:
             raise SchemaUpgradeRequired({"status": "HOLD", "issues": issues})
         db.execute(f"PRAGMA user_version={CURRENT_SCHEMA_VERSION}")
@@ -326,7 +425,8 @@ def migrate_copy(path: str | Path, *, confirmed_offline_copy: bool = False,
         db.commit()
         return {"status": "PASS", "changed": True, "schema_version": CURRENT_SCHEMA_VERSION,
                 "original_fields_preserved": True, "immutable_triggers_preserved": True,
-                "foreign_keys": "PASS", "integrity": "PASS", "legacy_discount_satang": 0}
+                "foreign_keys": "PASS", "integrity": "PASS", "historical_costs": "UNKNOWN_PRESERVED",
+                "legacy_discount_satang": 0 if report["classification"] == "legacy" else "PRESERVED"}
     except BaseException:
         db.rollback()
         raise
@@ -391,7 +491,7 @@ def backup_and_migrate_copy(path: str | Path, backup_directory: str | Path, *,
     if report["status"] != "UPGRADE_REQUIRED":
         raise SchemaUpgradeRequired(report)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    backup = directory / ("ramagan-before-v2-" + uuid.uuid4().hex + ".sqlite3")
+    backup = directory / ("ramagan-before-v3-" + uuid.uuid4().hex + ".sqlite3")
     expected = _verified_copy(target, backup)
     clone = directory / ("restore-proof-" + uuid.uuid4().hex + ".sqlite3")
     try:

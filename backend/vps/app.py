@@ -6,6 +6,7 @@ No live regulated sales until site/license compliance and QA are signed off.
 """
 import hashlib
 import hmac
+import json
 import os
 import re
 import secrets
@@ -20,15 +21,20 @@ from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, StrictInt
+from pydantic import BaseModel, Field, StrictInt, StrictStr
 from discounts import (
     DISCOUNT_CONTRACT_VERSION, MAX_SALE_SATANG, allocate_discount,
     checkout_request_hash, legacy_checkout_request_hash,
 )
 from migrations import CURRENT_SCHEMA_VERSION, initialize_database
 from reports import build_sales_report
+from cost_stock import (
+    COST_CONTRACT_VERSION, STOCKTAKE_CONTRACT_VERSION, EXTRA_SCHEMA,
+    capabilities as cost_capabilities, canonical_hash, inventory_value,
+    product_rows, register_stock_routes,
+)
 
-APP_VERSION = "1.1.0-vps-preview"
+APP_VERSION = "1.2.0-vps-preview"
 BKK = ZoneInfo("Asia/Bangkok")
 ROLES = ("owner", "manager", "staff")
 DEFAULT_PATH = str(Path.home() / "Ramagan" / "data" / "ramagan.sqlite3")
@@ -67,6 +73,7 @@ CREATE TABLE IF NOT EXISTS products (
   name TEXT NOT NULL,
   category TEXT NOT NULL DEFAULT 'other',
   price_satang_per_gram INTEGER NOT NULL CHECK(price_satang_per_gram BETWEEN 0 AND 100000000),
+  default_cost_satang_per_gram INTEGER CHECK(default_cost_satang_per_gram IS NULL OR (typeof(default_cost_satang_per_gram)='integer' AND default_cost_satang_per_gram BETWEEN 0 AND 100000000)),
   active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
   created_at TEXT NOT NULL,
   UNIQUE(store_id, sku)
@@ -78,6 +85,7 @@ CREATE TABLE IF NOT EXISTS lots (
   lot_code TEXT NOT NULL,
   supplier_name TEXT NOT NULL,
   supplier_document_ref TEXT NOT NULL,
+  cost_satang_per_gram INTEGER CHECK(cost_satang_per_gram IS NULL OR (typeof(cost_satang_per_gram)='integer' AND cost_satang_per_gram BETWEEN 0 AND 100000000)),
   expires_on TEXT,
   active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
   received_at TEXT NOT NULL,
@@ -86,6 +94,7 @@ CREATE TABLE IF NOT EXISTS lots (
 CREATE TABLE IF NOT EXISTS lot_balances (
   lot_id TEXT PRIMARY KEY REFERENCES lots(id),
   quantity_mg INTEGER NOT NULL CHECK(quantity_mg >= 0),
+  stock_revision INTEGER NOT NULL DEFAULT 0 CHECK(typeof(stock_revision)='integer' AND stock_revision BETWEEN 0 AND 9000000000000000000),
   updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sales (
@@ -112,6 +121,8 @@ CREATE TABLE IF NOT EXISTS sale_lines (
   line_subtotal_satang INTEGER NOT NULL DEFAULT 0 CHECK(line_subtotal_satang >= 0),
   line_discount_satang INTEGER NOT NULL DEFAULT 0 CHECK(line_discount_satang >= 0),
   line_total_satang INTEGER NOT NULL CHECK(line_total_satang >= 0),
+  unit_cost_satang_per_gram INTEGER CHECK(unit_cost_satang_per_gram IS NULL OR (typeof(unit_cost_satang_per_gram)='integer' AND unit_cost_satang_per_gram BETWEEN 0 AND 100000000)),
+  line_cost_satang INTEGER CHECK((line_cost_satang IS NULL AND unit_cost_satang_per_gram IS NULL) OR (typeof(line_cost_satang)='integer' AND line_cost_satang>=0 AND unit_cost_satang_per_gram IS NOT NULL)),
   CHECK(line_subtotal_satang = line_discount_satang + line_total_satang),
   UNIQUE(sale_id, lot_id)
 );
@@ -141,7 +152,7 @@ BEGIN SELECT RAISE(ABORT, 'Immutable sale lines'); END;
 CREATE INDEX IF NOT EXISTS sales_store_created ON sales(store_id,created_at);
 CREATE INDEX IF NOT EXISTS ledger_store_lot_created ON ledger_events(store_id,lot_id,created_at);
 CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions(user_id);
-"""
+""" + EXTRA_SCHEMA
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -215,20 +226,23 @@ class ProductIn(BaseModel):
     sku: str = Field(min_length=1, max_length=60)
     name: str = Field(min_length=1, max_length=200)
     category: str = Field(default="other", min_length=1, max_length=60)
-    price_satang_per_gram: int = Field(ge=0, le=MAX_AMOUNT)
+    price_satang_per_gram: StrictInt = Field(ge=0, le=MAX_AMOUNT)
+    default_cost_satang_per_gram: StrictInt | None = Field(default=None, ge=0, le=MAX_AMOUNT)
 
 class ReceiveIn(BaseModel):
     product_id: uuid.UUID
     lot_code: str = Field(min_length=1, max_length=100)
     supplier_name: str = Field(min_length=1, max_length=200)
-    supplier_document_ref: str = Field(min_length=1, max_length=200)
-    quantity_mg: int = Field(gt=0, le=MAX_STOCK_MG)
+    supplier_document_ref: StrictStr = Field(default="", max_length=200)
+    quantity_mg: StrictInt = Field(gt=0, le=MAX_STOCK_MG)
     expires_on: date | None = None
     reason: str = Field(min_length=1, max_length=500)
+    cost_satang_per_gram: StrictInt | None = Field(default=None, ge=0, le=MAX_AMOUNT)
+    client_receive_id: uuid.UUID | None = None
 
 class SaleLineIn(BaseModel):
     lot_id: uuid.UUID
-    quantity_mg: int = Field(gt=0, le=1_000_000)
+    quantity_mg: StrictInt = Field(gt=0, le=1_000_000)
 
 class SaleIn(BaseModel):
     client_sale_id: uuid.UUID
@@ -236,6 +250,15 @@ class SaleIn(BaseModel):
     payment_method: str
     authorization_ref: str | None = Field(default=None, max_length=120)
     discount_satang: StrictInt = Field(default=0, ge=0, le=MAX_SALE_SATANG)
+
+def receive_request_hash(payload: ReceiveIn) -> str:
+    return canonical_hash({"product_id": str(payload.product_id),
+        "lot_code": payload.lot_code.strip(), "supplier_name": payload.supplier_name.strip(),
+        "supplier_document_ref": payload.supplier_document_ref.strip(),
+        "quantity_mg": payload.quantity_mg,
+        "expires_on": payload.expires_on.isoformat() if payload.expires_on else None,
+        "reason": payload.reason.strip(), "cost_satang_per_gram": payload.cost_satang_per_gram})
+
 
 def error(status: int, message: str):
     raise HTTPException(status_code=status, detail=message)
@@ -293,7 +316,11 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
                 db.execute("SELECT 1").fetchone()
         except sqlite3.Error:
             error(503, "Database unavailable")
-        return {"status": "ok", "version": APP_VERSION, "production_sales": "controlled_by_store"}
+        return {"status": "ok", "version": APP_VERSION, "production_sales": "controlled_by_store",
+                "schema_version": CURRENT_SCHEMA_VERSION,
+                "discount_contract_version": DISCOUNT_CONTRACT_VERSION,
+                "cost_contract_version": COST_CONTRACT_VERSION,
+                "stocktake_contract_version": STOCKTAKE_CONTRACT_VERSION}
 
     @app.post("/v1/auth/login")
     def login(payload: LoginIn, request: Request):
@@ -346,7 +373,9 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
             "store_id": actor["store_id"],
             "role": actor["role"],
             "capabilities": {"discounts": True,
-                             "discount_contract_version": DISCOUNT_CONTRACT_VERSION},
+                             "discount_contract_version": DISCOUNT_CONTRACT_VERSION,
+                             "optional_document_references": True, "document_contract_version": 1,
+                             **cost_capabilities()},
             "store": {**dict(store),
                       "sales_enabled": bool(store["sales_enabled"]),
                       "requires_authorization": bool(store["requires_authorization"])}
@@ -355,9 +384,8 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
     @app.get("/v1/catalog")
     def catalog(actor: Annotated[dict, Depends(current)]):
         with connect(path) as db:
-            products = [dict(r) for r in db.execute(
-                "SELECT id,sku,name,category,price_satang_per_gram,active FROM products WHERE store_id=? ORDER BY name",
-                (actor["store_id"],))]
+            products = product_rows(db, actor["store_id"],
+                                    include_cost=actor["role"] in ("owner", "manager"))
             lots = [dict(r) for r in db.execute("""
              SELECT l.id,l.lot_code,l.expires_on,l.active,
                     p.name,p.sku,p.price_satang_per_gram,p.active AS product_active,
@@ -380,10 +408,12 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
             with connect(path) as db:
                 db.execute("BEGIN IMMEDIATE")
                 db.execute("""
-                    INSERT INTO products(id,store_id,sku,name,category,price_satang_per_gram,created_at)
-                    VALUES(?,?,?,?,?,?,?)
+                    INSERT INTO products(id,store_id,sku,name,category,price_satang_per_gram,
+                                         default_cost_satang_per_gram,created_at)
+                    VALUES(?,?,?,?,?,?,?,?)
                 """, (pid, actor["store_id"], payload.sku.strip(), payload.name.strip(),
-                      payload.category.strip(), payload.price_satang_per_gram, now_utc()))
+                      payload.category.strip(), payload.price_satang_per_gram,
+                      payload.default_cost_satang_per_gram, now_utc()))
                 db.commit()
         except sqlite3.IntegrityError:
             error(409, "Duplicate SKU or invalid product")
@@ -393,29 +423,52 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
     def receive(payload: ReceiveIn, actor: Annotated[dict, Depends(current)]):
         require_manager(actor)
         if not all(x.strip() for x in (
-            payload.lot_code, payload.supplier_name, payload.supplier_document_ref, payload.reason
+            payload.lot_code, payload.supplier_name, payload.reason
         )):
-            error(422, "Lot code, supplier, document reference and reason are required")
-        if payload.expires_on and payload.expires_on < datetime.now(BKK).date():
-            error(422, "Expired stock cannot be received")
+            error(422, "Lot code, supplier and reason are required")
+        request_hash = receive_request_hash(payload)
         lot_id, event_id = uuid_str(), uuid_str()
         try:
             with connect(path) as db:
                 db.execute("BEGIN IMMEDIATE")
+                if payload.client_receive_id is not None:
+                    existing = db.execute("SELECT request_hash,result_json FROM receive_requests "
+                        "WHERE store_id=? AND client_receive_id=?",
+                        (actor["store_id"], str(payload.client_receive_id))).fetchone()
+                    if existing:
+                        if existing["request_hash"] != request_hash:
+                            error(409, "Receive UUID already used with different payload")
+                        result = json.loads(existing["result_json"])
+                        result["duplicate"] = True
+                        db.rollback()
+                        return result
+                    rejected = db.execute("SELECT request_hash FROM receive_rejections "
+                        "WHERE store_id=? AND client_receive_id=?",
+                        (actor["store_id"], str(payload.client_receive_id))).fetchone()
+                    if rejected:
+                        if rejected["request_hash"] != request_hash:
+                            error(409, "Receive UUID already used with different payload")
+                        error(409, "Receipt cancelled before commit")
+                if payload.expires_on and payload.expires_on < datetime.now(BKK).date():
+                    error(422, "Expired stock cannot be received")
                 product = db.execute(
-                    "SELECT id FROM products WHERE id=? AND store_id=? AND active=1",
+                    "SELECT id,default_cost_satang_per_gram FROM products WHERE id=? AND store_id=? AND active=1",
                     (str(payload.product_id), actor["store_id"])
                 ).fetchone()
                 if not product:
                     error(422, "Product unavailable in this store")
+                cost = payload.cost_satang_per_gram
+                if cost is None:
+                    cost = product["default_cost_satang_per_gram"]
+                inventory_value(cost, payload.quantity_mg)  # Validate authoritative stored default.
                 stamp = now_utc()
                 db.execute("""
                     INSERT INTO lots(id,store_id,product_id,lot_code,supplier_name,
-                                     supplier_document_ref,expires_on,received_at)
-                    VALUES(?,?,?,?,?,?,?,?)
+                                     supplier_document_ref,cost_satang_per_gram,expires_on,received_at)
+                    VALUES(?,?,?,?,?,?,?,?,?)
                 """, (lot_id, actor["store_id"], str(payload.product_id),
                       payload.lot_code.strip(), payload.supplier_name.strip(),
-                      payload.supplier_document_ref.strip(),
+                      payload.supplier_document_ref.strip(), cost,
                       payload.expires_on.isoformat() if payload.expires_on else None, stamp))
                 db.execute("INSERT INTO lot_balances(lot_id,quantity_mg,updated_at) VALUES(?,?,?)",
                            (lot_id, payload.quantity_mg, stamp))
@@ -425,10 +478,55 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
                     VALUES(?,?,?,?,?,?,?,?)
                 """, (event_id, actor["store_id"], lot_id, actor["id"], "RECEIVE",
                       payload.quantity_mg, payload.reason.strip(), stamp))
+                result = {"lot_id": lot_id, "event_id": event_id, "ledger_event_id": event_id,
+                          "client_receive_id": str(payload.client_receive_id) if payload.client_receive_id else None,
+                          "quantity_mg": payload.quantity_mg, "cost_satang_per_gram": cost, "duplicate": False}
+                if payload.client_receive_id is not None:
+                    db.execute("INSERT INTO receive_requests(store_id,client_receive_id,actor_user_id,"
+                        "request_hash,result_json,created_at) VALUES(?,?,?,?,?,?)",
+                        (actor["store_id"], str(payload.client_receive_id), actor["id"], request_hash,
+                         json.dumps(result, sort_keys=True, separators=(",", ":")), stamp))
                 db.commit()
         except sqlite3.IntegrityError:
             error(409, "Duplicate lot code or invalid stock record")
-        return {"lot_id": lot_id, "event_id": event_id, "quantity_mg": payload.quantity_mg}
+        return result
+
+    @app.post("/v1/lots/receive/reconcile")
+    def reconcile_receive(payload: ReceiveIn, actor: Annotated[dict, Depends(current)]):
+        require_manager(actor)
+        if payload.client_receive_id is None:
+            error(422, "Client receive UUID required for reconciliation")
+        request_hash, client_id = receive_request_hash(payload), str(payload.client_receive_id)
+        with connect(path) as db:
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                existing = db.execute("SELECT request_hash,result_json FROM receive_requests "
+                    "WHERE store_id=? AND client_receive_id=?", (actor["store_id"], client_id)).fetchone()
+                if existing:
+                    if existing["request_hash"] != request_hash:
+                        error(409, "Receive UUID already used with different payload")
+                    result = json.loads(existing["result_json"])
+                    result["duplicate"] = True
+                    db.rollback()
+                    return {"status": "completed", "result": result}
+                rejected = db.execute("SELECT request_hash,result_json FROM receive_rejections "
+                    "WHERE store_id=? AND client_receive_id=?", (actor["store_id"], client_id)).fetchone()
+                if rejected:
+                    if rejected["request_hash"] != request_hash:
+                        error(409, "Receive UUID already used with different payload")
+                    result = json.loads(rejected["result_json"])
+                    db.rollback()
+                    return result
+                result = {"status": "rejected", "client_receive_id": client_id, "code": "RECEIVE_CANCELLED",
+                          "message": "Receipt cancelled before commit", "committed": False}
+                db.execute("INSERT INTO receive_rejections(store_id,client_receive_id,request_hash,"
+                    "actor_user_id,result_json,created_at) VALUES(?,?,?,?,?,?)", (actor["store_id"], client_id,
+                    request_hash, actor["id"], json.dumps(result, sort_keys=True, separators=(",", ":")), now_utc()))
+                db.commit()
+                return result
+            except Exception:
+                db.rollback()
+                raise
 
     @app.post("/v1/sales")
     def checkout(payload: SaleIn, actor: Annotated[dict, Depends(current)]):
@@ -484,7 +582,8 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
                 # BEGIN IMMEDIATE already serializes concurrent SQLite writers.
                 for item in items:
                     lot = db.execute("""
-                       SELECT b.quantity_mg,p.price_satang_per_gram,l.expires_on
+                       SELECT b.quantity_mg,b.stock_revision,p.price_satang_per_gram,l.expires_on,
+                              l.cost_satang_per_gram
                          FROM lots l JOIN products p ON p.id=l.product_id
                            JOIN lot_balances b ON b.lot_id=l.id
                         WHERE l.id=? AND l.store_id=? AND p.store_id=?
@@ -497,16 +596,25 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
                     qty = item["quantity_mg"]
                     if lot["quantity_mg"] < qty:
                         error(409, "Insufficient stock")
+                    if lot["stock_revision"] >= 9_000_000_000_000_000_000:
+                        error(409, "Stock revision limit reached")
                     price = lot["price_satang_per_gram"]
                     if type(price) is not int or not 0 <= price <= MAX_AMOUNT:
                         error(422, "Invalid server price")
                     line_satang = (price * qty + 500) // 1000
                     subtotal += line_satang
-                    validated.append((item["lot_id"], qty, price, line_satang))
+                    try:
+                        before_cost = inventory_value(lot["cost_satang_per_gram"], lot["quantity_mg"])
+                        after_cost = inventory_value(lot["cost_satang_per_gram"], lot["quantity_mg"] - qty)
+                    except ValueError as exc:
+                        error(422, str(exc))
+                    cost = None if before_cost is None else before_cost - after_cost
+                    validated.append((item["lot_id"], qty, price, line_satang,
+                                      lot["cost_satang_per_gram"], cost))
                 try:
                     allocation = {
                         line.lot_id: line for line in allocate_discount(
-                            [(lot_id, gross) for lot_id, _, _, gross in validated],
+                            [(line[0], line[3]) for line in validated],
                             payload.discount_satang,
                         )
                     }
@@ -521,10 +629,10 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
                 """, (sid, actor["store_id"], str(payload.client_sale_id), request_hash,
                       actor["id"], payload.payment_method, ref or None, subtotal,
                       payload.discount_satang, total, stamp))
-                for lot_id, qty, price, line_satang in validated:
+                for lot_id, qty, price, line_satang, unit_cost, line_cost in validated:
                     amounts = allocation[lot_id]
                     changed = db.execute("""
-                      UPDATE lot_balances SET quantity_mg=quantity_mg-?,updated_at=?
+                      UPDATE lot_balances SET quantity_mg=quantity_mg-?,updated_at=?,stock_revision=stock_revision+1
                        WHERE lot_id=? AND quantity_mg>=?
                     """, (qty, stamp, lot_id, qty)).rowcount
                     if changed != 1:
@@ -532,10 +640,11 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
                     db.execute("""
                       INSERT INTO sale_lines(id,sale_id,lot_id,quantity_mg,
                                              unit_price_satang_per_gram,line_subtotal_satang,
-                                             line_discount_satang,line_total_satang)
-                      VALUES(?,?,?,?,?,?,?,?)
+                                             line_discount_satang,line_total_satang,
+                                             unit_cost_satang_per_gram,line_cost_satang)
+                      VALUES(?,?,?,?,?,?,?,?,?,?)
                     """, (uuid_str(), sid, lot_id, qty, price, amounts.subtotal_satang,
-                          amounts.discount_satang, amounts.total_satang))
+                          amounts.discount_satang, amounts.total_satang, unit_cost, line_cost))
                     db.execute("""
                       INSERT INTO ledger_events(id,store_id,lot_id,actor_user_id,
                                                 event_type,quantity_delta_mg,reason,
@@ -598,6 +707,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None) -> 
             """, (actor["store_id"],)).fetchall()
         return {"events": [dict(r) for r in rows]}
 
+    register_stock_routes(app, path, connect, current, require_manager, error, now_utc, uuid_str)
     return app
 
 app = create_app()
