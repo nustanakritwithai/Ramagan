@@ -42,25 +42,26 @@ delete SQLite data, or migrate V0 localStorage demo stock.
 
 ## Current report capabilities
 
-- Daily sales revenue, sale count, average sale
-- Cash and bank transfer breakdown
+- Daily gross, discount and net sales, sale count, net average (contract v1)
+- Cash and bank transfer net breakdown (contract v1)
 - Grams deducted from stock
-- Top products and categories from historical recorded sale-line prices
+- Top products and categories with gross and server-allocated net (contract v1)
 - Low-stock alerts from *current* balances, not the historical date window
 - Recent 30 sales within the requested date range
 - Daily CSV export after successful authorized request
 
 Reports use Asia/Bangkok dates, up to 93 days per request. They cannot report
 previous V0 sales that were stored only in the browser. There are no fake demo
-numbers: if actual sales are disabled or none exist, totals are zero.
+numbers: zero is shown only when returned explicitly by a supported, valid API response.
+A disabled sales gate does not imply historical sales are zero.
 
 ## Legacy gaps (do not invent data)
 
 V0 included 5+2, cart discounts, before-shift counting, photos, cash/transfer
-charts and a historical "as-of" ledger. The new VPS currently has sales,
-stock, payment methods and receipt records, but not 5+2 discount metadata or
-shift reconciliation. Report UI names these as NOT YET MIGRATED and does not
-silently treat gross vs net as if discounts were implemented.
+charts and a historical "as-of" ledger. The existing VPS has sales, stock, payment methods and receipt records.
+Phase 2 bill discounts require the separately deployed contract below; 5+2
+promotion metadata and shift reconciliation are not covered. The UI never
+silently treats gross vs net as if discounts or allocations were implemented.
 
 Do not bypass licensed-store requirements just to populate a dashboard.
 
@@ -72,3 +73,82 @@ At repository root:
     node --test tests/admin-gh-pages.test.mjs
 
 The static page does not require npm install or any third-party dependencies.
+
+## Phase 2 discount contract (prepared; backend deployment required)
+
+This UI requires report `capabilities.discounts === true` and
+`capabilities.discount_contract_version === 1` before displaying any net or
+discount values. Missing, false, or unknown versions display `—`, meaning
+unsupported/unknown, never zero. `/v1/me` still verifies Owner/Manager; the
+report's own capability is authoritative for its data. Staff cannot open reports.
+
+Contract v1 money is nonnegative safe integer satang:
+
+- `summary`: existing `subtotal_satang` (gross), `total_satang` (net),
+  `cash_satang` and `transfer_satang` (net), `average_satang` (floor net/count),
+  plus `discount_satang`.
+- `daily`, `recent_sales`: `subtotal_satang`, `discount_satang`, `total_satang`.
+- `top_products`, `top_categories`: `subtotal_satang` (gross),
+  `discount_satang` (server-allocated discount), `total_satang` (allocated net).
+  These rankings are net in v1; legacy `total_satang` remains labeled gross.
+  The server owns deterministic allocation; the client never allocates money.
+- Daily payment-channel breakdown is not part of this contract and is not invented.
+- Top ten rankings and recent thirty sales are subsets, so their totals are not
+  incorrectly checked against the whole report.
+
+All daily rows must cover the requested Bangkok period without duplicates.
+Gross minus discount must equal net, daily totals must match the summary, and
+payment totals/average must reconcile before the response is rendered. Missing,
+unsafe, inconsistent, wrong-period or wrong-timezone responses fail closed.
+At refresh start, old figures and CSV access are cleared. Network/partial failures
+cannot leave old figures presented as a fresh successful report.
+
+Money display and CSV use integer/BigInt formatting without floating money
+arithmetic. CSV includes gross, discount, net and explicit capability status.
+No data, token or user-entered API destination is persisted.
+
+## Cost and gross profit contract (schema 3 branch; deployment required)
+
+Cost reporting requires `capabilities.inventory_costs === true` and
+`capabilities.cost_contract_version === 1`, together with the supported discount
+contract for authoritative net revenue. The report capability governs its own
+snapshot. Older schema 2 reports continue to show gross/discount/net; cost and
+profit stay `—` without assuming a zero cost.
+
+Every summary, daily, product/category ranking and recent-sale row supplies
+`known_cost_satang`, `cost_satang`, `gross_profit_satang`,
+`unknown_cost_line_count`, and boolean `cost_complete`. Known costs come from
+immutable sale-line snapshots, not a product's current default cost. Complete
+costs equal the known subtotal; gross profit equals net revenue minus cost and
+may be negative after a discount. Explicit zero cost is known zero.
+
+If any included line has unknown historical cost, total cost and gross profit
+must both be null. The page shows the number of unknown lines and the known
+cost subtotal separately; it never presents partial cost as full profit. Empty
+groups have explicit zero cost/profit. Daily known costs and unknown-line counts
+must reconcile with the summary before anything is rendered. Missing or invalid
+fields in a claimed supported contract fail closed and clear stale figures/CSV.
+
+Daily CSV includes known cost, complete cost, signed gross profit, unknown-line
+count and coverage status. Profit excludes other operating expenses and stocktake
+inventory gains/losses. This branch does not enable promotions, restart services,
+migrate a live database or deploy GitHub Pages by itself.
+
+    node --test tests/admin-gh-pages.test.mjs tests/admin-costs.test.mjs
+
+### Offline QA
+
+    node --check admin/lib.js
+    node --check admin/dashboard.js
+    node --test tests/*.test.mjs
+
+Optional browser QA requires an existing Playwright installation and Chromium:
+
+    ADMIN_QA_OUTPUT=/tmp/ramagan-admin-qa node tests/admin-browser-qa.cjs
+
+This script uses localhost and intercepted synthetic fixtures only, checks desktop
+and mobile viewport layout, roles, refresh/repeated clicks, unsupported/partial/
+network responses, logout/reload, and writes screenshots outside the repository.
+It is not a real Android, backend, TLS/CORS, transaction or production acceptance test.
+Do not publish this branch, open the Admin-to-main PR, or deploy until backend
+readiness and API integration have been separately confirmed by the operator.

@@ -5,12 +5,14 @@ on:
     paths:
       - 'admin/**'
       - 'tests/admin-gh-pages.test.mjs'
+      - 'tests/admin-costs.test.mjs'
       - '.github/workflows/admin-gh-pages-checks.yml'
   push:
     branches: [feat/ramagan-pages-admin]
     paths:
       - 'admin/**'
       - 'tests/admin-gh-pages.test.mjs'
+      - 'tests/admin-costs.test.mjs'
       - '.github/workflows/admin-gh-pages-checks.yml'
 
 permissions:
@@ -28,4 +30,4 @@ jobs:
         run: |
           node --check admin/lib.js
           node --check admin/dashboard.js
-          node --test tests/admin-gh-pages.test.mjs
+          node --test --test-concurrency=1 tests/admin-gh-pages.test.mjs tests/admin-costs.test.mjs
