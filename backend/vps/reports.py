@@ -29,6 +29,16 @@ def to_bangkok_day(value: str) -> str:
         BANGKOK).date().isoformat()
 
 
+def add_cost_totals(row: dict) -> dict:
+    """Never treat an unknown historical cost as a known zero or full profit."""
+    known = int(row["known_cost_satang"])
+    missing = int(row["unknown_cost_line_count"])
+    row["cost_complete"] = missing == 0
+    row["cost_satang"] = known if missing == 0 else None
+    row["gross_profit_satang"] = int(row["total_satang"]) - known if missing == 0 else None
+    return row
+
+
 def build_sales_report(db, store_id: str, start: date, end: date,
                        low_stock_mg: int = 10000) -> dict:
     if not 0 <= low_stock_mg <= 1_000_000_000:
@@ -40,7 +50,8 @@ def build_sales_report(db, store_id: str, start: date, end: date,
         day = (start + timedelta(days=i)).isoformat()
         days[day] = {"date": day, "total_satang": 0,
                      "subtotal_satang": 0, "discount_satang": 0,
-                     "sale_count": 0, "quantity_mg": 0}
+                     "sale_count": 0, "quantity_mg": 0,
+                     "known_cost_satang": 0, "unknown_cost_line_count": 0}
     total_satang = 0
     subtotal_satang = 0
     discount_satang = 0
@@ -48,6 +59,8 @@ def build_sales_report(db, store_id: str, start: date, end: date,
     count = 0
     cash_satang = 0
     transfer_satang = 0
+    known_cost_satang = 0
+    unknown_cost_line_count = 0
     recent = []
 
     # Transaction-consistent read snapshot for all report sections.
@@ -57,7 +70,9 @@ def build_sales_report(db, store_id: str, start: date, end: date,
             SELECT s.id, s.created_at, s.total_satang, s.subtotal_satang,
                    s.discount_satang,
                    s.payment_method, COUNT(sl.id) AS line_count,
-                   COALESCE(SUM(sl.quantity_mg),0) AS quantity_mg
+                   COALESCE(SUM(sl.quantity_mg),0) AS quantity_mg,
+                   COALESCE(SUM(sl.line_cost_satang),0) AS known_cost_satang,
+                   COUNT(sl.id)-COUNT(sl.line_cost_satang) AS unknown_cost_line_count
               FROM sales s LEFT JOIN sale_lines sl ON sl.sale_id = s.id
              WHERE s.store_id=? AND s.created_at>=? AND s.created_at<?
              GROUP BY s.id
@@ -72,11 +87,15 @@ def build_sales_report(db, store_id: str, start: date, end: date,
             subtotal = int(row["subtotal_satang"])
             discount = int(row["discount_satang"])
             qty = int(row["quantity_mg"])
+            known_cost = int(row["known_cost_satang"])
+            missing_cost = int(row["unknown_cost_line_count"])
             count += 1
             total_satang += amount
             subtotal_satang += subtotal
             discount_satang += discount
             sold_mg += qty
+            known_cost_satang += known_cost
+            unknown_cost_line_count += missing_cost
             if row["payment_method"] == "cash":
                 cash_satang += amount
             elif row["payment_method"] == "transfer":
@@ -86,21 +105,27 @@ def build_sales_report(db, store_id: str, start: date, end: date,
             days[day]["discount_satang"] += discount
             days[day]["sale_count"] += 1
             days[day]["quantity_mg"] += qty
+            days[day]["known_cost_satang"] += known_cost
+            days[day]["unknown_cost_line_count"] += missing_cost
             if len(recent) < 30:
-                recent.append({
+                recent.append(add_cost_totals({
                     "id": row["id"], "created_at": row["created_at"],
                     "total_satang": amount, "subtotal_satang": subtotal,
                     "discount_satang": discount,
                     "payment_method": row["payment_method"],
-                    "line_count": int(row["line_count"]), "quantity_mg": qty
-                })
+                    "line_count": int(row["line_count"]), "quantity_mg": qty,
+                    "known_cost_satang": known_cost,
+                    "unknown_cost_line_count": missing_cost
+                }))
 
-        top_products = [dict(r) for r in db.execute("""
+        top_products = [add_cost_totals(dict(r)) for r in db.execute("""
             SELECT p.sku, p.name, p.category,
                    COALESCE(SUM(sl.quantity_mg),0) AS quantity_mg,
                    COALESCE(SUM(sl.line_subtotal_satang),0) AS subtotal_satang,
                    COALESCE(SUM(sl.line_discount_satang),0) AS discount_satang,
                    COALESCE(SUM(sl.line_total_satang),0) AS total_satang,
+                   COALESCE(SUM(sl.line_cost_satang),0) AS known_cost_satang,
+                   COUNT(sl.id)-COUNT(sl.line_cost_satang) AS unknown_cost_line_count,
                    COUNT(DISTINCT s.id) AS sale_count
               FROM sale_lines sl
               JOIN sales s ON s.id=sl.sale_id
@@ -112,12 +137,14 @@ def build_sales_report(db, store_id: str, start: date, end: date,
              LIMIT 10
         """, (store_id, lower, upper))]
 
-        top_categories = [dict(r) for r in db.execute("""
+        top_categories = [add_cost_totals(dict(r)) for r in db.execute("""
             SELECT p.category,
                    COALESCE(SUM(sl.quantity_mg),0) AS quantity_mg,
                    COALESCE(SUM(sl.line_subtotal_satang),0) AS subtotal_satang,
                    COALESCE(SUM(sl.line_discount_satang),0) AS discount_satang,
-                   COALESCE(SUM(sl.line_total_satang),0) AS total_satang
+                   COALESCE(SUM(sl.line_total_satang),0) AS total_satang,
+                   COALESCE(SUM(sl.line_cost_satang),0) AS known_cost_satang,
+                   COUNT(sl.id)-COUNT(sl.line_cost_satang) AS unknown_cost_line_count
               FROM sale_lines sl
               JOIN sales s ON s.id=sl.sale_id
               JOIN lots l ON l.id=sl.lot_id AND l.store_id=s.store_id
@@ -143,7 +170,7 @@ def build_sales_report(db, store_id: str, start: date, end: date,
     return {
         "period": {"from": start.isoformat(), "to": end.isoformat(),
                    "timezone": "Asia/Bangkok"},
-        "summary": {
+        "summary": add_cost_totals({
             "sale_count": count,
             "total_satang": total_satang,
             "subtotal_satang": subtotal_satang,
@@ -151,15 +178,19 @@ def build_sales_report(db, store_id: str, start: date, end: date,
             "cash_satang": cash_satang,
             "transfer_satang": transfer_satang,
             "quantity_mg": sold_mg,
-            "average_satang": (total_satang // count if count else 0)
-        },
-        "daily": list(days.values()),
+            "average_satang": (total_satang // count if count else 0),
+            "known_cost_satang": known_cost_satang,
+            "unknown_cost_line_count": unknown_cost_line_count
+        }),
+        "daily": [add_cost_totals(row) for row in days.values()],
         "top_products": top_products,
         "top_categories": top_categories,
         "low_stock": low_stock,
         "recent_sales": recent,
         "capabilities": {
             "discounts": True, "discount_contract_version": 1,
+            "inventory_costs": True, "cost_contract_version": 1,
+            "stocktakes": True, "stocktake_contract_version": 1,
             "promotions": False,
             "shift_reconciliation": False
         }
