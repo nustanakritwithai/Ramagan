@@ -31,7 +31,7 @@ from PIL import Image
 import httpx
 import uvicorn
 from app import connect, create_app, create_store, create_user
-from migrations import migrate_copy, restore_copy
+from migrations import CURRENT_SCHEMA_VERSION, migrate_copy, restore_copy
 import stocktake_evidence as evidence_module
 
 
@@ -815,7 +815,7 @@ class StocktakeEvidenceAcceptanceTests(unittest.TestCase):
         migrated = migrate_copy(path, confirmed_offline_copy=True)
         self.assertEqual(migrated["status"], "PASS")
         after = snapshot(path)
-        self.assertEqual(after["version"], 4)
+        self.assertEqual(after["version"], CURRENT_SCHEMA_VERSION)
         self.assertEqual(after["foreign_key_check"], ())
         for table, old in before["tables"].items():
             new = after["tables"][table]

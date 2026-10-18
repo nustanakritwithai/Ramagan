@@ -18,6 +18,8 @@ import unittest
 from unittest.mock import patch
 import uuid
 from cost_stock import capabilities as cost_capabilities
+from receipts import capabilities as receipt_capabilities
+from pin_auth import capabilities as pin_capabilities
 
 _bootstrap = tempfile.TemporaryDirectory(prefix="discount-http-import-")
 atexit.register(_bootstrap.cleanup)
@@ -97,7 +99,7 @@ class DiscountHttpAcceptanceTests(unittest.TestCase):
                     self.assertEqual(me.status_code, 200)
                     self.assertEqual(me.json()["capabilities"],
                                      {"discounts": True, "discount_contract_version": 1,
-                                      "optional_document_references": True, "document_contract_version": 1, **cost_capabilities()})
+                                      "optional_document_references": True, "document_contract_version": 1, **cost_capabilities(), **receipt_capabilities(), **pin_capabilities()})
                     self.assertFalse(me.json()["store"]["sales_enabled"])
 
                     lots = []
@@ -181,7 +183,7 @@ class DiscountHttpAcceptanceTests(unittest.TestCase):
                     self.assertEqual(caps, {"discounts": True, "discount_contract_version": 1,
                                             "promotions": False, "shift_reconciliation": False, **cost_capabilities()})
                     with connect(db_path) as db:
-                        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 4)
+                        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 5)
                         sql = tuple(db.execute(
                             "SELECT sum(subtotal_satang),sum(discount_satang),sum(total_satang) "
                             "FROM sales WHERE store_id=?", (store,)).fetchone())
