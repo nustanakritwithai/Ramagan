@@ -4,6 +4,7 @@ import {createSaleVoid,supportsSaleVoids,voidPendingKey,validateVoid} from '../s
 import {createClient} from '../src/backend-api.js';
 import {pendingDeviceActor} from '../src/device-session.js';
 import {assertNoPendingMutation} from '../src/inventory.js';
+import {usesRedactedCosts} from '../src/permissions.js';
 
 const ids={actor:'11111111-1111-4111-8111-111111111111',store:'22222222-2222-4222-8222-222222222222',
   sale:'33333333-3333-4333-8333-333333333333',client:'44444444-4444-4444-8444-444444444444',
@@ -131,4 +132,148 @@ test('REST void bridge refreshes capabilities, denies Staff or changed identity 
     assert.equal(requests.filter(x=>x.route==='/v1/me').length,5);assert.equal(requests.filter(x=>x.options.method==='POST').length,1);
     assert(requests.every(x=>x.options.headers.Authorization==='Bearer synthetic-memory-session'));
   }finally{globalThis.fetch=oldFetch;if(oldStorage===undefined)delete globalThis.sessionStorage;else globalThis.sessionStorage=oldStorage;}
+});
+
+const privateCaps={...caps,cost_privacy_contract_version:1,can_view_costs:false};
+function assertNoPrivateCosts(value){
+  if(Array.isArray(value)){for(const item of value)assertNoPrivateCosts(item);return;}
+  if(value&&typeof value==='object')for(const [key,item] of Object.entries(value)){
+    assert(!/cost|profit|margin|inventory_(?:value|delta)|value_delta_satang/i.test(key),'Financial field retained: '+key);
+    assertNoPrivateCosts(item);
+  }
+}
+function managerVoid(reason,{duplicate=false,withLegacyCosts=false}={}){
+  const data=response({client_void_id:ids.request,reason},{actor_role:'manager',duplicate});
+  if(!withLegacyCosts)delete data.restored_items[0].inventory_delta_satang;
+  return data;
+}
+
+test('Manager void accepts redacted fresh and duplicate results only with the explicit privacy gate',async()=>{
+  for(const duplicate of [false,true]){
+    const f=fixture({saved:managerVoid('manager reason',{duplicate})});
+    f.options.allowRedactedCosts=usesRedactedCosts('manager',privateCaps);
+    const result=await f.create().start(receipt(),'manager reason');
+    assert(result.result);assert.equal(result.result.duplicate,duplicate);assert.equal(result.result.actor_role,'manager');
+    assert.equal(result.result.restored_items[0].quantity_after_mg,10000);
+    assert.equal(result.op.payload.client_void_id,ids.request);assert.equal(result.op.status,'confirmed');
+    assertNoPrivateCosts(result);assertNoPrivateCosts(JSON.parse(f.storage.getItem(voidPendingKey(identity))));
+    assert.equal(f.posts.length,1);
+  }
+  for(const allowRedactedCosts of [false,undefined,usesRedactedCosts('manager',caps),usesRedactedCosts('owner',privateCaps)]){
+    const f=fixture({saved:managerVoid('strict reason')});f.options.allowRedactedCosts=allowRedactedCosts;
+    const result=await f.create().start(receipt(),'strict reason');
+    assert.equal(result.pending,true);assert.equal(f.create().read().status,'pending');
+    await assert.rejects(f.create().acknowledge());
+  }
+});
+
+test('Manager timeout and reload resolve a masked lookup without repeating the frozen void POST',async()=>{
+  const f=fixture({fail:Error('synthetic response timeout')});
+  f.options.allowRedactedCosts=usesRedactedCosts('manager',privateCaps);
+  const first=f.create(),pending=await first.start(receipt(),'manager timeout');
+  assert.equal(pending.pending,true);const frozen=first.read();assert.equal(f.posts.length,1);
+  f.saved=managerVoid('manager timeout',{duplicate:true});
+  const result=await f.create().retry();
+  assert(result.result);assert.equal(result.result.duplicate,true);assert.equal(result.op.status,'confirmed');
+  assert.deepEqual(result.op.payload,frozen.payload);assert.deepEqual(result.op.original,frozen.original);
+  assertNoPrivateCosts(result);assert.equal(f.posts.length,1);
+  assert((await f.create().verify()).result);assert.equal(f.posts.length,1);
+});
+
+test('Manager read projects legacy cache in RAM and locked sanitize purges its result preserving receipt, actor and UUID',async()=>{
+  const f=fixture();const initial=await f.create().start(receipt(),'legacy confirmed');
+  const key=voidPendingKey(identity),before=JSON.parse(f.storage.getItem(key));
+  assert.equal(before.result.restored_items[0].inventory_delta_satang,1000);
+  before.result.cost_satang=1000;before.result.restored_items[0].nested={gross_profit_satang:28900,inventory_value_satang:9000};
+  f.storage.setItem(key,JSON.stringify(before));
+  const legacy=f.storage.getItem(key);let writes=0,held=false,locks=0;
+  const setItem=f.storage.setItem.bind(f.storage);
+  f.storage.setItem=(k,v)=>{assert.equal(held,true,'Cache cleanup must own the operation lock');writes++;setItem(k,v);};
+  f.options.lock=async(lockKey,task)=>{assert.equal(lockKey,key);assert.equal(held,false);held=true;locks++;try{return await task();}finally{held=false;}};
+  f.options.allowRedactedCosts=usesRedactedCosts('manager',privateCaps);
+  const controller=f.create(),clean=controller.read();
+  assert.equal(clean.status,'confirmed');assert.deepEqual(clean.payload,initial.op.payload);
+  assert.deepEqual(clean.original,initial.op.original);assert.deepEqual(clean.identity,initial.op.identity);
+  assertNoPrivateCosts(clean);assert.equal(f.storage.getItem(key),legacy);assert.equal(writes,0);assert.equal(locks,0);
+  const sanitized=await controller.sanitize();assert.deepEqual(sanitized,clean);
+  assertNoPrivateCosts(JSON.parse(f.storage.getItem(key)));assert.equal(writes,1);assert.equal(locks,1);
+  const stored=JSON.parse(f.storage.getItem(key));assert.deepEqual({...stored,result:before.result},before);
+  const result=await controller.retry();assert(result.result);assertNoPrivateCosts(result);
+  assert.equal(f.posts.length,1);assert.equal(f.lookups.length,0);assert.equal(writes,1);
+});
+
+test('Manager response strips legacy private fields before validation and persistence; Owner keeps its exact cost proof',async()=>{
+  const f=fixture({saved:managerVoid('legacy wire',{withLegacyCosts:true})});
+  f.saved.extra={unit_cost_satang_per_gram:800,lines:[{line_cost_satang:1000,gross_profit_satang:28900}]};
+  const untouched=structuredClone(f.saved);f.options.allowRedactedCosts=true;
+  const result=await f.create().start(receipt(),'legacy wire');
+  assert(result.result);assertNoPrivateCosts(result);assert.deepEqual(f.saved,untouched);
+  assertNoPrivateCosts(JSON.parse(f.storage.getItem(voidPendingKey(identity))));
+  const owner=fixture(),saved=await owner.create().start(receipt(),'owner proof');
+  assert.equal(saved.result.restored_items[0].inventory_delta_satang,1000);
+  const missing=structuredClone(saved.result);delete missing.restored_items[0].inventory_delta_satang;
+  assert.throws(()=>validateVoid(missing,saved.op));
+  assert.throws(()=>validateVoid(missing,saved.op,'true'));
+});
+
+test('Redacted-cost validation still rejects forged nonfinancial receipt, actor, payment and stock bindings',async()=>{
+  const f=fixture({saved:managerVoid('bound proof')});f.options.allowRedactedCosts=true;
+  const saved=await f.create().start(receipt(),'bound proof');assert(saved.result);
+  for(const mutate of [x=>x.client_void_id=ids.other,x=>x.sale_id=ids.other,x=>x.client_sale_id=ids.other,
+    x=>x.actor_user_id=ids.other,x=>x.actor_role='staff',x=>x.reason='forged',x=>x.created_at='bad',
+    x=>x.subtotal_satang++,x=>x.total_satang++,x=>x.payment_method='cash',x=>x.payments[0].amount_satang++,
+    x=>x.restored_items[0].quantity_mg++,x=>x.restored_items[0].lot_id=ids.other,
+    x=>x.restored_items[0].quantity_after_mg++,x=>x.restored_items[0].stock_revision_after++,
+    x=>x.restored_items[0].sale_line_id='bad',x=>x.restored_items[0].ledger_event_id='bad']){
+    const bad=structuredClone(saved.result);mutate(bad);assert.throws(()=>validateVoid(bad,saved.op,true));
+  }
+});
+
+test('Legacy financial cache cleanup fails closed on persistence failure without changing the frozen intent',async()=>{
+  const f=fixture();await f.create().start(receipt(),'legacy storage');
+  const key=voidPendingKey(identity),before=f.storage.getItem(key);f.options.allowRedactedCosts=true;
+  f.storage.setItem=()=>{throw Error('synthetic cache storage unavailable');};
+  assertNoPrivateCosts(f.create().read());assert.equal(f.storage.getItem(key),before);
+  await assert.rejects(f.create().sanitize(),/storage unavailable/);
+  await assert.rejects(f.create().retry(),/storage unavailable/);
+  assert.equal(f.storage.getItem(key),before);assert.equal(f.posts.length,1);
+});
+
+test('Legacy cache cleanup cannot write without a lock or overwrite a newer intent while waiting for its lock',async()=>{
+  const f=fixture();await f.create().start(receipt(),'old confirmed');
+  const key=voidPendingKey(identity),legacy=f.storage.getItem(key);f.options.allowRedactedCosts=true;
+  let writes=0;const setItem=f.storage.setItem.bind(f.storage);
+  f.storage.setItem=(k,v)=>{writes++;setItem(k,v);};
+  f.options.lock=null;
+  await assert.rejects(f.create().sanitize(),/ล็อก/);assert.equal(writes,0);assert.equal(f.storage.getItem(key),legacy);
+  f.options.lock=async()=>{throw Error('synthetic operation lock held');};
+  await assert.rejects(f.create().sanitize(),/lock held/);assert.equal(writes,0);assert.equal(f.storage.getItem(key),legacy);
+  let release,waiting=false;
+  f.options.lock=async(lockKey,task)=>{assert.equal(lockKey,key);waiting=true;await new Promise(resolve=>{release=resolve;});return task();};
+  const controller=f.create();assertNoPrivateCosts(controller.read());assert.equal(writes,0);
+  const cleanup=controller.sanitize();assert.equal(waiting,true);
+  // A different tab owns the slot until release. Cleanup must reread its
+  // current operation after acquiring the lock, never write its earlier read.
+  const current=JSON.parse(legacy);current.status='pending';current.uncertain=true;
+  current.payload={client_void_id:ids.other,reason:'newer frozen operation'};delete current.result;
+  const latest=JSON.stringify(current);setItem(key,latest);release();
+  const sanitized=await cleanup;assert.equal(sanitized.payload.client_void_id,ids.other);
+  assert.equal(f.storage.getItem(key),latest);assert.equal(writes,0);assert.equal(f.posts.length,1);
+});
+
+test('Startup sanitize needs no lock when the slot is empty, pending, or already free of private result fields',async()=>{
+  const empty=fixture();empty.options.allowRedactedCosts=true;empty.options.lock=null;
+  empty.storage.setItem=()=>assert.fail('Empty sanitize cannot write');
+  assert.equal(await empty.create().sanitize(),null);assert.equal(empty.posts.length,0);assert.equal(empty.capCalls,0);
+  const pending=fixture({fail:Error('synthetic pending')});pending.options.allowRedactedCosts=true;
+  await pending.create().start(receipt(),'pending startup');const pendingRaw=pending.storage.getItem(voidPendingKey(identity));
+  pending.options.lock=null;pending.storage.setItem=()=>assert.fail('Pending sanitize cannot write');
+  const frozen=await pending.create().sanitize();assert.equal(frozen.status,'pending');assert.equal(frozen.payload.client_void_id,ids.request);
+  assert.equal(pending.storage.getItem(voidPendingKey(identity)),pendingRaw);assert.equal(pending.posts.length,1);
+  const clean=fixture({saved:managerVoid('clean startup')});clean.options.allowRedactedCosts=true;
+  await clean.create().start(receipt(),'clean startup');const cleanRaw=clean.storage.getItem(voidPendingKey(identity));
+  clean.options.lock=()=>assert.fail('Clean sanitize cannot acquire or wait for lock');
+  clean.storage.setItem=()=>assert.fail('Clean sanitize cannot write');
+  const restored=await clean.create().sanitize();assert.equal(restored.status,'confirmed');assertNoPrivateCosts(restored);
+  assert.equal(clean.storage.getItem(voidPendingKey(identity)),cleanRaw);assert.equal(clean.posts.length,1);
 });

@@ -105,7 +105,7 @@ class SharedRolePinTests(unittest.TestCase):
             self.assertTrue(me.json()["capabilities"]["shared_role_pin"])
             actors.add(me.json()["user"]["id"])
             report = self.client.get("/v1/admin/sales-report", headers=headers)
-            self.assertEqual(report.status_code, 403 if role == "staff" else 200)
+            self.assertEqual(report.status_code, 200 if role == "owner" else 403)
             self.assertEqual(self.client.get("/v1/catalog", headers=headers).status_code, 200)
         self.assertEqual(len(actors), 3)
         self.assertNotIn(self.owner_id, actors)

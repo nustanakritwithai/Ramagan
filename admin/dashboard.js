@@ -8,6 +8,8 @@ const DEFAULT_API = 'https://157.85.96.139/ramagan-api';
 let endpoint = normalizeApiBase(DEFAULT_API) || '';
 let token = '';
 let store = null;
+let reportRole = '';
+let authEpoch = 0;
 let report = null;
 let busy = false;
 const currency = (value) => money(value);
@@ -55,6 +57,17 @@ function wipeReport() {
   $('export-csv').disabled = true;
   $('discount-status').textContent = 'ยังไม่มีรายงานที่ยืนยันจาก VPS';
   $('cost-status').textContent = 'ยังไม่มีรายงานต้นทุนที่ยืนยันจาก VPS';
+}
+function clearAuthenticatedState() {
+  authEpoch++;
+  token = '';
+  store = null;
+  reportRole = '';
+  wipeReport();
+  $('store-info').textContent = '';
+  $('sales-gate').textContent = '';
+  $('sales-gate').classList.remove('enabled');
+  authPanel(true);
 }
 function setHealthLink(base) {
   const link = $('health-open-link');
@@ -137,12 +150,9 @@ async function request(path, {method = 'GET', body, authenticated = true} = {}) 
   let data = null;
   try { data = await response.json(); } catch { /* Non-JSON API response. */ }
   if (!response.ok) {
-    if (response.status === 401 && authenticated) {
-      token = '';
-      store = null;
-      wipeReport();
-      authPanel(true);
-      connection('Session หมดอายุ', false);
+    if ((response.status === 401 || response.status === 403) && authenticated) {
+      clearAuthenticatedState();
+      connection(response.status === 401 ? 'Session หมดอายุ' : 'เฉพาะเจ้าของร้านเท่านั้น', false);
     }
     if (response.status === 404 && path.startsWith('/v1/admin/')) {
       throw new Error('API รายงานยังไม่ติดตั้งบน VPS — ต้องอัปเดต backend/vps/app.py และ reports.py');
@@ -153,10 +163,15 @@ async function request(path, {method = 'GET', body, authenticated = true} = {}) 
   return data;
 }
 async function verifyRole() {
+  const epoch = authEpoch;
   const me = await request('/v1/me');
+  if (epoch !== authEpoch) throw new Error('กรุณาเข้าสู่ระบบ Owner ใหม่');
   if (!isReportRole(me.role)) {
-    throw new Error('บัญชีนี้ไม่มีสิทธิ์ Admin: ต้องเป็น Owner หรือ Manager');
+    const error = new Error('บัญชีนี้ไม่มีสิทธิ์ Admin: เฉพาะเจ้าของร้าน (Owner) เท่านั้น');
+    error.kind = 'authorization';
+    throw error;
   }
+  reportRole = me.role;
   store = me.store;
   $('store-info').textContent = String(store.name) + ' · ' + String(me.role) + ' · รายงานจาก VPS';
   $('sales-gate').textContent = store.sales_enabled ?
@@ -289,7 +304,7 @@ function renderReport(value) {
   $('export-csv').disabled = false;
 }
 async function loadReport() {
-  if (busy || !store) return;
+  if (busy || !store || !isReportRole(reportRole)) return;
   const from = $('from-date').value;
   const to = $('to-date').value;
   let lowMg;
@@ -304,11 +319,16 @@ async function loadReport() {
   wipeReport();
   connection('กำลังอัปเดตรายงาน', false);
   banner('กำลังอ่านรายงานจาก VPS...');
+  const epoch = authEpoch;
   try {
+    // A previous Owner check does not authorize a later refresh or role change.
+    // The report endpoint also enforces Owner access independently on the VPS.
+    await verifyRole();
     const params = new URLSearchParams({
       'from':from, 'to':to, low_stock_mg:String(lowMg)
     });
     const data = await request('/v1/admin/sales-report?' + params.toString());
+    if (epoch !== authEpoch || !isReportRole(reportRole)) return;
     const prepared = prepareReport(data);
     if (prepared.period.from !== from || prepared.period.to !== to) throw new Error('ช่วงวันที่จาก VPS ไม่ตรงกับคำขอ');
     renderReport(prepared);
@@ -317,6 +337,11 @@ async function loadReport() {
     banner('โหลดรายงานสำเร็จ · ' + String(data.summary.sale_count) +
       ' บิล · เวลา Asia/Bangkok');
   } catch (error) {
+    if (error.kind === 'authorization') {
+      const revoke = request('/v1/auth/logout', {method:'POST', body:{}}).catch(() => {});
+      clearAuthenticatedState();
+      await revoke;
+    }
     wipeReport();
     connection('รายงานไม่พร้อมใช้งาน', false);
     banner(error.message, true);
@@ -327,6 +352,7 @@ async function loadReport() {
 async function login(event) {
   event.preventDefault();
   if (busy) return;
+  clearAuthenticatedState();
   const base = normalizeApiBase($('api-base').value);
   if (!base) {
     banner('ต้องใช้ HTTPS API ที่ถูกต้อง ไม่มีชื่อผู้ใช้/รหัสผ่านใน URL', true);
@@ -338,10 +364,12 @@ async function login(event) {
   const password = $('password').value;
   setBusy(true);
   clearBanners();
+  const epoch = authEpoch;
   try {
     const auth = await request('/v1/auth/login',{
       method:'POST', body:{email,password}, authenticated:false
     });
+    if (epoch !== authEpoch) return;
     token = auth.token;
     await verifyRole(); // Always verify server role before exposing admin data.
     $('password').value = '';
@@ -349,10 +377,7 @@ async function login(event) {
     if (token) {
       await request('/v1/auth/logout',{method:'POST',body:{}}).catch(() => {});
     }
-    token = '';
-    store = null;
-    wipeReport();
-    authPanel(true);
+    clearAuthenticatedState();
     if (error.kind === 'transport') {
       const probe = await probeHealth(endpoint);
       const operation = error.endpoint === '/v1/me' ?
@@ -379,18 +404,15 @@ async function login(event) {
 async function logout() {
   if (busy) return;
   setBusy(true);
-  wipeReport();
-  await request('/v1/auth/logout',{method:'POST',body:{}}).catch(() => {});
-  token = '';
-  wipeReport();
-  store = null;
-  authPanel(true);
+  const revoke = request('/v1/auth/logout',{method:'POST',body:{}}).catch(() => {});
+  clearAuthenticatedState();
+  await revoke;
   connection('ออกจากระบบแล้ว',false);
   clearBanners();
   setBusy(false);
 }
 function exportDaily() {
-  if (!report) return;
+  if (!report || !isReportRole(reportRole)) return;
   const csv = dailyCsv(report);
   const blob = new Blob([csv],{type:'text/csv;charset=utf-8'});
   const objectUrl = URL.createObjectURL(blob);
@@ -421,6 +443,12 @@ async function init() {
     });
   }
   $('export-csv').addEventListener('click',exportDaily);
+  // Do not retain Owner reports in the back/forward page cache.
+  window.addEventListener('pagehide', () => {
+    clearAuthenticatedState();
+    clearBanners();
+    connection('รอล็อกอิน', false);
+  });
   if (endpoint) {
     $('api-base').value = endpoint;
     setHealthLink(endpoint);

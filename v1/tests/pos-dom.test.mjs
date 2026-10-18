@@ -103,7 +103,7 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
       const p = JSON.parse(options.body); f.receipts.push(p);
       if (f.failReceipt) throw new TypeError('mock lost receipt response');
       data = {lot_id: lot2, client_receive_id: p.client_receive_id, event_id: countId,
-        quantity_mg: p.quantity_mg, cost_satang_per_gram: p.cost_satang_per_gram ?? 0, duplicate: false};
+        quantity_mg: p.quantity_mg, ...(f.costsRedacted?{}:{cost_satang_per_gram:p.cost_satang_per_gram??0}), duplicate: false};
     } else if (path === '/v1/lots/receive/reconcile') {
       const p = JSON.parse(options.body); f.receiptReconciliations = (f.receiptReconciliations || 0) + 1;
       data = {status: 'rejected', client_receive_id: p.client_receive_id, code: 'RECEIVE_CANCELLED', message: 'Receipt cancelled', committed: false};
@@ -264,13 +264,15 @@ test('legacy capability disables discount input but supports zero-discount check
   } finally { app.close(); }
 });
 
-test('owner and manager see inventory and reports; other roles keep receipt/product access without manager controls', async () => {
+test('Owner alone sees Dashboard/settings/server; Manager retains inventory and other roles retain work pages', async () => {
   for (const role of ['owner', 'manager', 'cashier']) {
     const f = fixture({role}), app = await boot(f);
     try {
       app.click('#pos-back');
       assert.equal(Boolean(app.q('#nav-inventory')), role !== 'cashier', role);
-      assert.equal(Boolean(app.q('.navigation-admin')), role !== 'cashier', role);
+      assert.equal(Boolean(app.q('.navigation-admin')), role === 'owner', role);
+      assert.equal(Boolean(app.q('#nav-settings')), role === 'owner', role);
+      assert.equal(Boolean(app.q('#nav-change-server')), role === 'owner', role);
       if (role !== 'cashier') {
         app.menu('#open-inventory'); assert(app.q('#new-product')); assert(app.q('#receive-lot'));
         app.click('#open-sales'); assert(app.q('[data-add]'));
@@ -294,7 +296,55 @@ async function fillCount(app, quantity = '0') {
   await until(()=>/อัปโหลดรูปแล้ว/.test(app.text()));
   app.check('#count-confirm');
 }
-test('manager cost/intake UI preserves unknown versus zero, optional documents and 100000g intake bound', async () => {
+function managerPrivateFixture(changes={}){
+  const f=inventoryFixture({role:'manager',costsRedacted:true,...changes});
+  f.capabilities={...inventoryCaps,cost_privacy_contract_version:1,can_view_costs:false,can_access_dashboard:false,can_manage_settings:false};
+  f.inventory.products=f.inventory.products.map(({default_cost_satang_per_gram,...row})=>row);
+  f.inventory.lots=f.inventory.lots.map(({cost_satang_per_gram,inventory_value_satang,...row})=>row);
+  f.inventory.summary={quantity_mg:11000};
+  return f;
+}
+test('Manager has no cost/dashboard/settings/server UI but can create products and receive with the server default',async()=>{
+  const f=managerPrivateFixture(),app=await boot(f);
+  try{
+    app.click('#pos-back');assert.equal(app.q('#nav-settings'),null);assert.equal(app.q('#nav-change-server'),null);assert.equal(app.q('.navigation-admin'),null);
+    app.click('#nav-inventory');
+    assert.equal(app.q('[name=default_cost]'),null);assert.equal(app.q('[name=cost]'),null);
+    assert.equal(app.q('#receive-default-cost'),null);assert.equal(app.q('.inventory-valuation'),null);assert.equal(app.q('a.admin-link'),null);
+    assert(!/ต้นทุน|มูลค่า/.test(app.text()));
+    app.input('#new-product [name=sku]','MANAGER-NO-COST');app.input('#new-product [name=name]','Synthetic manager product');
+    app.input('#new-product [name=price]','150');app.submit('#new-product');
+    await until(()=>f.productPosts.length===1&&!app.q('#new-product button').disabled);
+    assert.equal(f.productPosts[0].default_cost_satang_per_gram??null,null);
+    fillReceipt(app);app.input('#receive-lot [name=qty]','1.250');app.submit('#receive-lot');
+    await until(()=>f.receipts.length===1&&!app.q('#receive-lot button').disabled);
+    assert.equal(f.receipts[0].cost_satang_per_gram,null);assert.equal(f.receipts[0].quantity_mg,1250);
+    assert(!/ต้นทุน|มูลค่า|คำตอบรับสินค้าไม่สมบูรณ์/.test(app.text()));
+  }finally{app.close();}
+});
+test('Manager redacted inventory still supports physical count/photo and has no server button on stocktake',async()=>{
+  const f=managerPrivateFixture(),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');assert.equal(app.q('#change-server'),null);assert(app.q('[data-count]'));
+    await fillCount(app,'1');app.submit('#stocktake-form');
+    await until(()=>f.countPosts.length===1&&/เซิร์ฟเวอร์ยืนยันการนับและบันทึกประวัติแล้ว/.test(app.text()));
+    assert.equal(f.countPosts[0].items[0].counted_quantity_mg,1000);
+    assert.equal(f.uploads.length,1);assert(!/ต้นทุน|มูลค่า/.test(app.text()));
+  }finally{app.close();}
+});
+test('Owner costs and server/settings entries do not survive logout into Manager on the same browser',async()=>{
+  const f=inventoryFixture(),app=await boot(f);
+  try{
+    app.menu('#open-inventory');assert(app.q('[name=default_cost]'));assert(app.q('.inventory-valuation'));
+    app.input('[name=default_cost]','98765');app.menu('#logout');await until(()=>app.q('#login-form'));
+    const next=managerPrivateFixture();Object.assign(f,next,{user:'77777777-7777-4777-8777-777777777777'});
+    app.input('[name=email]','manager@fixture.invalid');app.input('[name=password]','synthetic-password');app.submit('#login-form');
+    await until(()=>app.q('[data-add]'));app.click('#pos-back');
+    assert.equal(app.q('#nav-settings'),null);assert.equal(app.q('#nav-change-server'),null);assert.equal(app.q('.navigation-admin'),null);
+    app.click('#nav-inventory');assert.equal(app.q('[name=default_cost]'),null);assert.equal(app.q('.inventory-valuation'),null);assert(!app.text().includes('98765'));
+  }finally{app.close();}
+});
+test('Owner cost/intake UI preserves unknown versus zero, optional documents and 100000g intake bound', async () => {
   const f = inventoryFixture(), app = await boot(f);
   try {
     app.menu('#open-inventory'); assert.match(app.text(), /ยังไม่ทราบต้นทุน/);

@@ -2,6 +2,7 @@
 // remain authoritative; local storage never grants authority or stores tokens.
 import {bahtToSatang} from './math.js';
 import {supportsEvidence} from './evidence-draft.js';
+import {withoutPrivateCosts} from './permissions.js';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const integer = (x, max = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(x) && x >= 0 && x <= max;
 const fail = message => { throw new Error(message); };
@@ -71,13 +72,14 @@ function validatePayload(kind, p) {
     }
   } else fail('Unknown inventory action');
 }
-function validateResult(kind, data, op) {
+function validateResult(kind, data, op, allowRedactedCosts = false) {
   const p = op.payload;
   if (kind === 'receive') {
     if (!UUID.test(data?.lot_id) || data.client_receive_id !== p.client_receive_id ||
         data.quantity_mg !== p.quantity_mg || typeof data.duplicate !== 'boolean' ||
-        (p.cost_satang_per_gram !== null && data.cost_satang_per_gram !== p.cost_satang_per_gram) ||
-        !(data.cost_satang_per_gram === null || integer(data.cost_satang_per_gram, 100000000))) {
+        (!(allowRedactedCosts && !Object.hasOwn(data,'cost_satang_per_gram')) &&
+          ((p.cost_satang_per_gram !== null && data.cost_satang_per_gram !== p.cost_satang_per_gram) ||
+           !(data.cost_satang_per_gram === null || integer(data.cost_satang_per_gram, 100000000))))) {
       fail('คำตอบรับสินค้าไม่สมบูรณ์ ต้องตรวจสอบรายการเดิม');
     }
   } else {
@@ -98,7 +100,7 @@ function validateResult(kind, data, op) {
   return data;
 }
 
-export function createInventoryOperation({storage, identity, kind, transport, uuid, lock}) {
+export function createInventoryOperation({storage, identity, kind, transport, uuid, lock, allowRedactedCosts = false}) {
   const key = inventoryPendingKey(identity, kind), completedKey = key + '.completed';
   let observed;
   try { observed = storage.getItem(completedKey); } catch { /* fail closed on read/start */ }
@@ -110,16 +112,31 @@ export function createInventoryOperation({storage, identity, kind, transport, uu
       fail('รายการสต็อกค้างไม่ถูกต้องหรือเป็นของบัญชีอื่น ให้ผู้จัดการตรวจสอบ');
     }
     validatePayload(kind, op.payload);
-    if (op.status === 'confirmed') validateResult(kind, op.result, op);
+    if (op.status === 'confirmed') op = {...op, result: validateResult(kind,
+      allowRedactedCosts === true ? withoutPrivateCosts(op.result) : op.result, op, allowRedactedCosts)};
     return op;
   }
   function read() {
     const raw = storage.getItem(key);
     if (!raw) return null;
+    // Synchronous display reads never write: check-then-set is not an atomic
+    // cross-tab CAS and could overwrite another tab's newer frozen intent.
     return validate(JSON.parse(raw));
   }
+  function needsCleanup(stored, projected) {
+    return allowRedactedCosts === true && stored?.status === 'confirmed' &&
+      JSON.stringify(stored.result) !== JSON.stringify(projected.result);
+  }
+  function sanitizeLocked() {
+    // Only invoked while holding the SAME operation lock as start/retry/ack.
+    // Re-read here; never write the stale value observed before lock acquisition.
+    const raw = storage.getItem(key);
+    if (!raw) return null;
+    const stored = JSON.parse(raw), projected = validate(stored);
+    return needsCleanup(stored, projected) ? persist(projected) : projected;
+  }
   function persist(op) {
-    validate(op);
+    op = validate(op);
     const text = JSON.stringify(op);
     storage.setItem(key, text);
     if (storage.getItem(key) !== text) fail('บันทึกเลขอ้างอิงสต็อกไม่ได้ จึงยังไม่ส่งรายการ');
@@ -127,7 +144,7 @@ export function createInventoryOperation({storage, identity, kind, transport, uu
   }
   function exclusive(task) {
     if (!lock) fail('เบราว์เซอร์นี้ไม่รองรับการล็อกรายการอย่างปลอดภัย');
-    return lock(key, task);
+    return lock(key, async () => { sanitizeLocked(); return task(); });
   }
   async function capabilities() {
     const c = await transport.capabilities(identity);
@@ -136,11 +153,11 @@ export function createInventoryOperation({storage, identity, kind, transport, uu
     }
   }
   function confirmed(data, op) {
-    const result = validateResult(kind, data, op);
+    const result = validateResult(kind, allowRedactedCosts?withoutPrivateCosts(data):data, op, allowRedactedCosts);
     return {result, op: persist({...op, status: 'confirmed', result})};
   }
   async function lookup(op, explicitReceiveVerification = false) {
-    if (op.status === 'confirmed') return {result: validateResult(kind, op.result, op), op};
+    if (op.status === 'confirmed') return {result: validateResult(kind, allowRedactedCosts?withoutPrivateCosts(op.result):op.result, op, allowRedactedCosts), op};
     if (op.status === 'rejected') return {rejected: true, op, error: new Error(op.rejection)};
     if (transport.lookup) {
       const found = await transport.lookup(op.payload.client_stocktake_id);
@@ -179,6 +196,13 @@ export function createInventoryOperation({storage, identity, kind, transport, uu
   }
   return {key,
     read: () => { const op = read(); observed = storage.getItem(completedKey); return op; },
+    sanitize: async () => {
+      const raw = storage.getItem(key);
+      if (!raw) return null;
+      const stored = JSON.parse(raw), projected = validate(stored);
+      if (!needsCleanup(stored, projected)) return projected;
+      return exclusive(() => read());
+    },
     start: payload => exclusive(async () => {
       if (storage.getItem(completedKey) !== observed) fail('อีกหน้าต่างบันทึกสต็อกแล้ว กรุณารีโหลดยอดระบบ');
       if (read()) fail('มีรายการสต็อกค้าง ต้องตรวจสอบรายการเดิมก่อน');

@@ -111,7 +111,9 @@ test('only real Owner password sessions see enrollment; PIN sessions and unsuppo
   for(const flags of [{passwordSession:false},{isOwner:false},{capability:false},{capability:'true'}]){
     const f=fixture(flags);try{
       f.settings();assert.equal(f.q('#pin-device-enroll'),null);assert.equal(f.calls.enroll.length,0);
-      f.q('#pin-lock-device').click();assert.equal(f.calls.lock,1);f.q('#pin-settings-forget').click();assert.equal(f.calls.forget,1);
+      f.q('#pin-lock-device').click();assert.equal(f.calls.lock,1);
+      if(f.ctx.isOwner){f.q('#pin-settings-forget').click();assert.equal(f.calls.forget,1);}
+      else{assert.equal(f.q('#pin-settings-forget'),null);assert.equal(f.calls.forget,0);}
       if(flags.capability===false)assert.match(f.root.textContent,/เซิร์ฟเวอร์ยังไม่รองรับ/);
     }finally{f.close();}
   }

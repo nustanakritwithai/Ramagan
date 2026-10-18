@@ -18,9 +18,9 @@ test('VPS report URL must be HTTPS without secrets or query strings', () => {
   ]) assert.equal(normalizeApiBase(input), null);
 });
 
-test('owner and manager only (the VPS separately enforces authorization)', () => {
+test('Owner only (the VPS separately enforces authorization)', () => {
   assert.equal(isReportRole('owner'), true);
-  assert.equal(isReportRole('manager'), true);
+  assert.equal(isReportRole('manager'), false);
   assert.equal(isReportRole('staff'), false);
   assert.equal(isReportRole(null), false);
 });

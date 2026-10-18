@@ -97,7 +97,7 @@ class AdminSalesReportTests(unittest.TestCase):
         self.assertEqual(self.client.get("/v1/admin/sales-report").status_code, 401)
         self.assertEqual(self.report(self.staff).status_code, 403)
         self.assertEqual(self.report(self.owner).status_code, 200)
-        self.assertEqual(self.report(self.manager).status_code, 200)
+        self.assertEqual(self.report(self.manager).status_code, 403)
 
     def test_revenue_cash_transfer_stock_and_categories(self):
         lot = self.create_item()
@@ -106,7 +106,7 @@ class AdminSalesReportTests(unittest.TestCase):
             db.execute("UPDATE stores SET sales_enabled=1 WHERE id=?", (self.store,))
         self.sale(lot, 1000, "cash")      # 1g => 100.00 THB
         self.sale(lot, 2000, "transfer")  # 2g => 200.00 THB
-        r = self.report(self.manager, **{"from": self.today, "to": self.today,
+        r = self.report(self.owner, **{"from": self.today, "to": self.today,
                                           "low_stock_mg": 2100})
         self.assertEqual(r.status_code, 200, r.text)
         result = r.json()

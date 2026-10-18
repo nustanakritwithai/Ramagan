@@ -46,12 +46,13 @@ test('drawer navigation updates only the destination and preserves cart, uncerta
     assert.equal(f.state.cart,cart);assert.equal(f.state.countDraft,draft);
   }finally{f.close();}
 });
-test('staff retains receipts/products/settings while manager controls and admin links stay absent',()=>{
+test('Owner alone sees settings/server/dashboard while Manager keeps stock controls and all roles keep work pages',()=>{
   for(const role of ['staff','cashier','manager','owner']){
     const f=fixture({role});try{
-      f.open();assert(f.q('#nav-receipts'));assert(f.q('#nav-products'));assert(f.q('#nav-settings'));assert(f.q('#nav-apps'));assert(f.q('#nav-support'));
+      f.open();assert(f.q('#nav-receipts'));assert(f.q('#nav-products'));assert.equal(Boolean(f.q('#nav-settings')),role==='owner');assert(f.q('#nav-apps'));assert(f.q('#nav-support'));
       const manager=['owner','manager'].includes(role);
-      assert.equal(Boolean(f.q('#nav-inventory')),manager);assert.equal(Boolean(f.q('#nav-stocktake')),manager);assert.equal(Boolean(f.q('.navigation-admin')),manager);
+      assert.equal(Boolean(f.q('#nav-inventory')),manager);assert.equal(Boolean(f.q('#nav-stocktake')),manager);assert.equal(Boolean(f.q('.navigation-admin')),role==='owner');
+      assert.equal(Boolean(f.q('#nav-change-server')),role==='owner');
       if(manager){f.state.role='staff';f.click('#nav-inventory');assert.deepEqual(f.calls.routes,[]);}
     }finally{f.close();}
   }
@@ -72,6 +73,16 @@ test('rerender and explicit cleanup remove modal listeners and restore pre-exist
     f.state.posMenuOpen=true;mountNavigation(f.ctx);cleanupNavigation();assert.equal(f.q('#app-navigation-drawer'),null);
     assert.equal(background.inert,false);assert.equal(background.getAttribute('aria-hidden'),'false');assert.equal(f.doc.body.style.overflow,'');
     const count=f.calls.render;f.key('Escape');assert.equal(f.calls.render,count);
+  }finally{f.close();}
+});
+test('Role changes invalidate settings/server/dashboard callbacks and leave a PIN switch outside settings',()=>{
+  const f=fixture();try{
+    f.ctx.canLockDevice=()=>true;let locks=0;f.ctx.lockDevice=()=>{locks++;};
+    f.open();const server=f.q('#nav-change-server'),settings=f.q('#nav-settings'),admin=f.q('.navigation-admin');
+    f.state.role='manager';server.click();settings.click();assert.equal(f.calls.changeServer,0);assert.deepEqual(f.calls.routes,[]);
+    const event=new f.dom.window.MouseEvent('click',{bubbles:true,cancelable:true});assert.equal(admin.dispatchEvent(event),false);
+    f.render();assert.equal(f.q('#nav-settings'),null);assert.equal(f.q('#nav-change-server'),null);assert.equal(f.q('.navigation-admin'),null);
+    f.click('#nav-lock-device');assert.equal(locks,1);
   }finally{f.close();}
 });
 test('account/version text is escaped and offline status remains visible without disabling read-only navigation',()=>{

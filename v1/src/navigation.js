@@ -19,10 +19,11 @@ export function mountNavigation(ctx) {
     if(trigger.dataset.navigationHandled!=='true') trigger.onclick=()=>{state.posMenuOpen=!state.posMenuOpen;ctx.render();};
   }
   if(!state.user||!state.store||!state.posMenuOpen)return;
-  const manager=ctx.canManage(), view=state.view||'sales';
+  const manager=ctx.canManage(), settings=ctx.canSettings?ctx.canSettings():state.role==='owner',
+    dashboard=ctx.canDashboard?ctx.canDashboard():state.role==='owner', view=state.view||'sales';
   const links=[['sales','หน้าขาย','▦'],['receipts','ใบเสร็จ','▤'],['products','สินค้า','□'],
     ...(manager?[['inventory','รับสินค้าเข้า','↓'],['stocktake','นับสต็อก','✓']]:[]),
-    ['settings','การตั้งค่า','⚙'],['apps','แอปพลิเคชัน','⊞'],['support','ช่วยเหลือ','?']];
+    ...(settings?[['settings','การตั้งค่า','⚙']]:[]),['apps','แอปพลิเคชัน','⊞'],['support','ช่วยเหลือ','?']];
   const salePending=Boolean(state.pendingId||state.pendingBlocked);
   const stockPending=Boolean(state.inventoryBlocked||Object.values(state.inventoryPending||{}).some(Boolean));
   const pending=salePending||stockPending;
@@ -32,8 +33,9 @@ export function mountNavigation(ctx) {
   drawer.innerHTML='<div class="navigation-account"><div class="navigation-account-title"><strong id="navigation-title">RAMAGAN</strong><button type="button" id="close-navigation" aria-label="ปิดเมนู">×</button></div><p>'+h(state.user.display_name||state.user.email||state.user.id)+'</p><strong>'+h(state.store.name)+'</strong><small>'+h(state.role)+'</small></div>'+
     (pending?'<div class="navigation-pending"><p>'+h(salePending?'มีรายการขายที่ต้องตรวจสอบ':'มีรายการสต็อกที่ต้องตรวจสอบ')+'</p><button type="button" id="open-pending-request">กลับไปตรวจสอบรายการค้าง</button></div>':'')+
     '<nav aria-label="หน้าต่าง ๆ ของร้าน">'+links.map(([route,label,icon])=>'<button type="button" id="nav-'+route+'" data-navigation-view="'+route+'" '+(view===route?'aria-current="page"':'')+'><span aria-hidden="true">'+icon+'</span>'+label+'</button>').join('')+
-    (manager&&ctx.adminUrl?'<a class="navigation-admin" href="'+h(ctx.adminUrl)+'" target="_blank" rel="noopener noreferrer"><span aria-hidden="true">↗</span>รายงานหลังบ้าน</a>':'')+'</nav>'+
-    '<div class="navigation-tools"><button type="button" id="nav-change-server">เปลี่ยนเซิร์ฟเวอร์</button><button type="button" id="nav-logout">ออกจากระบบ</button></div>'+
+    (dashboard&&ctx.adminUrl?'<a class="navigation-admin" href="'+h(ctx.adminUrl)+'" target="_blank" rel="noopener noreferrer"><span aria-hidden="true">↗</span>รายงานหลังบ้าน</a>':'')+'</nav>'+
+    '<div class="navigation-tools">'+(ctx.canLockDevice?.()?'<button type="button" id="nav-lock-device">ล็อก / เปลี่ยนผู้ใช้งาน</button>':'')+
+    (settings?'<button type="button" id="nav-change-server">เปลี่ยนเซิร์ฟเวอร์</button>':'')+'<button type="button" id="nav-logout">ออกจากระบบ</button></div>'+
     '<footer><span class="navigation-connection">'+(win.navigator.onLine?'● ออนไลน์':'● ออฟไลน์ · ยืนยันรายการไม่ได้')+'</span><small>'+h(ctx.appVersion||'Ramagan V1')+'</small></footer>';
   const background=[...root.children].map(element=>({element,inert:element.inert,aria:element.getAttribute('aria-hidden')}));
   const oldOverflow=doc.body.style.overflow;
@@ -43,6 +45,7 @@ export function mountNavigation(ctx) {
   const close=()=>{state.posMenuOpen=false;cleanupNavigation();ctx.render();restoreFocus();};
   const navigate=route=>{
     if(!ROUTES.has(route)||(!ctx.canManage()&&['inventory','stocktake'].includes(route)))return;
+    if(route==='settings'&&!(ctx.canSettings?ctx.canSettings():state.role==='owner'))return;
     state.posMenuOpen=false;cleanupNavigation();ctx.openView(route);
   };
   const keydown=event=>{
@@ -64,7 +67,15 @@ export function mountNavigation(ctx) {
     if(salePending){state.posScreen='payment';navigate('sales');}
     else navigate(manager?(state.inventoryPending?.stocktake?'stocktake':'inventory'):'sales');
   });
-  for(const [selector,action] of [['#nav-logout',ctx.logout],['#nav-change-server',ctx.changeServer]])drawer.querySelector(selector).onclick=()=>{state.posMenuOpen=false;cleanupNavigation();action();};
-  drawer.querySelector('a.navigation-admin')?.addEventListener('click',()=>{win.setTimeout(()=>{if(drawer.isConnected)close();},0);});
+  for(const [selector,action] of [['#nav-logout',ctx.logout],['#nav-change-server',ctx.changeServer],['#nav-lock-device',ctx.lockDevice]]){
+    const button=drawer.querySelector(selector);if(button&&action)button.onclick=()=>{
+      if(selector==='#nav-change-server'&&!(ctx.canSettings?ctx.canSettings():state.role==='owner'))return;
+      state.posMenuOpen=false;cleanupNavigation();action();
+    };
+  }
+  drawer.querySelector('a.navigation-admin')?.addEventListener('click',event=>{
+    if(!(ctx.canDashboard?ctx.canDashboard():state.role==='owner')){event.preventDefault();return;}
+    win.setTimeout(()=>{if(drawer.isConnected)close();},0);
+  });
   drawer.querySelector('#close-navigation').focus();
 }

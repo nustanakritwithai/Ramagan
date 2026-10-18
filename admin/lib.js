@@ -11,7 +11,7 @@ export function normalizeApiBase(value) {
   }
 }
 export function isReportRole(role) {
-  return role === 'owner' || role === 'manager';
+  return role === 'owner';
 }
 // Refuse coercion: null, empty strings and unsafe JSON integers are unknown.
 export function isAmount(value) {

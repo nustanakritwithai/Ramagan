@@ -101,14 +101,15 @@ class CostStockTests(unittest.TestCase):
             self.assertEqual(result["event_id"], result["ledger_event_id"])
         override = self.receive(self.product(200), cost_satang_per_gram=0)
         self.assertEqual(override["cost_satang_per_gram"], 0)
-        inventory = self.inventory("manager")
+        inventory = self.inventory("owner")
         self.assertEqual(inventory["summary"]["quantity_mg"], 20000)
         self.assertEqual(inventory["summary"]["unknown_cost_lot_count"], 1)
         self.assertIsNone(inventory["summary"]["inventory_value_satang"])
         self.assertEqual(inventory["summary"]["known_inventory_value_satang"], 1665)
-        for actor in ("owner", "manager"):
-            catalog = self.client.get("/v1/catalog", headers=self.headers[actor]).json()
-            self.assertIn("default_cost_satang_per_gram", catalog["products"][0])
+        catalog = self.client.get("/v1/catalog", headers=self.headers["owner"]).json()
+        self.assertIn("default_cost_satang_per_gram", catalog["products"][0])
+        manager = self.client.get("/v1/catalog", headers=self.headers["manager"]).json()
+        self.assertNotIn("cost", str(manager))
         staff = self.client.get("/v1/catalog", headers=self.headers["staff"]).json()
         self.assertNotIn("cost", str(staff))
         self.assertEqual(self.client.get("/v1/inventory", headers=self.headers["staff"]).status_code, 403)
@@ -141,7 +142,10 @@ class CostStockTests(unittest.TestCase):
         before = self.state()
         replay = self.client.post("/v1/lots/receive", headers=self.headers["manager"], json={**payload, "cost_satang_per_gram": None})
         self.assertEqual(replay.status_code, 200)
-        self.assertEqual(replay.json(), {**first.json(), "duplicate": True})
+        self.assertEqual(replay.json(), {**{key: value for key, value in first.json().items()
+                                          if key != "cost_satang_per_gram"}, "duplicate": True})
+        owner_replay = self.client.post("/v1/lots/receive", headers=self.headers["owner"], json=payload)
+        self.assertEqual(owner_replay.json(), {**first.json(), "duplicate": True})
         for changed in ({"cost_satang_per_gram": 333}, {"quantity_mg": 4000}, {"reason": "Different"}):
             self.assertEqual(self.client.post("/v1/lots/receive", headers=self.headers["owner"],
                 json={**payload, **changed}).status_code, 409)
@@ -226,7 +230,10 @@ class CostStockTests(unittest.TestCase):
         self.assertEqual(len(result["items"]), 3)
         self.assertEqual(sorted(line["variance_mg"] for line in result["items"]), [-3, 0, 7])
         self.assertTrue(all(line["stock_revision_after"] == 1 for line in result["items"]))
-        for line in result["items"]:
+        self.assertTrue(all("inventory_delta_satang" not in line for line in result["items"]))
+        owner_result = self.client.get("/v1/stocktakes/by-client/" + payload["client_stocktake_id"],
+                                       headers=self.headers["owner"]).json()
+        for line in owner_result["items"]:
             lot = next(row for row in lots if row["id"] == line["lot_id"])
             c = lot["cost_satang_per_gram"]
             expected = None if c is None else inventory_value(c, line["counted_quantity_mg"]) - inventory_value(c, line["system_quantity_mg"])
@@ -234,9 +241,9 @@ class CostStockTests(unittest.TestCase):
         before = self.state()
         replay = self.count({**payload, "items": list(reversed(payload["items"]))})
         self.assertEqual(replay.status_code, 200)
-        self.assertEqual(replay.json(), {**result, "duplicate": True})
+        self.assertEqual(replay.json(), owner_result)
         lookup = self.client.get("/v1/stocktakes/by-client/" + payload["client_stocktake_id"], headers=self.headers["owner"])
-        self.assertEqual(lookup.json(), {**result, "duplicate": True})
+        self.assertEqual(lookup.json(), owner_result)
         self.assertEqual(self.count({**payload, "reason": "Different"}).status_code, 409)
         self.unchanged(before)
         history = self.client.get("/v1/stocktakes", headers=self.headers["owner"]).json()["stocktakes"]
@@ -468,7 +475,7 @@ class CostStockTests(unittest.TestCase):
         self.assertEqual(pending.json(), {"status": "pending", "client_stocktake_id": original["client_stocktake_id"]})
         self.unchanged(before)
         saved = self.count(original).json()
-        completed = self.client.post(endpoint, headers=self.headers["manager"], json=original)
+        completed = self.client.post(endpoint, headers=self.headers["owner"], json=original)
         self.assertEqual(completed.json(), {"status": "completed", "result": {**saved, "duplicate": True}})
         stale = {**original, "client_stocktake_id": str(uuid.uuid4())}
         before = self.state()

@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
-from cost_stock import canonical_hash, inventory_value
+from cost_stock import canonical_hash, inventory_value, cost_response
 from payments import recorded_payments
 
 BANGKOK = ZoneInfo("Asia/Bangkok")
@@ -178,7 +178,7 @@ def register_receipt_routes(app, path, connect, current, error, *, recheck_actor
                         error(409, "Void UUID already used with different payload")
                     result = _void_result(db, existing, duplicate=True)
                     db.rollback()
-                    return result
+                    return cost_response(result, actor)
                 sale = db.execute("SELECT * FROM sales WHERE id=? AND store_id=?",
                                   (sale_id, actor["store_id"])).fetchone()
                 if not sale:
@@ -244,7 +244,7 @@ def register_receipt_routes(app, path, connect, current, error, *, recheck_actor
                 header = db.execute("SELECT * FROM sale_voids WHERE id=?", (vid,)).fetchone()
                 result = _void_result(db, header, duplicate=False)
                 db.commit()
-                return result
+                return cost_response(result, actor)
             except ValueError:
                 db.rollback()
                 error(503, "Recorded sale money or cost is unavailable")
@@ -253,17 +253,19 @@ def register_receipt_routes(app, path, connect, current, error, *, recheck_actor
                 raise
 
     @app.get("/v1/sale-voids/by-client/{client_void_id}")
-    def lookup_void(client_void_id: uuid.UUID, actor: Annotated[dict, Depends(current)]):
+    def lookup_void(client_void_id: uuid.UUID, request: Request, actor: Annotated[dict, Depends(current)]):
         require_manager(actor)
         with connect(path) as db:
             db.execute("BEGIN")
             try:
+                actor = recheck_actor(db, request.headers.get("authorization"), actor)
+                require_manager(actor)
                 row = db.execute("SELECT * FROM sale_voids WHERE store_id=? AND client_void_id=?",
                                  (actor["store_id"], str(client_void_id))).fetchone()
                 if not row:
                     error(404, "Sale void not found")
                 try:
-                    return _void_result(db, row, duplicate=True)
+                    return cost_response(_void_result(db, row, duplicate=True), actor)
                 except ValueError:
                     error(503, "Recorded sale void is unavailable")
             finally:
@@ -271,6 +273,7 @@ def register_receipt_routes(app, path, connect, current, error, *, recheck_actor
 
     @app.get("/v1/sales")
     def list_receipts(
+        request: Request,
         actor: Annotated[dict, Depends(current)],
         from_date: date | None = Query(default=None),
         to_date: date | None = Query(default=None),
@@ -285,13 +288,23 @@ def register_receipt_routes(app, path, connect, current, error, *, recheck_actor
             anchor = _decode_cursor(cursor, binding, cursor_key) if cursor is not None else None
         except ValueError as exc:
             error(422, str(exc))
-        clauses, parameters = _where(actor, lower, upper, query)
-        if anchor:
-            clauses.append("(s.created_at<? OR (s.created_at=? AND s.id<?))")
-            parameters.extend([anchor[0], anchor[0], anchor[1]])
         with connect(path) as db:
             db.execute("BEGIN")
             try:
+                actor = recheck_actor(db, request.headers.get("authorization"), actor)
+                # Cursor bindings and staff receipt scope must reflect the
+                # current role, rather than a role read before this snapshot.
+                start, end, lower, upper = date_window(from_date, to_date)
+                binding = _binding(actor, start, end, query)
+                if cursor is not None:
+                    try:
+                        anchor = _decode_cursor(cursor, binding, cursor_key)
+                    except ValueError as exc:
+                        error(422, str(exc))
+                clauses, parameters = _where(actor, lower, upper, query)
+                if anchor:
+                    clauses.append("(s.created_at<? OR (s.created_at=? AND s.id<?))")
+                    parameters.extend([anchor[0], anchor[0], anchor[1]])
                 rows = db.execute("SELECT " + HEADER_FIELDS + " FROM sales s WHERE " +
                     " AND ".join(clauses) + " ORDER BY s.created_at DESC,s.id DESC LIMIT ?",
                     [*parameters, limit + 1]).fetchall()
@@ -301,18 +314,19 @@ def register_receipt_routes(app, path, connect, current, error, *, recheck_actor
                 except ValueError:
                     error(503, "Recorded receipt payments are unavailable")
                 next_cursor = _encode_cursor(selected[-1], binding, cursor_key) if len(rows) > limit else None
-                return {"sales": sales, "next_cursor": next_cursor,
+                return cost_response({"sales": sales, "next_cursor": next_cursor,
                         "from_date": start.isoformat(), "to_date": end.isoformat(),
-                        "timezone": "Asia/Bangkok", "scope": "own" if actor["role"] == "staff" else "store"}
+                        "timezone": "Asia/Bangkok", "scope": "own" if actor["role"] == "staff" else "store"}, actor)
             finally:
                 db.rollback()
 
     # Registered after existing /by-client/{UUID}; old lookup remains unchanged.
     @app.get("/v1/sales/{sale_id}")
-    def receipt_detail(sale_id: uuid.UUID, actor: Annotated[dict, Depends(current)]):
+    def receipt_detail(sale_id: uuid.UUID, request: Request, actor: Annotated[dict, Depends(current)]):
         with connect(path) as db:
             db.execute("BEGIN")
             try:
+                actor = recheck_actor(db, request.headers.get("authorization"), actor)
                 row = db.execute("SELECT " + HEADER_FIELDS + ",store.name AS store_name "
                     "FROM sales s JOIN stores store ON store.id=s.store_id "
                     "WHERE s.id=? AND s.store_id=?", (str(sale_id), actor["store_id"])).fetchone()
@@ -338,6 +352,6 @@ def register_receipt_routes(app, path, connect, current, error, *, recheck_actor
                         or any(sum(line[field] for line in lines) != row[field]
                                for field in ("subtotal_satang", "discount_satang", "total_satang"))):
                     error(503, "Recorded receipt lines are unavailable")
-                return {**result, "lines": lines}
+                return cost_response({**result, "lines": lines}, actor)
             finally:
                 db.rollback()

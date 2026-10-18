@@ -22,6 +22,13 @@ function fixture(from,to){
     known_cost_satang:0,cost_satang:0,gross_profit_satang:0,unknown_cost_line_count:0,cost_complete:true});
   return {period:{from,to,timezone:'Asia/Bangkok'},capabilities:{discounts:true,discount_contract_version:1,inventory_costs:true,cost_contract_version:1},summary:{...day,cash_satang:17050,transfer_satang:0,average_satang:17050},daily,top_products:[{...day,sku:'OFFLINE',name:'Synthetic QA only'}],top_categories:[{...day,category:'Offline fixture'}],recent_sales:[{...day,id:'offline-test-only',created_at:from+'T01:00:00Z',payment_method:'cash',line_count:1}],low_stock:[]};
 }
+async function waitUntil(check) {
+  for(let i=0;i<500;i++){
+    if(check())return;
+    await new Promise(resolve=>setTimeout(resolve,10));
+  }
+  assert.fail('Synthetic route did not reach expected state');
+}
 (async()=>{
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
   const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/usr/bin/chromium',headless:true,args:['--no-sandbox']});
@@ -72,6 +79,8 @@ function fixture(from,to){
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
       await page.screenshot({path:path.join(output,viewport.width+'-discount-report.png'),fullPage:true});
       mode='hold';await page.click('#refresh');await page.waitForFunction(()=>document.querySelector('#metric-sales').textContent==='—');
+      // Refresh now verifies /v1/me before the report reaches its held route.
+      await waitUntil(()=>reportRequests===2&&typeof release==='function');
       assert.equal(await page.textContent('#metric-cost'),'—');
       assert.equal(await page.textContent('#metric-profit'),'—');
       assert.equal(await page.isDisabled('#export-csv'),true);
@@ -99,14 +108,25 @@ function fixture(from,to){
       assert.equal(await page.textContent('#metric-sales'),'—');
       assert.equal(await page.textContent('#metric-discount'),'—');
       await page.screenshot({path:path.join(output,viewport.width+'-unsupported.png'),fullPage:true});
-      await page.click('#logout');role='staff';await login();await page.waitForFunction(()=>document.querySelector('#login-message').textContent.includes('ไม่มีสิทธิ์'));
+      await page.click('#logout');
+      const authorizedReports = reportRequests;
+      for (const deniedRole of ['staff', 'manager']) {
+        role=deniedRole;await login();await page.waitForFunction(()=>document.querySelector('#login-message').textContent.includes('ไม่มีสิทธิ์'));
+        assert.equal(await page.isVisible('#dashboard-panel'),false);
+        assert.equal(await page.textContent('#metric-cost'),'—');
+        assert.equal(await page.isDisabled('#export-csv'),true);
+        assert.equal(reportRequests,authorizedReports);
+      }
+      role='owner';mode='normal';await login();await page.waitForFunction(()=>document.querySelector('#metric-sales').textContent==='฿170.50');
+      role='manager';await page.click('#refresh');await page.waitForFunction(()=>document.querySelector('#login-message').textContent.includes('ไม่มีสิทธิ์'));
       assert.equal(await page.isVisible('#dashboard-panel'),false);
-      role='manager';mode='normal';await login();await page.waitForFunction(()=>document.querySelector('#metric-sales').textContent==='฿170.50');
+      assert.equal(await page.textContent('#metric-cost'),'—');
+      assert.equal(reportRequests,authorizedReports+1);
       await page.reload();assert.equal(await page.isVisible('#login-panel'),true);
       assert.equal(await page.textContent('#metric-sales'),'—');
       assert.equal(await page.textContent('#metric-profit'),'—');
       assert.deepEqual(errors,[]);await page.close();
     }
-    console.log('PASS: desktop/mobile rendering, exact gross-discount-net-cost-profit, unknown cost coverage, signed loss, cost/discount legacy compatibility, CSV download, no overflow/storage, refresh clears stale values, repeated refresh, network/partial, owner/manager/staff, logout/reload. Offline fixtures only.');
+    console.log('PASS: desktop/mobile rendering, exact gross-discount-net-cost-profit, unknown cost coverage, signed loss, cost/discount legacy compatibility, CSV download, no overflow/storage, refresh clears stale values, repeated refresh, network/partial, Owner access, Manager/Staff denial without report requests, Owner role downgrade clears costs/CSV, logout/reload. Offline fixtures only.');
   }finally{await browser.close();server.close();}
 })().catch(e=>{console.error(e);server.close();process.exitCode=1;});

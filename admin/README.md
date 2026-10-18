@@ -7,14 +7,14 @@ https://nustanakritwithai.github.io/Ramagan/admin/
 
 GitHub Pages publicly serves only the HTML/CSS/JS *shell*. No SQLite file,
 sales report snapshot, password or VPS service secret is committed or deployed.
-The report requires a valid owner/manager login from the RAMAGAN VPS:
+The report requires a valid Owner login from the RAMAGAN VPS:
 
 1. The administrator enters the HTTPS RAMAGAN API URL and their credentials.
 2. The browser POSTs to the VPS /v1/auth/login.
-3. The browser checks GET /v1/me and confirms owner/manager role.
+3. The browser checks GET /v1/me and confirms the Owner role.
 4. It fetches GET /v1/admin/sales-report?from=...&to=...
    using an Authorization Bearer session, not a key in the GitHub Pages bundle.
-5. The VPS again checks owner/manager role and store isolation on EVERY query.
+5. The VPS again checks the Owner role and store isolation on EVERY query.
 6. Logout revokes the session and clears rendered data.
 
 No bearer token or API URL is stored in localStorage/sessionStorage. The
@@ -79,8 +79,8 @@ The static page does not require npm install or any third-party dependencies.
 This UI requires report `capabilities.discounts === true` and
 `capabilities.discount_contract_version === 1` before displaying any net or
 discount values. Missing, false, or unknown versions display `—`, meaning
-unsupported/unknown, never zero. `/v1/me` still verifies Owner/Manager; the
-report's own capability is authoritative for its data. Staff cannot open reports.
+unsupported/unknown, never zero. `/v1/me` verifies Owner only; the
+report's own capability is authoritative for its data. Manager and Staff cannot open reports.
 
 Contract v1 money is nonnegative safe integer satang:
 
@@ -152,3 +152,12 @@ network responses, logout/reload, and writes screenshots outside the repository.
 It is not a real Android, backend, TLS/CORS, transaction or production acceptance test.
 Do not publish this branch, open the Admin-to-main PR, or deploy until backend
 readiness and API integration have been separately confirmed by the operator.
+
+## Owner-only access
+
+The Dashboard now accepts only a verified Owner profile. It checks /v1/me again before each report refresh and sends no report request for Manager or Staff. Logout, role denial, 401/403 and page-cache departure clear report rows, cost/profit figures, CSV access, profile information and the in-memory session. An older in-flight response cannot repopulate a cleared page.
+
+The public Pages shell is still data-free. The VPS must enforce Owner access independently on every Admin endpoint; hiding its menu alone does not authorize data access. Existing published Pages stays protected by that API restriction even before a separately approved Pages update. These source changes do not deploy Pages or merge a pull request.
+
+    cd v1
+    node --test tests/admin-owner-dom.test.mjs

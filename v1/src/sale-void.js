@@ -1,11 +1,14 @@
 // Completed receipts remain immutable. This durable intent only appends a void;
 // a network timeout must never create a second reversal or a replacement sale.
+import {withoutPrivateCosts} from './permissions.js';
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const fail=message=>{throw new Error(message);};
 const money=n=>Number.isSafeInteger(n)&&n>=0;
 export const supportsSaleVoids=c=>c?.sale_voids===true&&c?.sale_void_contract_version===1;
 export const voidPendingKey=identity=>'ramagan.v1.sale-void.v1.'+encodeURIComponent(identity.api)+'.'+identity.store;
-export function validateVoid(data,op){
+export function validateVoid(data,op,allowRedactedCosts=false){
+  const redacted=allowRedactedCosts===true;
+  if(redacted)data=withoutPrivateCosts(data);
   const p=op.payload,s=op.original;
   if(!UUID.test(data?.id)||data.status!=='voided'||data.client_void_id!==p.client_void_id||
       data.sale_id!==op.sale_id||data.client_sale_id!==s.client_sale_id||data.reason!==p.reason||
@@ -23,11 +26,12 @@ export function validateVoid(data,op){
         !money(item.quantity_before_mg)||!money(item.quantity_after_mg)||
         BigInt(item.quantity_after_mg)!==BigInt(item.quantity_before_mg)+BigInt(item.quantity_mg)||
         !money(item.stock_revision_before)||item.stock_revision_after!==item.stock_revision_before+1||
-        !(item.inventory_delta_satang===null||money(item.inventory_delta_satang)))fail('ยอดคืนสต็อกไม่ตรงใบเสร็จ ต้องตรวจสอบรายการเดิม');
+        (!(redacted&&!Object.hasOwn(item,'inventory_delta_satang'))&&
+          !(item.inventory_delta_satang===null||money(item.inventory_delta_satang))))fail('ยอดคืนสต็อกไม่ตรงใบเสร็จ ต้องตรวจสอบรายการเดิม');
   }
   return data;
 }
-export function createSaleVoid({storage,identity,transport,uuid,lock}){
+export function createSaleVoid({storage,identity,transport,uuid,lock,allowRedactedCosts=false}){
   const key=voidPendingKey(identity);
   function validate(op){
     if(op?.version!==1||!['pending','confirmed','rejected'].includes(op.status)||typeof op.uncertain!=='boolean'||
@@ -42,16 +46,37 @@ export function createSaleVoid({storage,identity,transport,uuid,lock}){
         s.payments.reduce((n,x)=>n+BigInt(x.amount_satang),0n)!==BigInt(s.total_satang)||
         !Array.isArray(s.items)||!s.items.length||new Set(s.items.map(x=>x.lot_id)).size!==s.items.length||
         s.items.some(x=>!UUID.test(x.lot_id)||!Number.isSafeInteger(x.quantity_mg)||x.quantity_mg<=0))fail('หลักฐานใบเสร็จค้างไม่ครบ ต้องให้ผู้ดูแลตรวจสอบ');
-    if(op.status==='confirmed')validateVoid(op.result,op);
+    if(op.status==='confirmed')op={...op,result:validateVoid(op.result,op,allowRedactedCosts)};
     return op;
   }
   const read=()=>{const raw=storage.getItem(key);return raw===null?null:validate(JSON.parse(raw));};
-  function persist(op){validate(op);const raw=JSON.stringify(op);storage.setItem(key,raw);if(storage.getItem(key)!==raw)fail('บันทึกเลขยกเลิกไม่ได้ จึงยังไม่ส่งคำขอ');return JSON.parse(raw);}
-  function exclusive(task){if(!lock)fail('อุปกรณ์นี้ยังล็อกรายการอย่างปลอดภัยไม่ได้');return lock(key,task);}
+  function cleanupLocked(){
+    const raw=storage.getItem(key);
+    if(raw===null)return null;
+    const op=validate(JSON.parse(raw)),clean=JSON.stringify(op);
+    // An older confirmed result may contain Owner financial fields. A lower
+    // role sees a projection in RAM. Purge its durable result only while owning
+    // the same WebLock used by every operation on this slot.
+    if(allowRedactedCosts===true&&op.status==='confirmed'&&clean!==raw){
+      storage.setItem(key,clean);
+      if(storage.getItem(key)!==clean)fail('บันทึกเลขยกเลิกไม่ได้ จึงยังไม่ส่งคำขอ');
+    }
+    return op;
+  }
+  function persist(op){op=validate(op);const raw=JSON.stringify(op);storage.setItem(key,raw);if(storage.getItem(key)!==raw)fail('บันทึกเลขยกเลิกไม่ได้ จึงยังไม่ส่งคำขอ');return JSON.parse(raw);}
+  function exclusive(task){if(!lock)fail('อุปกรณ์นี้ยังล็อกรายการอย่างปลอดภัยไม่ได้');return lock(key,()=>{cleanupLocked();return task();});}
+  async function sanitize(){
+    const raw=storage.getItem(key);
+    if(raw===null)return null;
+    const stored=JSON.parse(raw),op=validate(stored);
+    if(!(allowRedactedCosts===true&&stored.status==='confirmed'&&
+        JSON.stringify(stored.result)!==JSON.stringify(op.result)))return op;
+    return exclusive(()=>read());
+  }
   async function capabilities(){if(!supportsSaleVoids(await transport.capabilities(identity)))fail('API ยังไม่รองรับการยกเลิกใบเสร็จรุ่นนี้');}
-  function confirmed(data,op){const result=validateVoid(data,op);return {result,op:persist({...op,status:'confirmed',result})};}
+  function confirmed(data,op){const result=validateVoid(data,op,allowRedactedCosts);return {result,op:persist({...op,status:'confirmed',result})};}
   async function lookup(op){
-    if(op.status==='confirmed')return {result:validateVoid(op.result,op),op};
+    if(op.status==='confirmed')return {result:validateVoid(op.result,op,allowRedactedCosts),op};
     if(op.status==='rejected')return {rejected:true,op,error:new Error(op.rejection)};
     const result=await transport.lookup(op.payload.client_void_id);
     return result?confirmed(result,op):{pending:true,op};
@@ -69,7 +94,7 @@ export function createSaleVoid({storage,identity,transport,uuid,lock}){
       return {pending:true,error,op:sending};
     }
   }
-  return {key,read,
+  return {key,read,sanitize,
     start:(receipt,reason)=>exclusive(async()=>{
       if(read())fail('มีคำขอยกเลิกค้าง ต้องตรวจสอบรายการเดิมก่อน');
       if(receipt.status==='voided')fail('ใบเสร็จนี้ยกเลิกแล้ว');
