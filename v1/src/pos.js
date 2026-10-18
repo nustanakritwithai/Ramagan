@@ -1,5 +1,6 @@
 import {gramsToMilligrams, milligramsToGrams, lineTotalSatang, formatBaht, discountSatang} from './math.js';
 import {supportsDiscount, supportsSplitPayments, supportsSaleReconciliation} from './checkout.js';
+import {mountNavigation} from './navigation.js';
 const h = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export function paymentPreview(state, total) {
   try {
@@ -25,7 +26,7 @@ export function renderPos(ctx) {
   if(screen!=='catalog')state.posMenuOpen=false;
   const items = [...state.cart].map(([lot_id,quantity_mg]) => ({lot:state.lots.find(x=>x.id===lot_id),lot_id,quantity_mg}));
   const totalLabel = totals.error ? 'ตรวจสอบรายการ' : formatBaht(totals.total);
-  const nav = '<header class="pos-header"><button id="pos-back" class="pos-icon" aria-label="'+(screen==='catalog'?'เมนู':'ย้อนกลับ')+'" '+(screen==='catalog'?'aria-controls="pos-menu" aria-expanded="'+Boolean(state.posMenuOpen)+'"':'')+'>'+ (screen==='catalog'?'☰':'‹')+'</button><div><strong>RAMAGAN</strong><small>'+h(state.store.name)+'</small></div><button id="open-ticket" class="pos-ticket">รายการ <b>'+items.length+'</b></button></header>';
+  const nav = '<header class="pos-header"><button id="pos-back" class="pos-icon" aria-label="'+(screen==='catalog'?'เมนู':'ย้อนกลับ')+'" '+(screen==='catalog'?'data-navigation-trigger data-navigation-handled="true" aria-controls="app-navigation-drawer" aria-expanded="'+Boolean(state.posMenuOpen)+'"':'')+'>'+ (screen==='catalog'?'☰':'‹')+'</button><div><strong>RAMAGAN</strong><small>'+h(state.store.name)+'</small></div><button id="open-ticket" class="pos-ticket">รายการ <b>'+items.length+'</b></button></header>';
   const notices = (!state.store.sales_enabled?'<p class="alert danger">ร้านยังไม่เปิดระบบขาย</p>':'')+
     (!navigator.onLine?'<p class="alert danger">ออฟไลน์: ยังยืนยันรายการไม่ได้</p>':'')+
     (state.message?'<p class="alert '+(state.error?'danger':'')+'">'+h(state.message)+'</p>':'')+
@@ -57,11 +58,7 @@ export function renderPos(ctx) {
         '<div class="checkout-actions"><button id="checkout" class="primary" '+(locked||!state.store.sales_enabled||!navigator.onLine||!items.length||totals.error||payment.error?'disabled':'')+'>ยืนยันรายการผ่านเซิร์ฟเวอร์</button>'+(state.pendingId&&!state.pendingBlocked?'<button id="verify" class="ghost" '+(state.busy?'disabled':'')+'>' + (supportsSaleReconciliation(state.capabilities)?'ตรวจสอบ / ยกเลิกเฉพาะรายการที่ยังไม่บันทึก':'ตรวจสอบรายการค้าง') + '</button><button id="retry" class="ghost" '+(state.busy?'disabled':'')+'>ส่งรายการเดิมซ้ำด้วย ID เดิม</button>':'')+'</div>';
     }
   }
-  const menu=screen==='catalog'&&state.posMenuOpen?'<nav id="pos-menu" class="pos-nav" aria-label="เมนูร้าน">'+(ctx.canManage()?'<button id="open-inventory" class="ghost">จัดการสินค้า / รับเข้า</button><button id="open-stocktake" class="ghost">นับสต็อก</button><a class="ghost admin-link" href="'+ctx.adminUrl+'" target="_blank" rel="noopener noreferrer">รายงานหลังบ้าน ↗</a>':'')+'<button id="change-server" class="ghost">เซิร์ฟเวอร์</button><button id="logout" class="ghost">ออกจากระบบ</button></nav>':'';
-  root.innerHTML='<div class="pos-shell" data-screen="'+screen+'">'+nav+menu+'<main class="pos-content">'+notices+content+'</main></div>';
-  root.querySelector('#logout')?.addEventListener('click',ctx.logout); root.querySelector('#change-server')?.addEventListener('click',ctx.changeServer);
-  root.querySelector('#open-inventory')?.addEventListener('click',()=>{state.posMenuOpen=false;ctx.openView('inventory');});
-  root.querySelector('#open-stocktake')?.addEventListener('click',()=>{state.posMenuOpen=false;ctx.openView('stocktake');});
+  root.innerHTML='<div class="pos-shell" data-screen="'+screen+'">'+nav+'<main class="pos-content">'+notices+content+'</main></div>';
   root.querySelector('#open-ticket').onclick=()=>go('ticket');
   root.querySelector('#pos-back').onclick=()=>{if(screen==='catalog'){state.posMenuOpen=!state.posMenuOpen;ctx.render();}else go(screen==='payment'?'ticket':'catalog');};
   root.querySelector('#refresh')?.addEventListener('click',ctx.refresh);
@@ -86,4 +83,5 @@ export function renderPos(ctx) {
   root.querySelector('#checkout')?.addEventListener('click',ctx.checkout);
   root.querySelector('#verify')?.addEventListener('click',ctx.verify);
   root.querySelector('#retry')?.addEventListener('click',ctx.retry);
+  mountNavigation(ctx);
 }

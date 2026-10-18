@@ -34,7 +34,7 @@ function inventoryFixture(changes = {}) {
 }
 const mainURL = new URL('../src/main.js', import.meta.url);
 const source = (await readFile(mainURL, 'utf8'))
-  .replace("import './style.css';", '')
+  .replace(/import '\.\/[^']+\.css';/g, '')
   .replaceAll('import.meta.env.VITE_RAMAGAN_API_URL', "''")
   .replaceAll('import.meta.env.BASE_URL', "'/Ramagan/v1/'")
   .replace(/from '(\.\/[^']+)'/g, (_, path) => `from '${new URL(path, mainURL).href}'`);
@@ -152,8 +152,11 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
     q: s => w.document.querySelector(s), text: () => w.document.body.textContent,
     click(s) { const n = this.q(s); assert(n, `Missing ${s}`); n.click(); },
     menu(s) {
-      for(let i=0;i<4&&!this.q(s);i++)this.click('#pos-back');
-      this.click(s);
+      if(this.q(s)){this.click(s);return;}
+      const target=({'#open-inventory':'#nav-inventory','#open-stocktake':'#nav-stocktake','#open-sales':'#nav-sales','#logout':'#nav-logout'})[s]||s;
+      for(let i=0;i<4&&!this.q('[data-navigation-trigger]');i++)this.click('#pos-back');
+      if(!this.q('#app-navigation-drawer'))this.q('[data-navigation-trigger]').click();
+      this.click(target);
     },
     eventClick(s) {this.q(s).dispatchEvent(new w.Event('click',{bubbles:true}));},
     key(value) {w.document.dispatchEvent(new w.KeyboardEvent('keydown',{key:value,bubbles:true}));},
@@ -257,13 +260,13 @@ test('legacy capability disables discount input but supports zero-discount check
   } finally { app.close(); }
 });
 
-test('owner and manager see inventory and reports; cashier sees sales only', async () => {
+test('owner and manager see inventory and reports; other roles keep receipt/product access without manager controls', async () => {
   for (const role of ['owner', 'manager', 'cashier']) {
     const f = fixture({role}), app = await boot(f);
     try {
       app.click('#pos-back');
-      assert.equal(Boolean(app.q('#open-inventory')), role !== 'cashier', role);
-      assert.equal(Boolean(app.q('.admin-link')), role !== 'cashier', role);
+      assert.equal(Boolean(app.q('#nav-inventory')), role !== 'cashier', role);
+      assert.equal(Boolean(app.q('.navigation-admin')), role !== 'cashier', role);
       if (role !== 'cashier') {
         app.menu('#open-inventory'); assert(app.q('#new-product')); assert(app.q('#receive-lot'));
         app.click('#open-sales'); assert(app.q('[data-add]'));
@@ -394,7 +397,7 @@ test('old contract keeps intake document required; staff never receives cost/cou
   try { app.menu('#open-inventory'); assert.equal(app.q('[name=supplier_document_ref]').required, true); }
   finally { app.close(); }
   const staff = inventoryFixture({role: 'staff'}), other = await boot(staff);
-  try { other.click('#pos-back');assert.equal(other.q('#open-stocktake'), null); assert.equal(other.q('#open-inventory'), null); assert(!/ต้นทุน/.test(other.text())); }
+  try { other.click('#pos-back');assert.equal(other.q('#nav-stocktake'), null); assert.equal(other.q('#nav-inventory'), null); assert(!/ต้นทุน/.test(other.text())); }
   finally { other.close(); }
   const noDoc = inventoryFixture({requiresAuthorization: false}), sale = await boot(noDoc);
   try {
@@ -412,7 +415,7 @@ test('history detail arriving after logout cannot render the prior tenant', asyn
     historyDetail: {client_stocktake_id: countId, shift_label: 'PRIVATE OLD TENANT', items: []}}), app = await boot(f);
   try {
     app.menu('#open-stocktake'); app.click('[data-history]'); await until(() => f.historyRequests === 1);
-    app.click('#logout'); await until(() => app.q('#login-form'));
+    app.menu('#logout'); await until(() => app.q('#login-form'));
     release(); await new Promise(resolve => setTimeout(resolve, 30));
     assert.equal(app.q('.stocktake-detail'), null); assert(!/PRIVATE OLD TENANT/.test(app.text()));
   } finally { release(); app.close(); }
@@ -450,9 +453,9 @@ test('photo draft restores across restart, retries exact upload UUID/bytes and d
 test('four POS views support blank-first decimal keypad, cancel, edit/remove and one atomic split bill',async()=>{
   const f=inventoryFixture(),app=await boot(f);
   try{
-    assert.equal(app.q('#pos-menu'),null);assert.equal(app.q('#pos-back').getAttribute('aria-expanded'),'false');
-    app.click('#pos-back');assert(app.q('#pos-menu'));assert.equal(app.q('#pos-back').getAttribute('aria-expanded'),'true');
-    app.click('[data-add]');assert.equal(app.q('#pos-menu'),null);assert.equal(app.q('.pos-bottom'),null);assert.equal(app.q('#quantity-input').value,'');
+    assert.equal(app.q('#app-navigation-drawer'),null);assert.equal(app.q('#pos-back').getAttribute('aria-expanded'),'false');
+    app.click('#pos-back');assert(app.q('#app-navigation-drawer'));assert.equal(app.q('#pos-back').getAttribute('aria-expanded'),'true');
+    app.click('#close-navigation');app.click('[data-add]');assert.equal(app.q('#app-navigation-drawer'),null);assert.equal(app.q('.pos-bottom'),null);assert.equal(app.q('#quantity-input').value,'');
     app.click('[data-key="2"]');assert.equal(app.q('#quantity-input').value,'2');app.click('#quantity-cancel');
     assert.match(app.q('#open-ticket').textContent,/0/);
     app.click('[data-add]');for(const key of ['.','1','2','5'])app.click('[data-key="'+key+'"]');
@@ -460,7 +463,7 @@ test('four POS views support blank-first decimal keypad, cancel, edit/remove and
     app.click('#open-ticket');app.click('[data-edit]');app.click('[data-key="2"]');assert.equal(app.q('#quantity-input').value,'2');
     app.click('#quantity-confirm');app.click('#open-ticket');app.click('[data-remove]');assert.match(app.q('#open-ticket').textContent,/0/);
     app.click('#ticket-more');fillCart(app,'1');app.click('[data-payment=split]');
-    assert.equal(app.q('#payment'),null);assert.equal(app.q('#pos-menu'),null);
+    assert.equal(app.q('#payment'),null);assert.equal(app.q('#app-navigation-drawer'),null);
     app.input('#split-cash','100');app.input('#split-transfer','99');app.input('#cash-received','200');
     assert.match(app.q('#change').textContent,/100\.00/);assert.equal(app.q('#checkout').disabled,false);
     app.click('#checkout');await until(()=>app.q('.success'));

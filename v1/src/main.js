@@ -6,7 +6,15 @@ import {createInventoryOperation, supportsCosts, supportsStocktakes, optionalCos
   assertNoPendingMutation, mutationScopeKey} from './inventory.js';
 import {renderPos, paymentPreview} from './pos.js';
 import {createEvidenceDraft, supportsEvidence} from './evidence-draft.js';
+import {cleanupNavigation, mountNavigation, navigationHeader} from './navigation.js';
+import {createPageState, renderSidePage, loadReceipts, supportsReceipts} from './pages.js';
+import {createDeviceAuth} from './device-auth.js';
+import {supportsSharedPin,pendingDeviceActor} from './device-session.js';
+import {renderPinLock,pinSettingsHtml,bindPinSettings} from './pin-ui.js';
 import './style.css';
+import './navigation.css';
+import './pages.css';
+import './pin.css';
 
 const root = document.getElementById('app');
 // A user can configure HTTPS endpoint directly in their Android app.
@@ -19,6 +27,7 @@ let apiUrl = validateServerUrl(savedEndpoint || import.meta.env.VITE_RAMAGAN_API
 let configured = Boolean(apiUrl);
 let api = configured ? createClient(apiUrl) : null;
 let setupError = '';
+let deviceAuth=null,authSerial=0,activeIO=0,authSubscription=null;
 
 const state = {
   user: null, store: null, role: null, lots: [], cart: new Map(),
@@ -31,7 +40,7 @@ const state = {
   posScreen: 'catalog', posMenuOpen: false, quantityLot: null, quantityText: '1', quantityEditing: false,
   cashReceived: '', splitCash: '', splitTransfer: '', catalogQuery: '',
   draftStore: null, countDraft: null, draftError: '', draftStale: false, photoBusy: null, photoUrls: [], historyPhotoUrls: {}, draftSaving: 0,
-  closeEvidenceViewer: null
+  closeEvidenceViewer: null, pages: createPageState()
 };
 
 function h(value) {
@@ -43,6 +52,20 @@ function setMessage(message, error = false) {
   state.message = message;
   state.error = error;
   render();
+}
+function authGuard(){const serial=authSerial,client=api,user=state.user?.id;return()=>serial===authSerial&&client===api&&state.user?.id===user;}
+function clearBusinessDisplay(){
+  ++authSerial;state.user=null;state.store=null;state.role=null;state.capabilities=null;
+  state.cart.clear();state.lots=[];state.products=[];state.checkout=null;state.pendingId=null;state.pendingBlocked=false;
+  state.lastSale=null;state.discount='0';state.authRef='';state.payment='cash';state.cashReceived='';state.splitCash='';state.splitTransfer='';
+  state.view='sales';state.posScreen='catalog';state.message='';state.error=false;resetInventoryState();
+}
+function pinFlags(){
+  const pin=deviceAuth?.snapshot();
+  return {capability:supportsSharedPin(state.capabilities),passwordSession:!api?.auth.isPinSession(),isOwner:state.role==='owner',
+    device:pin?.device,role:state.role,busy:Boolean(pin?.busy),error:pin?.error||'',
+    onEnroll:payload=>deviceAuth.enroll(payload),onLock:()=>deviceAuth.lock(),onForget:()=>deviceAuth.forget(),
+    onChangePins:payload=>deviceAuth.changePins(payload),onRevoke:payload=>deviceAuth.revoke(payload)};
 }
 function restorePending() {
   state.pendingBlocked = false;
@@ -82,7 +105,11 @@ function statusChip() {
     '<span class="status offline">ออฟไลน์ · ดูข้อมูลเท่านั้น</span>';
 }
 function render() {
+  cleanupNavigation();
   if (!configured) return renderSetup();
+  const pin=deviceAuth?.snapshot();
+  if(pin?.device&&pin.locked&&!pin.passwordOverride)return renderPinLock({root,...pin,
+    onUnlock:(role,value)=>deviceAuth.unlock(role,value),onPasswordLogin:()=>deviceAuth.passwordLogin(),onForget:()=>deviceAuth.forget()});
   if (!state.user) return renderLogin();
   if (!state.store) {
     root.innerHTML = '<div class="setup"><h1>RAMAGAN POS</h1><p>' +
@@ -91,8 +118,9 @@ function render() {
     root.querySelector('#logout').addEventListener('click', logout);
     return;
   }
-  if (state.view === 'inventory' && canManage()) return renderInventory();
-  if (state.view === 'stocktake' && canManage()) return renderStocktake();
+  if (['receipts','products','settings','apps','support'].includes(state.view)) return renderSidePage(navigationContext());
+  if (state.view === 'inventory' && canManage()) return renderManagerPage(renderInventory, 'รับเข้าและตั้งค่าสินค้า');
+  if (state.view === 'stocktake' && canManage()) return renderManagerPage(renderStocktake, 'นับสต็อก');
   renderDashboard();
 }
 function renderSetup() {
@@ -140,10 +168,14 @@ function renderSetup() {
 }
 
 async function changeServer() {
-  if (state.pendingId || hasInventoryPending() || state.busy) {
+  if (state.pendingId || hasInventoryPending() || state.busy || activeIO || deviceAuth?.snapshot().busy) {
     return setMessage('ต้องตรวจสอบรายการขายหรือสต็อกค้างก่อนเปลี่ยนเซิร์ฟเวอร์', true);
   }
-  if (api) await api.auth.signOut();
+  try{if(deviceAuth?.pendingActor())return setMessage('ต้องตรวจสอบรายการค้างของเครื่องนี้ก่อนเปลี่ยนเซิร์ฟเวอร์',true);}catch{return setMessage('อ่านรายการค้างไม่ได้ กรุณาเข้าบัญชีเดิมเพื่อตรวจสอบ',true);}
+  const previous=api;
+  const signout=previous?.auth.signOut();
+  deviceAuth?.invalidate();deviceAuth=null;authSubscription?.unsubscribe();authSubscription=null;
+  clearBusinessDisplay();
   localStorage.removeItem(ENDPOINT_STORAGE);
   apiUrl = null;
   api = null;
@@ -158,19 +190,28 @@ async function changeServer() {
   resetInventoryState();
   setupError = '';
   render();
+  await signout;
 }
 
 async function startSession() {
-  api.auth.onAuthStateChange((event) => {
-    if (event === 'SIGNED_OUT') {
-      state.user = null;
-      state.store = null;
-      state.role = null;
-      render();
-    }
-  });
-  const {data, error} = await api.auth.getUser();
-  if (!error && data?.user) await loadProfile(data.user);
+  const client=api;
+  deviceAuth?.invalidate();authSubscription?.unsubscribe();
+  deviceAuth=createDeviceAuth({api:client,storage:localStorage,render,clearDisplay:clearBusinessDisplay,loadProfile,
+    isBusy:()=>Boolean(state.busy||activeIO),currentStore:()=>state.store?.id,cartEmpty:()=>state.cart.size===0,
+    canConfigure:()=>state.role==='owner'&&!client.auth.isPinSession()&&supportsSharedPin(state.capabilities)&&!hasPendingMutation(),
+    exclusive:task=>{
+      if(!navigator.locks||!state.store)throw new Error('ต้องใช้เบราว์เซอร์ที่ล็อกรายการร้านได้ก่อนจัดการ PIN');
+      return navigator.locks.request(mutationScopeKey({api:client.base,store:state.store.id}),{ifAvailable:true},lock=>{
+        if(!lock)throw new Error('มีรายการทำงานในอีกหน้าต่าง กรุณารอ');
+        assertNoPendingMutation(localStorage,{api:client.base,store:state.store.id});return task();});
+    }});
+  authSubscription=client.auth.onAuthStateChange(event=>{if(client===api&&event==='SIGNED_OUT'){clearBusinessDisplay();render();}}).data.subscription;
+  const controller=deviceAuth;
+  if(await controller.boot())return;
+  const current=controller.guard();
+  const {data, error} = await client.auth.getUser();
+  if(client!==api||!current())return;
+  if (!error && data?.user) await loadProfile(data.user,{current});
   else render();
 }
 
@@ -185,17 +226,19 @@ function hasPendingMutation() {
 }
 async function withNewMutation(task) {
   if (state.busy) return;
+  const current=authGuard();
   try {
     if (!navigator.locks) throw new Error('เบราว์เซอร์นี้ไม่รองรับการล็อกรายการอย่างปลอดภัย');
     const identity = {api: api.base, store: state.store.id, actor: state.user.id};
-    return await navigator.locks.request(mutationScopeKey(identity), {ifAvailable: true}, async current => {
-      if (!current) throw new Error('มีรายการกำลังทำงานในอีกหน้าต่าง กรุณารอสักครู่');
+    return await navigator.locks.request(mutationScopeKey(identity), {ifAvailable: true}, async lock => {
+      if (!lock) throw new Error('มีรายการกำลังทำงานในอีกหน้าต่าง กรุณารอสักครู่');
+      if(!current())return;
       restorePending(); restoreInventoryPending();
       assertNoPendingMutation(localStorage, identity);
       if (hasPendingMutation()) throw new Error('มีรายการค้าง ต้องตรวจสอบรายการเดิมก่อน');
       return task();
     });
-  } catch (error) { setMessage(error.message, true); }
+  } catch (error) { if(current())setMessage(error.message, true); }
 }
 function resetInventoryState() {
   state.closeEvidenceViewer?.();
@@ -210,6 +253,7 @@ function resetInventoryState() {
   state.counts.clear(); state.countConfirmed = false; state.countReason = '';
   state.shiftLabel = 'กะเช้า';
   state.historyDetail = null; state.historyError = ''; state.historyRequest++;
+  state.pages = createPageState();
 }
 function restoreInventoryPending() {
   state.inventoryBlocked = false;
@@ -233,26 +277,29 @@ function renderLogin() {
     '<button class="ghost" id="signup" type="button">วิธีขอบัญชีพนักงาน</button>',
     '<button class="ghost" id="server-change" type="button">เปลี่ยนเซิร์ฟเวอร์</button>',
     '<p class="footnote">บัญชีพนักงานสร้างโดยเจ้าของร้านผ่านเครื่อง VPS เท่านั้น</p>',
-    state.message ? '<p class="alert ' + (state.error ? 'danger' : '') + '">' + h(state.message) + '</p>' : '',
+    (state.message||deviceAuth?.snapshot().error) ? '<p class="alert ' + (state.error ? 'danger' : '') + '">' + h(state.message||deviceAuth.snapshot().error) + '</p>' : '',
+    deviceAuth?.snapshot().device?'<button class="ghost" id="return-pin" type="button">กลับไปเลือกบทบาทด้วย PIN</button>':'',
     '<p class="footnote">ข้อมูลขายจะถูกบันทึกในฐานข้อมูลกลางเท่านั้น</p>',
     '</section></main>'
   ].join('');
   root.querySelector('#login-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     if (state.busy) return;
-    const form = new FormData(event.currentTarget);
+    const form = new FormData(event.currentTarget),current=deviceAuth?.guard()||(()=>true),client=api;
+    const email=String(form.get('email')),password=String(form.get('password'));
+    event.currentTarget.elements.password.value='';form.delete('password');
     state.busy = true;
-    const { data, error } = await api.auth.signInWithPassword({
-      email: String(form.get('email')), password: String(form.get('password'))
-    });
+    const { data, error } = await client.auth.signInWithPassword({email,password,memoryOnly:true});
     state.busy = false;
+    if(client!==api||!current())return;
     if (error) return setMessage('เข้าสู่ระบบไม่สำเร็จ: ' + error.message, true);
-    await loadProfile(data.user);
+    await loadProfile(data.user,{current});
   });
   root.querySelector('#signup').addEventListener('click', () => {
     setMessage('ให้เจ้าของร้านเพิ่มบัญชีผ่านคำสั่ง VPS: python admin.py add-user', false);
   });
   root.querySelector('#server-change').addEventListener('click', changeServer);
+  root.querySelector('#return-pin')?.addEventListener('click',()=>deviceAuth.lock());
 }
 function cartItems() {
   return [...state.cart.entries()].map(([lot_id, quantity_mg]) => ({ lot_id, quantity_mg }))
@@ -266,12 +313,36 @@ function cartTotal() {
   }));
 }
 function renderDashboard() {
-  return renderPos({root, state, preview, previewHtml, render, canManage,
+  return renderPos({...navigationContext(), preview, previewHtml,
     hasPending: hasPendingMutation, today: () => toBangkokDay(new Date()),
     adminUrl: ADMIN_REPORT_URL, logout, changeServer, refresh: refreshLots,
     message: setMessage, checkout: startCheckout, verify: verifyPending,
-    retry: () => runCheckout('retry'), openView: view => {state.view=view;state.message='';render();}
+    retry: () => runCheckout('retry')
   });
+}
+function navigationContext() {
+  return {root,state,api,currentApi:()=>api,render,canManage,openView,logout,changeServer,
+    adminUrl:ADMIN_REPORT_URL,apiUrl,appVersion:'1.4.0',pinSettingsHtml:()=>pinSettingsHtml(pinFlags()),bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
+      if(!canManage())return;
+      openView('inventory');
+      const form=root.querySelector('#'+section);
+      if(product&&form?.elements.product_id){form.elements.product_id.value=product;form.elements.product_id.dispatchEvent(new Event('change'));}
+      form?.scrollIntoView?.({block:'start',behavior:'smooth'});form?.querySelector('input,select')?.focus();
+    }};
+}
+function openView(view) {
+  if(!['sales','receipts','products','settings','apps','support','inventory','stocktake'].includes(view))return;
+  if(['inventory','stocktake'].includes(view)&&!canManage())return;
+  state.closeEvidenceViewer?.();state.posMenuOpen=false;state.view=view;state.message='';
+  render();
+  if(view==='receipts'&&!state.pages.receiptsLoaded&&!state.pages.receiptLoading&&supportsReceipts(state.capabilities))loadReceipts(navigationContext());
+}
+function renderManagerPage(renderer,title) {
+  renderer();
+  const header=root.querySelector('.topbar');
+  if(header)header.outerHTML=navigationHeader({title,subtitle:state.store.name,showCart:true,cartCount:state.cart.size});
+  root.querySelector('#open-ticket')?.addEventListener('click',()=>{state.posScreen='ticket';openView('sales');});
+  mountNavigation(navigationContext());
 }
 function previewHtml(totals) {
   if (totals.error) return '<p class="alert danger">' + h(totals.error) + '</p>';
@@ -517,7 +588,7 @@ function renderStocktake() {
     if(locked||!input.files?.[0])return;
     const lot=input.dataset.photo,file=input.files[0],actor=state.user?.id,shop=state.store?.id,store=state.draftStore;
     // Invalidate the old selection synchronously, before any IndexedDB await.
-    state.photoBusy=lot;state.countConfirmed=false;if(state.countDraft)delete state.countDraft.photos[lot];render();
+    activeIO++;state.photoBusy=lot;state.countConfirmed=false;if(state.countDraft)delete state.countDraft.photos[lot];render();
     try{
       await ensureCountDraft();const cleared=await store.invalidate(lot);
       if(actor!==state.user?.id||shop!==state.store?.id||store!==state.draftStore)return;
@@ -525,6 +596,7 @@ function renderStocktake() {
       if(actor!==state.user?.id||shop!==state.store?.id||store!==state.draftStore)return;
       state.countDraft=draft;state.photoBusy=null;await uploadCountPhoto(lot);
     }catch(error){if(actor===state.user?.id&&shop===state.store?.id&&store===state.draftStore){state.photoBusy=null;setMessage(error.message,true);}}
+    finally{activeIO--;render();}
   }));
   root.querySelectorAll('[data-photo-upload]').forEach(button=>button.onclick=()=>uploadCountPhoto(button.dataset.photoUpload));
   root.querySelectorAll('[data-history]').forEach(button => button.addEventListener('click', () => loadHistoryDetail(button.dataset.history)));
@@ -543,27 +615,27 @@ async function ensureCountDraft() {
   state.countDraft=draft; return draft;
 }
 async function saveCountDraft(field, lot, value) {
-  const actor=state.user?.id, store=state.store?.id, draftStore=state.draftStore; state.draftSaving++;
+  const actor=state.user?.id, store=state.store?.id, draftStore=state.draftStore; state.draftSaving++;activeIO++;
   try {
     await ensureCountDraft();
     if(draftStore!==state.draftStore)return;
     const draft=field==='count'?await draftStore.setCount(lot,value):await draftStore.setMeta(field,value);
     if(state.user?.id===actor&&state.store?.id===store){state.countDraft=draft;state.draftError='';}
   } catch(error){if(state.user?.id===actor&&state.store?.id===store)state.draftError=error.message;}
-  finally{state.draftSaving=Math.max(0,state.draftSaving-1);}
+  finally{state.draftSaving=Math.max(0,state.draftSaving-1);activeIO--;render();}
 }
 async function uploadCountPhoto(lot) {
   if(state.photoBusy||state.busy||hasPendingMutation()||!navigator.onLine)return;
   const actor=state.user.id,store=state.store.id,draftStore=state.draftStore,photo=state.countDraft?.photos[lot],draftId=state.countDraft?.id;
   if(!photo)return;
-  state.photoBusy=lot;render();
+  activeIO++;state.photoBusy=lot;render();
   try {
     const {data,error}=await api.uploadEvidence(photo,{lot_id:lot,client_stocktake_id:draftId});
     if(error)throw error;
     const draft=await draftStore.uploaded(lot,photo.client_upload_id,data);
     if(state.user?.id===actor&&state.store?.id===store){state.countDraft=draft;state.message='อัปโหลดรูปเครื่องชั่งแล้ว';state.error=false;}
   }catch(error){if(state.user?.id===actor&&state.store?.id===store){state.message='ยังไม่ยืนยันการอัปโหลดรูป: '+error.message+' · เก็บรูปและเลขอ้างอิงเดิมไว้แล้ว';state.error=true;}}
-  finally{if(state.user?.id===actor&&state.store?.id===store){state.photoBusy=null;render();}}
+  finally{activeIO--;if(state.user?.id===actor&&state.store?.id===store)state.photoBusy=null;render();}
 }
 async function restoreCountDraft() {
   if(!state.draftStore||!state.inventory)return;
@@ -628,9 +700,12 @@ async function createProduct(event) {
   }
   catch (e) { return setMessage(e.message, true); }
   return withNewMutation(async () => {
+  const current=authGuard(),client=api;
+  activeIO++;
   state.busy = true;
   render();
-  const { error } = await api.rpc('ramagan_create_product', {
+  try{
+  const { error } = await client.rpc('ramagan_create_product', {
     p_store_id: state.store.id,
     p_sku: String(form.get('sku')).trim(),
     p_name: String(form.get('name')).trim(),
@@ -638,10 +713,12 @@ async function createProduct(event) {
     p_price_satang_per_gram: price,
     ...(cost === undefined ? {} : {p_default_cost_satang_per_gram: cost})
   });
-  state.busy = false;
+  if(!current())return;
   if (error) return setMessage('สร้างสินค้าไม่สำเร็จ: ' + error.message, true);
   await refreshLots();
+  if(!current())return;
   setMessage('บันทึกสินค้าในฐานข้อมูลกลางแล้ว');
+  }finally{activeIO--;state.busy=false;render();}
   });
 }
 async function receiveLot(event) {
@@ -673,19 +750,23 @@ async function runInventory(kind, action, payload) {
 }
 async function performInventory(kind, action, payload) {
   if (!canManage() || state.busy || state.inventoryBlocked || !navigator.onLine || !state[kind]) return;
-  state.busy = true;
+  const current=authGuard(),operation=state[kind],draftStore=state.draftStore;
+  state.busy = true;activeIO++;
   render();
   try {
-    const result = await state[kind][action](payload);
+    const result = await operation[action](payload);
+    if(!current())return;
     restoreInventoryPending();
     if (result?.result || result?.rejected) {
-      await state[kind].acknowledge();
+      await operation.acknowledge();
+      if(!current())return;
       restoreInventoryPending();
       // Any accepted/rejected count consumes the frozen snapshot. Recount after
       // a conflict; never update revisions under previously entered counts.
       if (kind === 'stocktake') { state.counts.clear(); state.countConfirmed = false; }
-      if(kind==='stocktake'&&state.countDraft&&state.draftStore){await state.draftStore.clear(result.op.payload.client_stocktake_id);state.countDraft=null;}
+      if(kind==='stocktake'&&state.countDraft&&draftStore){await draftStore.clear(result.op.payload.client_stocktake_id);if(!current())return;state.countDraft=null;}
       const fresh = await refreshLots();
+      if(!current())return;
       state.message = result.rejected ? 'ไม่ได้บันทึก: ' + result.error.message +
         (kind === 'stocktake' ? ' · รีโหลดยอดระบบแล้ว กรุณานับใหม่ก่อนยืนยัน' : '') :
         (kind === 'stocktake' ? 'เซิร์ฟเวอร์ยืนยันการนับและบันทึกประวัติแล้ว' : 'เซิร์ฟเวอร์ยืนยัน Lot พร้อมต้นทุนและรายการรับเข้าแล้ว') +
@@ -698,17 +779,21 @@ async function performInventory(kind, action, payload) {
       state.error = true;
     }
   } catch (error) {
+    if(!current())return;
     restoreInventoryPending(); state.message = error.message; state.error = true;
-  } finally { state.busy = false; render(); }
+  } finally { activeIO--;state.busy = false; render(); }
 }
 
-async function loadProfile(user) {
-  resetInventoryState();
+async function loadProfile(user,{current:sessionCurrent=()=>true,role:expectedRole,store:expectedStore}={}) {
+  if(!sessionCurrent())return;
+  clearBusinessDisplay();
   state.user = user;
+  const client=api,current=authGuard();
   state.message = 'กำลังตรวจสิทธิ์ร้าน';
-  const { data, error } = await api.from('ramagan_members')
+  const { data, error } = await client.from('ramagan_members')
     .select('store_id, role, ramagan_stores(name, sales_enabled, requires_authorization)')
     .eq('user_id', user.id).eq('is_active', true).limit(1);
+  if(!current()||!sessionCurrent())return;
   if (error || !data?.length || !data[0].ramagan_stores) {
     state.store = null;
     state.message = error ? error.message : 'ไม่พบบัญชีพนักงานที่เปิดใช้งาน';
@@ -717,15 +802,21 @@ async function loadProfile(user) {
   state.store = { id: data[0].store_id, ...data[0].ramagan_stores };
   state.role = data[0].role;
   state.capabilities = data[0].capabilities;
+  if(expectedRole&&expectedRole!==state.role||expectedStore&&expectedStore!==state.store.id)throw new Error('สิทธิ์หรือร้านจากเซิร์ฟเวอร์ไม่ตรงกับบทบาทที่ปลดล็อก');
+  if(client.auth.isPinSession()){
+    const pending=pendingDeviceActor(localStorage,client.base,state.store.id);
+    if(pending&&pending!==user.id)throw new Error('รายการค้างเป็นของบัญชีอื่น ต้องกลับไปใช้บทบาทเดิม');
+  }
   state.cart.clear();
   state.discount = '0';
   state.authRef = '';
   state.payment = 'cash';
   state.checkout = createCheckout({storage: localStorage,
-    identity: {api: api.base, store: state.store.id, cashier: user.id},
-    transport: api.checkoutTransport, uuid: () => crypto.randomUUID(),
+    identity: {api: client.base, store: state.store.id, cashier: user.id},
+    transport: client.checkoutTransport, uuid: () => crypto.randomUUID(),
     lock: navigator.locks ? (key, task) => navigator.locks.request(key, {ifAvailable: true}, lock => {
       if (!lock) throw new Error('รายการนี้กำลังตรวจสอบในอีกหน้าต่าง กรุณารอสักครู่');
+      if(!current()||!sessionCurrent())throw new Error('การปลดล็อกเปลี่ยนแล้ว เก็บรายการเดิมไว้เพื่อตรวจสอบ');
       return task();
     }) : null
   });
@@ -734,17 +825,19 @@ async function loadProfile(user) {
       identity:{api:api.base,store:state.store.id,actor:user.id},uuid:()=>crypto.randomUUID()});
     const lock = navigator.locks ? (key, task) => navigator.locks.request(key, {ifAvailable: true}, current => {
       if (!current) throw new Error('รายการสต็อกกำลังตรวจสอบในอีกหน้าต่าง กรุณารอสักครู่');
+      if(!profileCurrent())throw new Error('การปลดล็อกเปลี่ยนแล้ว เก็บรายการสต็อกเดิมไว้');
       return task();
     }) : null;
     for (const kind of ['stocktake', 'receive']) state[kind] = createInventoryOperation({
       storage: localStorage, identity: {api: api.base, store: state.store.id, actor: user.id},
-      kind, transport: api.inventoryTransport(kind), uuid: () => crypto.randomUUID(), lock
+      kind, transport: client.inventoryTransport(kind), uuid: () => crypto.randomUUID(), lock
     });
     restoreInventoryPending();
   }
   state.message = '';
   restorePending();
   await refreshLots();
+  function profileCurrent(){return current()&&sessionCurrent();}
 }
 async function refreshLots() {
   if (!state.store) return;
@@ -786,7 +879,7 @@ async function refreshLots() {
     const balance = row.ramagan_lot_balances;
     const quantity = Array.isArray(balance) ? balance[0]?.quantity_mg : balance?.quantity_mg;
     return {
-      id: row.id, lot_code: row.lot_code, expires_on: row.expires_on,
+      id: row.id, product_id:row.product_id, lot_code: row.lot_code, expires_on: row.expires_on,
       sku: row.ramagan_products.sku, name: row.ramagan_products.name,
       price: Number(row.ramagan_products.price_satang_per_gram),
       quantity_mg: Number(quantity || 0)
@@ -835,14 +928,16 @@ async function runCheckout(action, payload, subtotal) {
 }
 async function performCheckout(action, payload, subtotal) {
   if (state.busy || state.pendingBlocked || !navigator.onLine || !state.checkout) return;
-  state.busy = true;
+  const current=authGuard(),operation=state.checkout;
+  state.busy = true;activeIO++;
   render();
   try {
-    const result = await state.checkout[action](payload, subtotal);
+    const result = await operation[action](payload, subtotal);
+    if(!current())return;
     restorePending();
     if(result?.rejected){
-      await state.checkout.acknowledge();state.pendingId=null;state.posScreen='ticket';
-      await refreshLots();state.message='ยกเลิกเฉพาะรายการที่ยังไม่บันทึกแล้ว กรุณาตรวจสอบตะกร้าและยอดชำระก่อนยืนยันใหม่';state.error=false;
+      await operation.acknowledge();if(!current())return;state.pendingId=null;state.posScreen='ticket';
+      await refreshLots();if(!current())return;state.message='ยกเลิกเฉพาะรายการที่ยังไม่บันทึกแล้ว กรุณาตรวจสอบตะกร้าและยอดชำระก่อนยืนยันใหม่';state.error=false;
     } else if (result?.sale) {
       state.lastSale = result.sale;
       state.posScreen='catalog'; state.cashReceived=''; state.splitCash=''; state.splitTransfer='';
@@ -850,9 +945,11 @@ async function performCheckout(action, payload, subtotal) {
       state.cart.clear();
       state.authRef = '';
       state.discount = '0';
-      await state.checkout.acknowledge();
+      await operation.acknowledge();
+      if(!current())return;
       state.pendingId = null;
       const fresh = await refreshLots();
+      if(!current())return;
       const changed = result.sale.subtotal_satang !== result.op.preview_subtotal_satang;
       state.message = 'เซิร์ฟเวอร์ยืนยันรายการแล้ว ไม่ตัดสต็อกซ้ำ' +
         (changed ? ' · ราคาปัจจุบันต่างจากประมาณการ ใช้ยอดยืนยันที่แสดง' : '') +
@@ -864,32 +961,23 @@ async function performCheckout(action, payload, subtotal) {
       state.error = true;
     }
   } catch (error) {
+    if(!current())return;
     restorePending();
     state.message = error.message;
     state.error = true;
-  } finally { state.busy = false; render(); }
+  } finally { activeIO--;state.busy = false; render(); }
 }
 async function verifyPending() { await runCheckout('verify'); }
 async function logout() {
-  if (state.busy) return;
-  await api.auth.signOut();
-  state.user = null;
-  state.store = null;
-  state.role = null;
-  state.cart.clear();
-  state.lots = [];
-  state.products = [];
-  state.view = 'sales';
-  state.message = '';
-  state.lastSale = null;
-  state.pendingId = null;
-  state.checkout = null;
-  state.pendingBlocked = false;
-  state.discount = '0';
-  resetInventoryState();
+  if(api?.auth.isPinSession())return deviceAuth.lock();
+  if (state.busy||activeIO) return;
+  const request=api.auth.signOut();
+  clearBusinessDisplay();
   render();
+  await request;
 }
 window.addEventListener('storage', event => {
+  deviceAuth?.storageChanged(event);
   if (state.checkout && (event.key?.startsWith(state.checkout.key) || event.key === null)) {
     const hadPending = state.pendingId;
     const op = restorePending();
@@ -908,6 +996,8 @@ window.addEventListener('online', () => {
   else render();
 });
 window.addEventListener('offline', render);
+document.addEventListener('visibilitychange',()=>deviceAuth?.checkExpiry());
+window.addEventListener('pageshow',()=>deviceAuth?.checkExpiry());
 if (api) startSession();
 else render();
 
