@@ -1,0 +1,41 @@
+.management-shell{min-height:100dvh;background:#f5f8f5;color:#183e2d;padding-bottom:24px}
+.management-shell .manager-layout{max-width:1120px;margin:20px auto;padding:0 20px}
+.management-shell .main-panel{background:#fff;border-color:#d3e1d7;border-radius:14px;box-shadow:0 2px 6px #183e2d06}
+.management-shell .heading{align-items:flex-start;flex-wrap:wrap}
+.management-shell h1{font-size:1.4rem}.management-shell h2{color:#245e3c}
+.management-shell label{color:#355742}.management-shell input,.management-shell select{background:#fff;color:#183e2d;border-color:#b8ccbd;width:100%}
+.management-shell input:focus,.management-shell select:focus{outline:2px solid #478c5e;outline-offset:2px}
+.management-shell input[type="checkbox"]{width:22px;min-width:22px;accent-color:#478c5e}
+.management-shell input[type="file"]{background:#f5f8f5;line-height:1.6;min-height:48px}
+.management-shell input::file-selector-button{background:#e4f0e7;color:#245e3c;border:1px solid #95bba2;border-radius:6px;padding:7px 10px;margin-right:8px;cursor:pointer}
+.management-shell .primary{background:#73b98c;color:#102c20;min-height:48px}
+.management-shell .ghost{border-color:#95bba2;background:#fff;color:#245e3c;min-height:44px}
+.management-shell button:disabled,.management-shell input:disabled,.management-shell select:disabled{opacity:.6}
+.management-shell .muted,.management-shell .footnote,.management-shell .empty,.management-shell .inventory-table small{color:#526b5c}
+.management-shell .view-links strong,.management-shell .eyebrow{color:#245e3c}
+.management-shell .alert{background:#e0eee4;color:#254d35;border-color:#abc9b4}
+.management-shell .alert.danger{background:#fff0e8;color:#7b3724;border-color:#e8b99d}
+.management-shell .alert.success{background:#d9f0df;color:#245c36;border-color:#8eb79a}
+.management-shell .danger-text{color:#9e382a}
+.management-shell .inventory-table th,.management-shell .inventory-table td{border-color:#dbe6de;vertical-align:top}
+.management-shell .inventory-table th{color:#355742;background:#f1f6f2}
+.management-shell .inventory-table{scroll-margin-top:90px}
+.management-shell .inventory-valuation{background:#e4f0e7;border-color:#abc9b4;color:#245e3c}
+.management-shell .unknown-cost{color:#89521d}
+.management-shell .scale-preview{border-color:#abc9b4;background:#f5f8f5}
+.management-shell .photo-thumbnail{color:#245e3c;text-decoration:underline;text-underline-offset:3px}
+.management-shell .count-confirm{line-height:1.65}.management-shell .count-confirm input{margin-top:3px}
+.management-shell form{scroll-margin-top:90px}
+.management-shell .stocktake-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+@media(max-width:790px){.management-shell .manager-layout{padding:0 12px;margin:12px auto}}
+@media(max-width:560px){
+  .management-shell .main-panel{padding:16px 13px}
+  .management-shell .count-table tr{background:#fff;border-color:#c5d9cb;padding:14px;margin:14px 0}
+  .management-shell .count-table td{background:transparent;vertical-align:middle}
+  .management-shell .count-table td::before{color:#526b5c}
+  .management-shell .count-table td:last-child{color:#245e3c}
+  .management-shell .count-table td[data-label="หลักฐานเครื่องชั่ง"]{border-color:#dbe6de}
+  .management-shell .stocktake-actions{grid-template-columns:1fr}
+  .management-shell .heading>.ghost{flex-shrink:0}
+  .management-shell .photo-control input{font-size:1rem}
+}

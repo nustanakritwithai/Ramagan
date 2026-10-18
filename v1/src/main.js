@@ -9,12 +9,14 @@ import {createEvidenceDraft, supportsEvidence} from './evidence-draft.js';
 import {cleanupNavigation, mountNavigation, navigationHeader} from './navigation.js';
 import {createPageState, renderSidePage, loadReceipts, supportsReceipts} from './pages.js';
 import {createDeviceAuth} from './device-auth.js';
+import {createSaleVoid,voidPendingKey} from './sale-void.js';
 import {supportsSharedPin,pendingDeviceActor} from './device-session.js';
 import {renderPinLock,pinSettingsHtml,bindPinSettings} from './pin-ui.js';
 import './style.css';
 import './navigation.css';
 import './pages.css';
 import './pin.css';
+import './management.css';
 
 const root = document.getElementById('app');
 // A user can configure HTTPS endpoint directly in their Android app.
@@ -28,6 +30,8 @@ let configured = Boolean(apiUrl);
 let api = configured ? createClient(apiUrl) : null;
 let setupError = '';
 let deviceAuth=null,authSerial=0,activeIO=0,authSubscription=null;
+let countDraftWrites=Promise.resolve();
+let countFormUpdate=null;
 
 const state = {
   user: null, store: null, role: null, lots: [], cart: new Map(),
@@ -37,6 +41,7 @@ const state = {
   stocktake: null, receive: null, inventoryPending: {}, inventoryBlocked: false,
   counts: new Map(), shiftLabel: 'กะเช้า', countReason: '', countConfirmed: false, inventoryLoad: 0,
   historyDetail: null, historyError: '', historyRequest: 0,
+  saleVoid:null, voidPending:null, voidBlocked:false,
   posScreen: 'catalog', posMenuOpen: false, quantityLot: null, quantityText: '1', quantityEditing: false,
   cashReceived: '', splitCash: '', splitTransfer: '', catalogQuery: '',
   draftStore: null, countDraft: null, draftError: '', draftStale: false, photoBusy: null, photoUrls: [], historyPhotoUrls: {}, draftSaving: 0,
@@ -105,6 +110,7 @@ function statusChip() {
     '<span class="status offline">ออฟไลน์ · ดูข้อมูลเท่านั้น</span>';
 }
 function render() {
+  countFormUpdate=null;
   cleanupNavigation();
   if (!configured) return renderSetup();
   const pin=deviceAuth?.snapshot();
@@ -168,7 +174,7 @@ function renderSetup() {
 }
 
 async function changeServer() {
-  if (state.pendingId || hasInventoryPending() || state.busy || activeIO || deviceAuth?.snapshot().busy) {
+  if (hasPendingMutation() || state.busy || activeIO || deviceAuth?.snapshot().busy) {
     return setMessage('ต้องตรวจสอบรายการขายหรือสต็อกค้างก่อนเปลี่ยนเซิร์ฟเวอร์', true);
   }
   try{if(deviceAuth?.pendingActor())return setMessage('ต้องตรวจสอบรายการค้างของเครื่องนี้ก่อนเปลี่ยนเซิร์ฟเวอร์',true);}catch{return setMessage('อ่านรายการค้างไม่ได้ กรุณาเข้าบัญชีเดิมเพื่อตรวจสอบ',true);}
@@ -222,7 +228,7 @@ function hasInventoryPending() {
   return state.inventoryBlocked || Object.values(state.inventoryPending).some(Boolean);
 }
 function hasPendingMutation() {
-  return state.pendingBlocked || Boolean(state.pendingId) || hasInventoryPending();
+  return state.pendingBlocked || Boolean(state.pendingId) || hasInventoryPending() || state.voidBlocked || Boolean(state.voidPending);
 }
 async function withNewMutation(task) {
   if (state.busy) return;
@@ -233,7 +239,7 @@ async function withNewMutation(task) {
     return await navigator.locks.request(mutationScopeKey(identity), {ifAvailable: true}, async lock => {
       if (!lock) throw new Error('มีรายการกำลังทำงานในอีกหน้าต่าง กรุณารอสักครู่');
       if(!current())return;
-      restorePending(); restoreInventoryPending();
+      restorePending(); restoreInventoryPending(); restoreVoidPending();
       assertNoPendingMutation(localStorage, identity);
       if (hasPendingMutation()) throw new Error('มีรายการค้าง ต้องตรวจสอบรายการเดิมก่อน');
       return task();
@@ -250,6 +256,7 @@ function resetInventoryState() {
   state.inventory = null; state.inventoryError = ''; state.stocktakes = [];
   state.stocktakeError = ''; state.stocktake = null; state.receive = null;
   state.inventoryPending = {}; state.inventoryBlocked = false;
+  state.saleVoid=null;state.voidPending=null;state.voidBlocked=false;
   state.counts.clear(); state.countConfirmed = false; state.countReason = '';
   state.shiftLabel = 'กะเช้า';
   state.historyDetail = null; state.historyError = ''; state.historyRequest++;
@@ -261,6 +268,43 @@ function restoreInventoryPending() {
     try { state.inventoryPending[kind] = state[kind]?.read() || null; }
     catch (error) { state.inventoryBlocked = true; state.message = error.message; state.error = true; }
   }
+}
+function restoreVoidPending(){
+  state.voidBlocked=false;
+  try{
+    if(!state.saleVoid&&state.store&&localStorage.getItem(voidPendingKey({api:api.base,store:state.store.id}))!==null)
+      throw new Error('มีคำขอยกเลิกค้าง ต้องใช้บัญชี Owner/Manager เดิมตรวจสอบ');
+    state.voidPending=state.saleVoid?.read()||null;
+  }
+  catch(error){state.voidBlocked=true;state.message=error.message;state.error=true;}
+}
+async function runReceiptVoid(action,receipt,reason){
+  if(state.busy||!canManage()||!state.saleVoid)return null;
+  const current=authGuard(),controller=state.saleVoid;
+  const run=async()=>{
+    state.busy=true;activeIO++;render();
+    try{
+      const result=action==='start'?await controller.start(receipt,reason):
+        action==='retry'?await controller.retry():action==='close'?(await controller.acknowledge(),{closed:true}):await controller.verify();
+      if(!current())return null;
+      restoreVoidPending();
+      if(result?.result){
+        state.pages.receiptNotice='เซิร์ฟเวอร์ยืนยันการยกเลิกแล้ว คืนสต็อกครั้งเดียวและเก็บใบเสร็จเดิมไว้ · การคืนเงินจริงให้ดำเนินการกับลูกค้าตามช่องทางเดิม';
+        await controller.acknowledge();restoreVoidPending();
+        // Preserve any unsubmitted stocktake/photo draft. A later stocktake is
+        // checked against its original revisions by the server.
+        await refreshLots();
+      }else if(result?.rejected){state.pages.receiptNotice='คำขอนี้ถูกปฏิเสธ: '+(result.error?.message||'กรุณาตรวจสอบใบเสร็จ');}
+      else if(result?.pending){state.pages.receiptNotice='ยังไม่ทราบผล ต้องตรวจสอบหรือส่งคำขอเดิมด้วย ID เดิม ห้ามสร้างรายการทดแทนจนกว่าจะทราบผล';}
+      return result;
+    }catch(error){if(current()){restoreVoidPending();state.pages.receiptNotice=error.message;}return null;}
+    finally{activeIO--;state.busy=false;if(current())render();}
+  };
+  if(action==='start')return withNewMutation(run);
+  if(!navigator.locks)return null;
+  try{return await navigator.locks.request(mutationScopeKey({api:api.base,store:state.store.id}),{ifAvailable:true},lock=>{
+    if(!lock)throw new Error('อีกหน้าต่างกำลังทำรายการ กรุณารอ');if(current())return run();
+  });}catch(error){if(current()){state.pages.receiptNotice=error.message;render();}return null;}
 }
 function renderLogin() {
   root.innerHTML = [
@@ -322,7 +366,8 @@ function renderDashboard() {
 }
 function navigationContext() {
   return {root,state,api,currentApi:()=>api,render,canManage,openView,logout,changeServer,
-    adminUrl:ADMIN_REPORT_URL,apiUrl,appVersion:'1.4.0',pinSettingsHtml:()=>pinSettingsHtml(pinFlags()),bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
+    voidReceipt:runReceiptVoid,hasPending:hasPendingMutation,
+    adminUrl:ADMIN_REPORT_URL,apiUrl,appVersion:'1.5.0',pinSettingsHtml:()=>pinSettingsHtml(pinFlags()),bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
       if(!canManage())return;
       openView('inventory');
       const form=root.querySelector('#'+section);
@@ -339,6 +384,8 @@ function openView(view) {
 }
 function renderManagerPage(renderer,title) {
   renderer();
+  const shell=document.createElement('div');shell.className='management-shell';
+  shell.append(...root.childNodes);root.append(shell);
   const header=root.querySelector('.topbar');
   if(header)header.outerHTML=navigationHeader({title,subtitle:state.store.name,showCart:true,cartCount:state.cart.size});
   root.querySelector('#open-ticket')?.addEventListener('click',()=>{state.posScreen='ticket';openView('sales');});
@@ -471,17 +518,19 @@ function bindInventoryPending() {
 function stocktakePayload() {
   if (!state.inventory) throw new Error('ต้องโหลดยอดระบบล่าสุดก่อนนับสต็อก');
   const shift = state.shiftLabel.trim(), reason = state.countReason.trim();
-  if (!shift || shift.length > 80 || !reason || reason.length > 300) throw new Error('ระบุกะ / รอบ และเหตุผลการนับสต็อกให้ครบ');
+  if (!shift || shift.length > 80) throw new Error('ระบุกะ / รอบ ไม่เกิน 80 ตัวอักษร');
+  if (reason.length > 300) throw new Error('เหตุผลการนับสต็อกต้องไม่เกิน 300 ตัวอักษร');
+  if(state.draftSaving || state.photoBusy) throw new Error('กำลังบันทึกแบบร่าง / อัปโหลดรูป กรุณารอ');
   const items = [...state.counts.entries()].filter(([, value]) => value.trim() !== '').map(([lot_id, value]) => {
     const lot = (state.countDraft?.snapshot || state.inventory.lots).find(x => x.id === lot_id);
     if (!lot || !Number.isSafeInteger(lot.stock_revision) || lot.stock_revision < 0) throw new Error('ข้อมูลรุ่นสต็อกไม่ครบ กรุณารีโหลดยอดระบบ');
     const photo=state.countDraft?.photos[lot_id];
-    if (!photo?.metadata?.evidence_id || photo.counted_value!==value) throw new Error('แนบและอัปโหลดรูปเครื่องชั่งให้ครบทุก Lot ที่กรอกยอดนับ');
+    if (!photo?.metadata?.evidence_id) throw new Error('แนบและอัปโหลดรูปเครื่องชั่งให้ครบทุก Lot ที่กรอกยอดนับ');
+    if(state.countDraft.counts[lot_id]!==value)throw new Error('ยอดนับล่าสุดยังไม่บันทึกในเครื่อง กรุณารอหรือกรอกใหม่');
     return {lot_id, expected_revision: lot.stock_revision, counted_quantity_mg: countedMilligrams(value), evidence_id: photo.metadata.evidence_id};
   }).sort((a, b) => a.lot_id.localeCompare(b.lot_id));
   if (!items.length || items.length > 200) throw new Error('กรอกยอดนับอย่างน้อย 1 Lot และไม่เกิน 200 Lot');
   if(state.draftStale) throw new Error('สต็อกเปลี่ยนจากแบบร่าง กรุณาเริ่มนับใหม่และแนบรูปใหม่');
-  if(state.draftSaving || state.photoBusy) throw new Error('กำลังบันทึกแบบร่าง / อัปโหลดรูป กรุณารอ');
   if(!state.countDraft?.id) throw new Error('ยังบันทึกแบบร่างไม่ได้ จึงยังส่งการนับไม่ได้');
   return {client_stocktake_id: state.countDraft.id, shift_label: shift, reason, items};
 }
@@ -500,7 +549,7 @@ function renderStocktake() {
     const photo=state.countDraft?.photos[lot.id]; let photoHtml='';
     if(photo?.blob && URL.createObjectURL) {const url=URL.createObjectURL(photo.blob);state.photoUrls.push(url);photoHtml='<img class="scale-preview" src="'+h(url)+'" alt="รูปเครื่องชั่ง Lot '+h(lot.lot_code)+'" />';}
     photoHtml+='<label class="photo-control">รูปเครื่องชั่ง (ต้องมี)<input type="file" data-photo="'+h(lot.id)+'" accept="image/jpeg,image/png,image/webp" capture="environment" '+(locked?'disabled':'')+' /></label>'+
-      (photo?'<p class="footnote">'+(photo.metadata?'อัปโหลดรูปแล้ว':'รูปยังไม่ยืนยันการอัปโหลด ใช้รูปและเลขอ้างอิงเดิมเมื่อส่งซ้ำ')+'</p>'+(!photo.metadata?'<button type="button" class="ghost" data-photo-upload="'+h(lot.id)+'" '+(locked?'disabled':'')+'>อัปโหลดรูปเดิมอีกครั้ง</button>':''):'<p class="footnote">กรอกยอดนับแล้วถ่ายรูป / เลือกรูปเครื่องชั่งให้เห็นน้ำหนัก</p>');
+      '<p class="footnote" data-photo-note="'+h(lot.id)+'"></p><button type="button" class="ghost" data-photo-upload="'+h(lot.id)+'" hidden disabled>อัปโหลดรูปเครื่องชั่ง</button>';
     return '<tr><td data-label="สินค้า / Lot"><strong>' + h(lot.name) + '</strong><small>' + h(lot.lot_code) +
       (lot.expires_on && lot.expires_on < today ? ' · หมดอายุ' : '') +
       (!lot.active || !lot.product_active ? ' · ไม่ใช้งาน' : '') + '</small></td><td data-label="ยอดระบบ">' +
@@ -525,7 +574,7 @@ function renderStocktake() {
     inventoryPendingHtml(),
     '<form id="stocktake-form"><div class="admin-grid"><label>กะ / รอบ <input id="shift-label" maxlength="80" required value="', h(state.shiftLabel), '" ', locked ? 'disabled' : '', ' /></label>',
     '<label>ผู้ตรวจนับ (บัญชีที่เข้าสู่ระบบ) <input value="', h(state.user.email || state.user.id), '" readonly /></label></div>',
-    '<label>เหตุผลการตรวจนับและปรับยอด <input id="count-reason" maxlength="300" required value="', h(state.countReason), '" ', locked ? 'disabled' : '', ' /></label>',
+    '<label>เหตุผลการตรวจนับและปรับยอด (ถ้ามี) <input id="count-reason" maxlength="300" value="', h(state.countReason), '" ', locked ? 'disabled' : '', ' /></label>',
     '<p class="footnote">กรอก 0 เมื่อนับแล้วไม่มีสินค้า ช่องว่างหมายถึงไม่นับ Lot นั้น · รวม Lot หมดอายุและไม่ใช้งาน · ยอดอาจเปลี่ยนจากอุปกรณ์อื่น หากเปลี่ยนต้องโหลดและนับใหม่</p>',
     '<div class="inventory-table count-table"><table><thead><tr><th>สินค้า / Lot</th><th>ยอดระบบ</th><th>ยอดนับจริง (กรัม)</th><th>ส่วนต่าง</th><th>รูปหลักฐาน</th></tr></thead><tbody>', rows, '</tbody></table></div>',
     '<label class="count-confirm"><input id="count-confirm" type="checkbox" ', state.countConfirmed ? 'checked ' : '', locked ? 'disabled ' : '',
@@ -551,6 +600,7 @@ function renderStocktake() {
     state.counts.clear(); state.countConfirmed = false; await refreshLots();
   });
   const update = () => {
+    if(!root.querySelector('#stocktake-form'))return;
     let valid = false, reason='';
     try { stocktakePayload(); valid = true; } catch(error) { reason=error.message; }
     if(state.busy) reason='กำลังดำเนินรายการ กรุณารอ';
@@ -561,21 +611,34 @@ function renderStocktake() {
     else if(valid&&!state.countConfirmed) reason='ตรวจสอบยอดนับและรูปแล้วทำเครื่องหมายยืนยัน';
     root.querySelector('#count-validation').textContent=reason||'ข้อมูลและรูปครบ พร้อมยืนยันการนับ';
     root.querySelector('#confirm-count').disabled = locked || !state.countConfirmed || !valid || Boolean(state.draftError);
+    root.querySelector('#reload-count').disabled = state.busy || hasInventoryPending() || Boolean(state.photoBusy) || Boolean(state.draftSaving);
+    root.querySelectorAll('[data-photo-upload]').forEach(button=>{
+      const lot=button.dataset.photoUpload,photo=state.countDraft?.photos[lot];
+      const uploaded=Boolean(photo?.metadata);
+      const note=root.querySelector('[data-photo-note="'+CSS.escape(lot)+'"]');
+      note.textContent=uploaded?'อัปโหลดรูปแล้ว':photo?.blob?
+        'รูปยังไม่ยืนยันการอัปโหลด ส่งซ้ำได้ด้วยรูปและเลขอ้างอิงเดิม':
+        'ถ่ายรูป / เลือกรูปเครื่องชั่งก่อนหรือหลังกรอกยอดนับได้';
+      button.hidden=!photo?.blob||uploaded;
+      button.disabled=locked||Boolean(state.draftSaving)||!photo?.blob||uploaded;
+    });
   };
+  const form=root.querySelector('#stocktake-form');
+  countFormUpdate=()=>{if(root.querySelector('#stocktake-form')===form)update();};
+  const updateIfCurrent=()=>countFormUpdate?.();
   root.querySelectorAll('[data-count]').forEach(input => input.addEventListener('input', async () => {
     if (locked) return;
     state.counts.set(input.dataset.count, input.value);
-    if(state.countDraft) delete state.countDraft.photos[input.dataset.count];
     state.countConfirmed = false; root.querySelector('#count-confirm').checked = false;
     const lot = state.inventory.lots.find(x => x.id === input.dataset.count);
     const node = root.querySelector('[data-variance="' + CSS.escape(input.dataset.count) + '"]');
     try { node.textContent = input.value.trim() === '' ? '—' : signedGrams(countedMilligrams(input.value) - lot.quantity_mg) + ' กรัม'; }
     catch (error) { node.textContent = error.message; }
     const saving=saveCountDraft('count',input.dataset.count,input.value);update();
-    await saving; renderCountInput('[data-count="'+CSS.escape(input.dataset.count)+'"]');
+    await saving; updateIfCurrent();
   }));
-  root.querySelector('#shift-label').addEventListener('input', event => { if (!locked) { state.shiftLabel = event.target.value; const saving=saveCountDraft('shift_label',null,state.shiftLabel);update(); saving.then(()=>renderCountInput('#shift-label')); } });
-  root.querySelector('#count-reason').addEventListener('input', event => { if (!locked) { state.countReason = event.target.value; const saving=saveCountDraft('reason',null,state.countReason);update(); saving.then(()=>renderCountInput('#count-reason')); } });
+  root.querySelector('#shift-label').addEventListener('input', event => { if (!locked) { state.shiftLabel = event.target.value;state.countConfirmed=false;root.querySelector('#count-confirm').checked=false; const saving=saveCountDraft('shift_label',null,state.shiftLabel);update(); saving.then(updateIfCurrent); } });
+  root.querySelector('#count-reason').addEventListener('input', event => { if (!locked) { state.countReason = event.target.value;state.countConfirmed=false;root.querySelector('#count-confirm').checked=false; const saving=saveCountDraft('reason',null,state.countReason);update(); saving.then(updateIfCurrent); } });
   root.querySelector('#count-confirm').addEventListener('change', event => { if (!locked) { state.countConfirmed = event.target.checked; update(); } });
   root.querySelector('#stocktake-form').addEventListener('submit', async event => {
     event.preventDefault();
@@ -586,26 +649,25 @@ function renderStocktake() {
   bindInventoryPending(); update();
   root.querySelectorAll('[data-photo]').forEach(input=>input.addEventListener('change',async()=>{
     if(locked||!input.files?.[0])return;
-    const lot=input.dataset.photo,file=input.files[0],actor=state.user?.id,shop=state.store?.id,store=state.draftStore;
+    const lot=input.dataset.photo,file=input.files[0],actor=state.user?.id,shop=state.store?.id,store=state.draftStore,session=authGuard();
+    const current=()=>session()&&actor===state.user?.id&&shop===state.store?.id&&store===state.draftStore;
     // Invalidate the old selection synchronously, before any IndexedDB await.
     activeIO++;state.photoBusy=lot;state.countConfirmed=false;if(state.countDraft)delete state.countDraft.photos[lot];render();
     try{
+      await countDraftWrites;
+      if(!current())return;
       await ensureCountDraft();const cleared=await store.invalidate(lot);
-      if(actor!==state.user?.id||shop!==state.store?.id||store!==state.draftStore)return;
+      if(!current())return;
       state.countDraft=cleared;const draft=await store.select(lot,file);
-      if(actor!==state.user?.id||shop!==state.store?.id||store!==state.draftStore)return;
+      if(!current())return;
       state.countDraft=draft;state.photoBusy=null;await uploadCountPhoto(lot);
-    }catch(error){if(actor===state.user?.id&&shop===state.store?.id&&store===state.draftStore){state.photoBusy=null;setMessage(error.message,true);}}
-    finally{activeIO--;render();}
+    }catch(error){if(current()){state.photoBusy=null;state.message=error.message;state.error=true;}}
+    finally{activeIO--;if(current()&&state.view==='stocktake')render();}
   }));
   root.querySelectorAll('[data-photo-upload]').forEach(button=>button.onclick=()=>uploadCountPhoto(button.dataset.photoUpload));
   root.querySelectorAll('[data-history]').forEach(button => button.addEventListener('click', () => loadHistoryDetail(button.dataset.history)));
   root.querySelectorAll('[data-history-photo]').forEach(button=>button.onclick=()=>loadHistoryPhoto(button.dataset.historyPhoto));
   root.querySelectorAll('[data-photo-view]').forEach(button=>button.onclick=()=>openEvidenceViewer(state.historyPhotoUrls[button.dataset.photoView]));
-}
-function renderCountInput(selector) {
-  const focused=document.activeElement===root.querySelector(selector); render();
-  const node=root.querySelector(selector); if(focused&&node){node.focus();node.setSelectionRange?.(node.value.length,node.value.length);}
 }
 async function ensureCountDraft() {
   if(!state.draftStore || !state.inventory) throw new Error('ยังเปิดพื้นที่บันทึกแบบร่างไม่ได้');
@@ -616,26 +678,31 @@ async function ensureCountDraft() {
 }
 async function saveCountDraft(field, lot, value) {
   const actor=state.user?.id, store=state.store?.id, draftStore=state.draftStore; state.draftSaving++;activeIO++;
-  try {
+  const current=()=>state.user?.id===actor&&state.store?.id===store&&state.draftStore===draftStore;
+  const operation=countDraftWrites.then(async()=>{
+    if(!current())return;
     await ensureCountDraft();
-    if(draftStore!==state.draftStore)return;
+    if(!current())return;
     const draft=field==='count'?await draftStore.setCount(lot,value):await draftStore.setMeta(field,value);
-    if(state.user?.id===actor&&state.store?.id===store){state.countDraft=draft;state.draftError='';}
-  } catch(error){if(state.user?.id===actor&&state.store?.id===store)state.draftError=error.message;}
-  finally{state.draftSaving=Math.max(0,state.draftSaving-1);activeIO--;render();}
+    if(current()){state.countDraft=draft;state.draftError='';}
+  });
+  countDraftWrites=operation.catch(()=>{});
+  try{await operation;}catch(error){if(current())state.draftError=error.message;}
+  finally{if(current()){state.draftSaving=Math.max(0,state.draftSaving-1);countFormUpdate?.();}activeIO--;}
 }
 async function uploadCountPhoto(lot) {
-  if(state.photoBusy||state.busy||hasPendingMutation()||!navigator.onLine)return;
-  const actor=state.user.id,store=state.store.id,draftStore=state.draftStore,photo=state.countDraft?.photos[lot],draftId=state.countDraft?.id;
+  if(state.photoBusy||state.draftSaving||state.busy||hasPendingMutation()||!navigator.onLine||state.draftStale)return;
+  const draftStore=state.draftStore,draftId=state.countDraft?.id,photo=state.countDraft?.photos[lot],client=api,current=authGuard();
   if(!photo)return;
   activeIO++;state.photoBusy=lot;render();
   try {
-    const {data,error}=await api.uploadEvidence(photo,{lot_id:lot,client_stocktake_id:draftId});
+    const {data,error}=await client.uploadEvidence(photo,{lot_id:lot,client_stocktake_id:draftId});
     if(error)throw error;
+    if(!current()||draftStore!==state.draftStore)return;
     const draft=await draftStore.uploaded(lot,photo.client_upload_id,data);
-    if(state.user?.id===actor&&state.store?.id===store){state.countDraft=draft;state.message='อัปโหลดรูปเครื่องชั่งแล้ว';state.error=false;}
-  }catch(error){if(state.user?.id===actor&&state.store?.id===store){state.message='ยังไม่ยืนยันการอัปโหลดรูป: '+error.message+' · เก็บรูปและเลขอ้างอิงเดิมไว้แล้ว';state.error=true;}}
-  finally{activeIO--;if(state.user?.id===actor&&state.store?.id===store)state.photoBusy=null;render();}
+    if(current()&&draftStore===state.draftStore){state.countDraft=draft;state.message='อัปโหลดรูปเครื่องชั่งแล้ว';state.error=false;}
+  }catch(error){if(current()&&draftStore===state.draftStore){state.message='ยังไม่ยืนยันการอัปโหลดรูป: '+error.message+' · เก็บรูปและเลขอ้างอิงเดิมไว้แล้ว';state.error=true;}}
+  finally{activeIO--;if(current()&&draftStore===state.draftStore){state.photoBusy=null;if(state.view==='stocktake')render();}}
 }
 async function restoreCountDraft() {
   if(!state.draftStore||!state.inventory)return;
@@ -833,9 +900,17 @@ async function loadProfile(user,{current:sessionCurrent=()=>true,role:expectedRo
       kind, transport: client.inventoryTransport(kind), uuid: () => crypto.randomUUID(), lock
     });
     restoreInventoryPending();
+    state.saleVoid=createSaleVoid({storage:localStorage,
+      identity:{api:client.base,store:state.store.id,actor:user.id},transport:client.saleVoidTransport,
+      uuid:()=>crypto.randomUUID(),lock:navigator.locks?(key,task)=>navigator.locks.request(key,{ifAvailable:true},held=>{
+        if(!held)throw new Error('อีกหน้าต่างกำลังตรวจสอบคำขอยกเลิก');
+        if(!profileCurrent())throw new Error('การปลดล็อกเปลี่ยนแล้ว ต้องเก็บคำขอเดิมไว้');return task();
+      }):null});
   }
   state.message = '';
   restorePending();
+  restoreVoidPending();
+  if(state.voidPending||state.voidBlocked)state.view='receipts';
   await refreshLots();
   function profileCurrent(){return current()&&sessionCurrent();}
 }
@@ -885,7 +960,7 @@ async function refreshLots() {
       quantity_mg: Number(quantity || 0)
     };
   });
-  if (!state.pendingBlocked && !state.inventoryBlocked) state.message = '';
+  if (!state.pendingBlocked && !state.inventoryBlocked && !state.voidBlocked) state.message = '';
   await restoreCountDraft();
   render();
   return !enhanced || Boolean(state.inventory);
@@ -978,6 +1053,9 @@ async function logout() {
 }
 window.addEventListener('storage', event => {
   deviceAuth?.storageChanged(event);
+  if(state.store&&(event.key===null||event.key===voidPendingKey({api:api.base,store:state.store.id}))){
+    restoreVoidPending();if(state.voidPending||state.voidBlocked)state.view='receipts';render();
+  }
   if (state.checkout && (event.key?.startsWith(state.checkout.key) || event.key === null)) {
     const hadPending = state.pendingId;
     const op = restorePending();

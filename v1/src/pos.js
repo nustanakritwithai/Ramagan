@@ -14,7 +14,9 @@ export function paymentPreview(state, total) {
       if (!cash || !transfer || cash + transfer !== total) throw new Error('ยอดเงินสดและโอนต้องมากกว่า 0 และรวมเท่ากับยอดสุทธิ');
       payments = [{payment_method:'cash',amount_satang:cash},{payment_method:'transfer',amount_satang:transfer}];
     }
-    const received = cash ? discountSatang(state.cashReceived || '', Number.MAX_SAFE_INTEGER) : 0;
+    // Split cash is the exact cash allocation already entered above. A second
+    // tender field would duplicate it and needlessly block confirmation.
+    const received = state.payment === 'split' ? cash : cash ? discountSatang(state.cashReceived || '', Number.MAX_SAFE_INTEGER) : 0;
     if (received < cash) throw new Error('เงินสดที่รับต้องไม่น้อยกว่ายอดเงินสดที่ต้องชำระ');
     return {cash, transfer, received, change: received - cash, ...(payments ? {payments} : {})};
   } catch (error) {return {error:error.message};}
@@ -52,7 +54,7 @@ export function renderPos(ctx) {
       if(state.store.requires_authorization&&!state.authRef.trim()) payment.error ||= 'ระบุรหัสเอกสารอ้างอิงก่อนยืนยันรายการ';
       content='<h1>ชำระเงิน</h1><div class="pos-pay-total"><span>ยอดชำระสุทธิ</span><strong>'+h(totalLabel)+'</strong></div><div class="pos-payment-methods">'+[['cash','เงินสด'],['transfer','โอนเงิน'],['split','เงินสด + โอน']].map(([value,label])=>'<button type="button" data-payment="'+value+'" class="'+(state.payment===value?'selected':'')+'" '+(locked||(value==='split'&&!supportsSplitPayments(state.capabilities))?'disabled':'')+'>'+label+'</button>').join('')+'</div>'+
         (state.payment==='split'?'<div class="admin-grid"><label>ชำระเงินสด (บาท)<input id="split-cash" inputmode="decimal" value="'+h(state.splitCash||'')+'" '+(locked?'disabled':'')+' /></label><label>ชำระเงินโอน (บาท)<input id="split-transfer" inputmode="decimal" value="'+h(state.splitTransfer||'')+'" '+(locked?'disabled':'')+' /></label></div>':'')+
-        (state.payment!=='transfer'?'<label>เงินสดที่รับ (บาท)<input id="cash-received" inputmode="decimal" value="'+h(state.cashReceived||'')+'" '+(locked?'disabled':'')+' /></label><p class="pos-change">เงินทอน <strong id="change">'+h(payment.error?'—':formatBaht(payment.change))+'</strong></p>':'<p class="footnote">ตรวจสอบยอดโอนเข้าร้านก่อนยืนยันรายการ</p>')+
+        (state.payment==='cash'?'<label>เงินสดที่รับ (บาท)<input id="cash-received" inputmode="decimal" value="'+h(state.cashReceived||'')+'" '+(locked?'disabled':'')+' /></label><p class="pos-change">เงินทอน <strong id="change">'+h(payment.error?'—':formatBaht(payment.change))+'</strong></p>':'<p class="footnote">ตรวจสอบยอดโอนเข้าร้านก่อนยืนยันรายการ</p>')+
         '<label>รหัสอ้างอิงเอกสาร'+(state.store.requires_authorization?'ที่ได้รับอนุญาต':' (ถ้ามี)')+'<input id="auth-ref" maxlength="120" value="'+h(state.authRef)+'" '+(locked?'disabled':'')+' /></label><div id="preview">'+ctx.previewHtml(totals)+'</div><p id="payment-error" class="danger-text">'+h(payment.error||'')+'</p><p class="footnote">ยอดเป็นประมาณการ ใช้ยอดที่เซิร์ฟเวอร์ยืนยัน และบันทึกเป็นหนึ่งบิลเท่านั้น</p>'+
         (state.pendingId?'<div class="alert danger">มีรายการส่งขายที่ยังไม่ทราบผล '+h(state.pendingId)+' ห้ามสร้างรายการใหม่</div>':'')+
         '<div class="checkout-actions"><button id="checkout" class="primary" '+(locked||!state.store.sales_enabled||!navigator.onLine||!items.length||totals.error||payment.error?'disabled':'')+'>ยืนยันรายการผ่านเซิร์ฟเวอร์</button>'+(state.pendingId&&!state.pendingBlocked?'<button id="verify" class="ghost" '+(state.busy?'disabled':'')+'>' + (supportsSaleReconciliation(state.capabilities)?'ตรวจสอบ / ยกเลิกเฉพาะรายการที่ยังไม่บันทึก':'ตรวจสอบรายการค้าง') + '</button><button id="retry" class="ghost" '+(state.busy?'disabled':'')+'>ส่งรายการเดิมซ้ำด้วย ID เดิม</button>':'')+'</div>';

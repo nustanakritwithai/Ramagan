@@ -160,6 +160,20 @@ export function createClient(serverUrl) {
       return request('GET','/v1/sales?'+query.toString());
     }),
     receipt: id => result(() => request('GET','/v1/sales/'+encodeURIComponent(id))),
+    saleVoidTransport: {
+      async capabilities(identity) {
+        if(identity.api!==base)throw new Error('เซิร์ฟเวอร์ของคำขอยกเลิกเปลี่ยนไป');
+        const me=await request('GET','/v1/me');
+        if(me.user?.id!==identity.actor||me.store_id!==identity.store||!['owner','manager'].includes(me.role))
+          throw new Error('บัญชี ร้าน หรือสิทธิ์เปลี่ยนไป ต้องใช้บัญชีเดิมตรวจสอบคำขอยกเลิก');
+        return me.capabilities;
+      },
+      post:(id,payload)=>request('POST','/v1/sales/'+encodeURIComponent(id)+'/void',payload),
+      async lookup(id) {
+        try{return await request('GET','/v1/sale-voids/by-client/'+encodeURIComponent(id));}
+        catch(error){if(error.status===404)return null;throw error;}
+      }
+    },
     inventory: () => result(() => request('GET', '/v1/inventory')),
     stocktakes: () => result(() => request('GET', '/v1/stocktakes')),
     stocktake: id => result(() => request('GET', '/v1/stocktakes/by-client/' + encodeURIComponent(id))),

@@ -44,7 +44,8 @@ export function createEvidenceDraft({indexedDB, identity, uuid}) {
         stock_revision: x.stock_revision})), counts: {}, photos: {}, shift_label: meta.shift_label, reason: meta.reason}),
     setCount: (lot, value) => transact(current => {
       const draft = requireDraft(current);
-      if (draft.counts[lot] !== value) delete draft.photos[lot];
+      // Evidence belongs to this draft and Lot, independently of input order.
+      // The final count and stock revision are validated only on submission.
       draft.counts[lot] = value; return draft;
     }),
     setMeta: (field, value) => transact(current => {const d = requireDraft(current); d[field] = value; return d;}),
@@ -52,14 +53,13 @@ export function createEvidenceDraft({indexedDB, identity, uuid}) {
     select: (lot, blob) => {
       validatePhoto(blob);
       return transact(current => {const draft = requireDraft(current);
-        if (!draft.counts[lot]?.trim()) throw new Error('กรอกยอดนับ Lot นี้ก่อนแนบรูปเครื่องชั่ง');
-        draft.photos[lot] = {client_upload_id: uuid(), blob, counted_value: draft.counts[lot], metadata: null};
+        draft.photos[lot] = {client_upload_id: uuid(), blob, metadata: null};
         return draft;
       });
     },
     uploaded: (lot, upload, metadata) => transact(current => {
       const draft = requireDraft(current), photo = draft.photos[lot];
-      if (!photo || photo.client_upload_id !== upload || photo.counted_value !== draft.counts[lot] ||
+      if (!photo || photo.client_upload_id !== upload ||
           metadata.client_upload_id !== upload || metadata.client_stocktake_id !== draft.id || metadata.lot_id !== lot ||
           typeof metadata.evidence_id !== 'string') throw new Error('รูปหรือยอดนับเปลี่ยนไป กรุณาตรวจสอบรูปของ Lot นี้ใหม่');
       photo.metadata = metadata; return draft;

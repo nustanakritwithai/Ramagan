@@ -85,7 +85,9 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
         product_active: true, quantity_mg: f.catalogQuantity ?? 10000}]};
     } else if (path.startsWith('/v1/stocktake-evidence/') && options.method==='POST') {
       const upload=path.split('/').at(-1);f.uploads.push({id:upload,body:options.body,query:parsed.search});
+      if(f.holdUpload)await f.holdUpload;
       if(f.failUpload)throw new TypeError('mock lost upload response');
+      f.uploadResponses=(f.uploadResponses||0)+1;
       data={evidence_id:upload,client_upload_id:upload,client_stocktake_id:parsed.searchParams.get('client_stocktake_id'),
         lot_id:parsed.searchParams.get('lot_id'),mime:'image/jpeg',byte_size:4,width:1,height:1,sha256:'fixture',duplicate:false,created_at:'2026-10-18T01:00:00Z'};
     } else if(path.startsWith('/v1/stocktake-evidence/')&&options.method==='GET'){
@@ -420,18 +422,106 @@ test('history detail arriving after logout cannot render the prior tenant', asyn
     assert.equal(app.q('.stocktake-detail'), null); assert(!/PRIVATE OLD TENANT/.test(app.text()));
   } finally { release(); app.close(); }
 });
-test('equal physical/system count is valid with a photo, and a missing reason is visibly explained',async()=>{
+test('equal physical/system count confirms with a photo and an optional empty reason',async()=>{
   const f=inventoryFixture(),app=await boot(f);
   try{
     app.menu('#open-stocktake');app.input('[data-count="'+lot+'"]','10');
     await until(()=>!app.q('#count-validation').textContent.includes('กำลังบันทึก'));
     app.photo('[data-photo="'+lot+'"]');await until(()=>/อัปโหลดรูปแล้ว/.test(app.text()));app.check('#count-confirm');
-    assert.equal(app.q('#confirm-count').disabled,true);assert.match(app.q('#count-validation').textContent,/เหตุผล/);
-    app.input('#count-reason','นับเท่ากับระบบ');await until(()=>!app.q('#confirm-count').disabled);
+    assert.equal(app.q('#count-reason').required,false);assert.match(app.q('#count-reason').closest('label').textContent,/ถ้ามี/);
+    assert.equal(app.q('#confirm-count').disabled,false);
     assert.equal(app.q('[data-variance="'+lot+'"]').textContent,'0 กรัม');
     app.submit('#stocktake-form');await until(()=>/เซิร์ฟเวอร์ยืนยันการนับและบันทึกประวัติแล้ว/.test(app.text()));
-    assert.equal(f.countPosts[0].items[0].counted_quantity_mg,10000);assert(f.countPosts[0].items[0].evidence_id);
+    assert.equal(f.countPosts[0].items[0].counted_quantity_mg,10000);assert(f.countPosts[0].items[0].evidence_id);assert.equal(f.countPosts[0].reason,'');
   }finally{app.close();}
+});
+test('count draft autosave keeps the same focused field and caret for digits, decimals, edits and composition',async()=>{
+  const f=inventoryFixture(),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');
+    const selector='[data-count="'+lot+'"]',input=app.q(selector),document=input.ownerDocument,w=document.defaultView;
+    input.focus();
+    for(const value of ['1','10','100','100.','100.1','100.12','100.125']){
+      app.input(selector,value);input.setSelectionRange(value.length,value.length);
+      await until(()=>!app.q('#reload-count').disabled);
+      assert.equal(app.q(selector),input,'Autosave must not replace the input');
+      assert.equal(document.activeElement,input,'Autosave must keep focus');
+      assert.equal(input.selectionStart,value.length);assert.equal(input.selectionEnd,value.length);
+    }
+    input.value='109.125';input.setSelectionRange(2,2);input.dispatchEvent(new w.InputEvent('input',{bubbles:true,inputType:'insertText',data:'9'}));
+    await until(()=>!app.q('#reload-count').disabled);
+    assert.equal(app.q(selector),input);assert.equal(document.activeElement,input);assert.equal(input.selectionStart,2);
+    input.dispatchEvent(new w.CompositionEvent('compositionstart',{bubbles:true}));
+    input.value='10.125';input.setSelectionRange(2,2);input.dispatchEvent(new w.InputEvent('input',{bubbles:true,isComposing:true,inputType:'insertCompositionText',data:'0'}));
+    await until(()=>!app.q('#reload-count').disabled);
+    assert.equal(app.q(selector),input);assert.equal(document.activeElement,input);assert.equal(input.selectionStart,2);
+    input.dispatchEvent(new w.CompositionEvent('compositionend',{bubbles:true}));
+    for(const [selector,value] of [['#shift-label','รอบเย็น'],['#count-reason','']]){
+      const field=app.q(selector);field.focus();app.input(selector,value);field.setSelectionRange(0,0);
+      await until(()=>!app.q('#reload-count').disabled);
+      assert.equal(app.q(selector),field);assert.equal(document.activeElement,field);assert.equal(field.selectionStart,0);
+    }
+    assert.equal(f.countPosts.length,0);assert.equal(f.uploads.length,0);
+  }finally{app.close();}
+});
+test('rapid draft writes preserve the latest values without moving focus to the previous Lot',async()=>{
+  const f=inventoryFixture(),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');const first=app.q('[data-count="'+lot+'"]'),second=app.q('[data-count="'+lot2+'"]');
+    first.focus();app.input('[data-count="'+lot+'"]','1');app.input('[data-count="'+lot+'"]','10');app.input('[data-count="'+lot+'"]','100');
+    second.focus();app.input('[data-count="'+lot2+'"]','2.125');second.setSelectionRange(2,2);
+    assert.equal(app.q('#confirm-count').disabled,true);
+    await until(()=>!app.q('#reload-count').disabled);
+    assert.equal(first.ownerDocument.activeElement,second);assert.equal(second.selectionStart,2);
+    assert.equal(app.q('[data-count="'+lot+'"]'),first);assert.equal(first.value,'100');assert.equal(second.value,'2.125');
+    app.click('#open-inventory');await new Promise(resolve=>setTimeout(resolve,20));
+    app.menu('#open-stocktake');assert.equal(app.q('[data-count="'+lot+'"]').value,'100');
+    assert.equal(app.q('[data-count="'+lot2+'"]').value,'2.125');assert.equal(f.countPosts.length,0);
+  }finally{app.close();}
+});
+test('photo-first upload works with an empty count and the same evidence survives count typing and confirmation edits',async()=>{
+  const f=inventoryFixture(),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');app.photo('[data-photo="'+lot+'"]');
+    await until(()=>f.uploads.length===1&&/อัปโหลดรูปแล้ว/.test(app.text()));
+    assert.equal(app.q('[data-count="'+lot+'"]').value,'');assert.equal(app.q('#confirm-count').disabled,true);
+    app.check('#count-confirm');app.submit('#stocktake-form');assert.equal(f.countPosts.length,0,'A photo without a numeric count is not a zero count');
+    const input=app.q('[data-count="'+lot+'"]');input.focus();
+    for(const value of ['1','10','100']){app.input('[data-count="'+lot+'"]',value);await until(()=>!app.q('#reload-count').disabled);assert.equal(input.ownerDocument.activeElement,input);}
+    assert.equal(f.uploads.length,1);assert(app.q('.scale-preview'));assert.equal(app.q('#count-confirm').checked,false);
+    app.check('#count-confirm');assert.equal(app.q('#confirm-count').disabled,false);
+    app.input('[data-count="'+lot+'"]','100.125');assert.equal(app.q('#confirm-count').disabled,true);
+    await until(()=>!app.q('#reload-count').disabled);assert.equal(app.q('#count-confirm').checked,false);
+    app.check('#count-confirm');app.submit('#stocktake-form');
+    await until(()=>f.countPosts.length===1&&/เซิร์ฟเวอร์ยืนยันการนับ/.test(app.text()));
+    assert.equal(f.uploads.length,1);assert.equal(f.countPosts[0].items[0].counted_quantity_mg,100125);
+    assert.equal(f.countPosts[0].items[0].expected_revision,2);assert.equal(f.countPosts[0].items[0].evidence_id,f.uploads[0].id);
+    assert.equal(f.countPosts[0].reason,'');
+  }finally{app.close();}
+});
+test('finishing an autosave after navigation or logout does not redraw the previous stocktake screen',async()=>{
+  const f=inventoryFixture(),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');app.input('[data-count="'+lot+'"]','100');app.click('#open-inventory');
+    const form=app.q('#receive-lot');await new Promise(resolve=>setTimeout(resolve,30));
+    assert.equal(app.q('#receive-lot'),form);assert.equal(app.q('#stocktake-form'),null);
+    app.menu('#open-stocktake');app.input('[data-count="'+lot+'"]','90');app.menu('#logout');
+    // Logout remains blocked until in-flight local storage work is durable.
+    await until(()=>!app.q('#reload-count').disabled);app.menu('#logout');
+    await until(()=>app.q('#login-form'));await new Promise(resolve=>setTimeout(resolve,30));
+    assert.equal(app.q('#stocktake-form'),null);assert.equal(f.countPosts.length,0);assert.equal(f.uploads.length,0);
+  }finally{app.close();}
+});
+test('late photo upload completion preserves the intake form edited after navigation',async()=>{
+  let release;
+  const f=inventoryFixture({holdUpload:new Promise(resolve=>{release=resolve;})}),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');app.photo('[data-photo="'+lot+'"]');await until(()=>f.uploads.length===1);
+    app.click('#open-inventory');app.input('#receive-lot [name=lot_code]','UNSENT-INTAKE');
+    const form=app.q('#receive-lot');release();await until(()=>f.uploadResponses===1);await new Promise(resolve=>setTimeout(resolve,30));
+    assert.equal(app.q('#receive-lot'),form);assert.equal(app.q('#receive-lot [name=lot_code]').value,'UNSENT-INTAKE');
+    assert.equal(f.countPosts.length,0);assert.equal(f.receipts.length,0);
+  }finally{release();app.close();}
 });
 test('photo draft restores across restart, retries exact upload UUID/bytes and does not block unsent sales',async()=>{
   const f=inventoryFixture({failUpload:true});let app=await boot(f);
@@ -445,8 +535,11 @@ test('photo draft restores across restart, retries exact upload UUID/bytes and d
     assert.equal(app.q('[data-count="'+lot+'"]').value,'10');f.failUpload=false;
     app.click('[data-photo-upload]');await until(()=>/อัปโหลดรูปแล้ว/.test(app.text()));
     assert.equal(f.uploads[1].id,id);assert.equal(await f.uploads[1].body.text(),bytes);
-    app.input('[data-count="'+lot+'"]','9');await until(()=>!app.q('.scale-preview'));
-    assert.equal(app.q('#confirm-count').disabled,true);assert.match(app.q('#count-validation').textContent,/รูป|เครื่องชั่ง/);
+    app.check('#count-confirm');assert.equal(app.q('#confirm-count').disabled,false);
+    app.input('[data-count="'+lot+'"]','9');await until(()=>!app.q('#reload-count').disabled);
+    assert(app.q('.scale-preview'));assert.equal(f.uploads.length,2,'Editing count must retain the uploaded evidence without another upload');
+    assert.equal(app.q('#count-confirm').checked,false);assert.equal(app.q('#confirm-count').disabled,true);
+    app.check('#count-confirm');assert.equal(app.q('#confirm-count').disabled,false);
     app.click('#open-sales');fillCart(app);assert.equal(app.q('#checkout').disabled,false);
   }finally{app?.close();}
 });
@@ -464,8 +557,8 @@ test('four POS views support blank-first decimal keypad, cancel, edit/remove and
     app.click('#quantity-confirm');app.click('#open-ticket');app.click('[data-remove]');assert.match(app.q('#open-ticket').textContent,/0/);
     app.click('#ticket-more');fillCart(app,'1');app.click('[data-payment=split]');
     assert.equal(app.q('#payment'),null);assert.equal(app.q('#app-navigation-drawer'),null);
-    app.input('#split-cash','100');app.input('#split-transfer','99');app.input('#cash-received','200');
-    assert.match(app.q('#change').textContent,/100\.00/);assert.equal(app.q('#checkout').disabled,false);
+    app.input('#split-cash','100');app.input('#split-transfer','99');
+    assert.equal(app.q('#cash-received'),null);assert.equal(app.q('#change'),null);assert.equal(app.q('#checkout').disabled,false);
     app.click('#checkout');await until(()=>app.q('.success'));
     assert.equal(f.posts.length,1);assert.equal(f.posts[0].payment_method,'split');
     assert.deepEqual(f.posts[0].payments,[{payment_method:'cash',amount_satang:10000},{payment_method:'transfer',amount_satang:9900}]);

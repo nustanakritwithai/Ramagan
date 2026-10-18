@@ -1,5 +1,6 @@
 import {formatBaht, milligramsToGrams, sumSatang} from './math.js';
 import {navigationHeader, mountNavigation} from './navigation.js';
+import {supportsSaleVoids} from './sale-void.js';
 
 const h = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const paymentName = method => ({cash:'เงินสด', transfer:'โอนเงิน', split:'เงินสด + โอน'}[method] || 'ไม่ระบุ');
@@ -15,6 +16,7 @@ export function createPageState() {
   return {receiptQuery:'', receiptFrom:'', receiptTo:'', receipts:[], receiptCursor:null,
     receiptsLoaded:false, receiptLoading:false, receiptError:'', receiptDetail:null,
     receiptDetailLoading:false, receiptDetailError:'', receiptRequest:0, detailRequest:0,
+    receiptNotice:'',voidReason:'',voidConfirmed:false,
     productScreen:'menu', productQuery:'', productCategory:'', productId:null, health:null, healthError:'', healthBusy:false};
 }
 function shell(ctx, title, html) {
@@ -36,6 +38,16 @@ export function validateReceipt(receipt, detail = false) {
       ['subtotal_satang','discount_satang','total_satang'].some(k => !Number.isSafeInteger(receipt[k]) || receipt[k] < 0) ||
       receipt.subtotal_satang - receipt.discount_satang !== receipt.total_satang) throw new Error('ข้อมูลยอดใบเสร็จจากเซิร์ฟเวอร์ไม่ถูกต้อง');
   safeDate(receipt.created_at);
+  if(receipt.status!==undefined){
+    if(!['completed','voided'].includes(receipt.status)||
+        (receipt.status==='completed'&&receipt.void!==null)||
+        (receipt.status==='voided'&&(!receipt.void||receipt.void.sale_id!==receipt.id||
+          typeof receipt.void.id!=='string'||typeof receipt.void.client_void_id!=='string'||
+          typeof receipt.void.actor_user_id!=='string'||typeof receipt.void.actor_email!=='string'||
+          !['owner','manager'].includes(receipt.void.actor_role)||typeof receipt.void.reason!=='string'||!receipt.void.reason.trim())))
+      throw new Error('หลักฐานสถานะใบเสร็จไม่ครบ กรุณาตรวจสอบรายการเดิม');
+    if(receipt.void)safeDate(receipt.void.created_at);
+  }
   const split=receipt.payment_method==='split';
   if (!Array.isArray(receipt.payments) || receipt.payments.length!==(split?2:1) ||
       receipt.payments.some(p => !['cash','transfer'].includes(p.payment_method)) ||
@@ -87,14 +99,32 @@ async function loadReceipt(ctx,id) {
     if(result.error)throw result.error;
     if(result.data?.id!==id)throw new Error('เลขใบเสร็จในคำตอบไม่ตรงกับรายการที่เลือก');
     p.receiptDetail=validateReceipt(result.data,true);
+    p.receipts=p.receipts.map(x=>x.id===id?{...x,status:result.data.status,void:result.data.void}:x);
   }catch(error){if(current())p.receiptDetailError=error.message;}
   finally{if(current()){p.receiptDetailLoading=false;ctx.render();}}
 }
 function receiptDetailHtml(receipt) {
   const date=safeDate(receipt.created_at);
-  return '<section class="receipt-detail"><div class="receipt-heading"><h1>รายละเอียดใบเสร็จ</h1><strong>'+h(receipt.store_name)+'</strong><p>'+h(dateFormat.format(date))+' · '+h(timeFormat.format(date))+' (เวลาไทย)</p><p class="receipt-id">เลขรายการ '+h(receipt.id)+'</p></div>'+receipt.lines.map(line=>
+  const voidProof=receipt.status==='voided'?'<aside class="receipt-void-proof" role="status"><strong>ยกเลิกแล้ว · เก็บใบเสร็จเดิมไว้เป็นหลักฐาน</strong><p>ผู้ยกเลิก '+h(receipt.void.actor_email)+' ('+h(receipt.void.actor_role)+')</p><p>'+h(dateFormat.format(safeDate(receipt.void.created_at)))+' · '+h(timeFormat.format(safeDate(receipt.void.created_at)))+' (เวลาไทย)</p><p>เหตุผล: '+h(receipt.void.reason)+'</p><p class="receipt-id">เลขการยกเลิก '+h(receipt.void.id)+'</p><small>คืนสต็อกแล้ว · ยอดเดิมด้านล่างเป็นหลักฐานของใบเสร็จที่ยกเลิก</small></aside>':'';
+  return '<section class="receipt-detail"><div class="receipt-heading"><h1>รายละเอียดใบเสร็จ</h1><strong>'+h(receipt.store_name)+'</strong><p>'+h(dateFormat.format(date))+' · '+h(timeFormat.format(date))+' (เวลาไทย)</p><p class="receipt-id">เลขรายการ '+h(receipt.id)+'</p></div>'+voidProof+receipt.lines.map(line=>
     '<article class="receipt-line"><div><strong>'+h(line.product_name)+'</strong><small>Lot '+h(line.lot_code)+' · '+h(milligramsToGrams(line.quantity_mg))+' กรัม × '+h(formatBaht(line.unit_price_satang_per_gram))+'</small><small>ก่อนลด '+h(formatBaht(line.subtotal_satang))+' · ส่วนลด '+h(formatBaht(line.discount_satang))+'</small></div><b>'+h(formatBaht(line.total_satang))+'</b></article>').join('')+
     '<dl class="menu-facts"><div><dt>ยอดก่อนลด</dt><dd>'+h(formatBaht(receipt.subtotal_satang))+'</dd></div><div><dt>ส่วนลด</dt><dd>'+h(formatBaht(receipt.discount_satang))+'</dd></div><div class="net"><dt>สุทธิ</dt><dd>'+h(formatBaht(receipt.total_satang))+'</dd></div>'+receipt.payments.map(x=>'<div><dt>'+h(paymentName(x.payment_method))+'</dt><dd>'+h(formatBaht(x.amount_satang))+'</dd></div>').join('')+'</dl><p class="footnote">ยอดเงินเป็นข้อมูลที่บันทึกในบิล ชื่อสินค้าและชื่อร้านเป็นข้อมูลปัจจุบัน · ไม่ใช่ใบกำกับภาษี</p><p class="receipt-id">รหัสอ้างอิงเครื่อง '+h(receipt.client_sale_id)+'</p></section>';
+}
+function voidControls(ctx){
+  const {state}=ctx,p=state.pages,receipt=p.receiptDetail,op=state.voidPending;
+  const online=globalThis.navigator?.onLine!==false,locked=state.busy||!online;
+  let html=p.receiptNotice?'<p class="alert" role="status">'+h(p.receiptNotice)+'</p>':'';
+  if(state.error&&state.message)html+='<p class="alert danger" role="alert">'+h(state.message)+'</p>';
+  if(state.voidBlocked)html+='<p class="alert danger">อ่านคำขอยกเลิกค้างไม่ได้ ต้องใช้บัญชีเดิมให้ผู้ดูแลตรวจสอบก่อนทำรายการใหม่</p>';
+  if(op){
+    html+='<aside class="receipt-void-pending"><h2>คำขอยกเลิกใบเสร็จเดิม</h2><p class="receipt-id">ใบเสร็จ '+h(op.sale_id)+'<br>เลขคำขอ '+h(op.payload.client_void_id)+'</p><p>'+h(op.payload.reason)+'</p>';
+    if(op.status==='pending')html+='<p>ยังไม่ทราบผล ตรวจสอบหรือส่งคำขอเดิมซ้ำเท่านั้น</p><button class="ghost" data-void-action="verify" '+(locked?'disabled':'')+'>ตรวจสอบผลเดิม</button> <button class="ghost" data-void-action="retry" '+(locked?'disabled':'')+'>ส่งคำขอเดิมซ้ำด้วย ID เดิม</button>';
+    else html+='<p>'+h(op.status==='confirmed'?'เซิร์ฟเวอร์ยืนยันการยกเลิกแล้ว':op.rejection||'คำขอถูกปฏิเสธ')+'</p><button class="ghost" data-void-action="close" '+(state.busy?'disabled':'')+'>ปิดคำขอที่ทราบผลแล้ว</button>';
+    html+='</aside>';
+  }
+  if(!receipt||receipt.status==='voided'||!ctx.canManage()||!supportsSaleVoids(state.capabilities))return html;
+  const disabled=locked||ctx.hasPending?.();
+  return html+'<form id="receipt-void-form" class="receipt-void-form"><h2>ยกเลิกใบเสร็จนี้</h2><p>แก้รายการย้อนหลังไม่ได้ หากบันทึกผิดให้ยกเลิกใบนี้ แล้วลงรายการใหม่เมื่อเซิร์ฟเวอร์ยืนยันแล้ว</p><p class="footnote">ระบบจะคืนจำนวนสินค้าและปรับรายงาน การคืนเงินจริงให้ดำเนินการกับลูกค้าตามช่องทางเดิม</p><label>เหตุผลการยกเลิก (ต้องระบุ)<input name="reason" maxlength="300" required value="'+h(p.voidReason)+'" '+(disabled?'disabled':'')+' /></label><label class="void-confirm"><input name="confirm" type="checkbox" required '+(p.voidConfirmed?'checked ':'')+(disabled?'disabled':'')+' /> ตรวจสอบใบเสร็จแล้ว ยืนยันยกเลิกและคืนสต็อก</label><button class="void-submit" '+(disabled?'disabled':'')+'>ยกเลิกใบเสร็จและเก็บหลักฐาน</button></form>';
 }
 function renderReceipts(ctx) {
   const {state,root}=ctx,p=state.pages;
@@ -107,19 +137,35 @@ function renderReceipts(ctx) {
     let lastDay='';
     const rows=p.receipts.map(sale=>{
       const date=safeDate(sale.created_at),day=dayFormat.format(date),heading=lastDay===day?'':'<h2 class="receipt-day">'+h(dateFormat.format(date))+'</h2>';lastDay=day;
-      return heading+'<button class="receipt-row" data-receipt="'+h(sale.id)+'"><span class="receipt-method" aria-label="'+h(paymentName(sale.payment_method))+'">'+(sale.payment_method==='cash'?'฿':sale.payment_method==='transfer'?'↗':'⇄')+'</span><span><strong>'+h(formatBaht(sale.total_satang))+'</strong><small>'+h(timeFormat.format(date))+' · '+h(paymentName(sale.payment_method))+'</small></span><span class="receipt-short">#'+h(sale.id.slice(0,8))+'</span></button>';
+      return heading+'<button class="receipt-row '+(sale.status==='voided'?'is-voided':'')+'" data-receipt="'+h(sale.id)+'"><span class="receipt-method" aria-label="'+h(paymentName(sale.payment_method))+'">'+(sale.payment_method==='cash'?'฿':sale.payment_method==='transfer'?'↗':'⇄')+'</span><span><strong>'+h(formatBaht(sale.total_satang))+'</strong>'+(sale.status==='voided'?'<b class="receipt-void-badge">ยกเลิกแล้ว</b>':'')+'<small>'+h(timeFormat.format(date))+' · '+h(paymentName(sale.payment_method))+'</small></span><span class="receipt-short">#'+h(sale.id.slice(0,8))+'</span></button>';
     }).join('');
     content='<form id="receipt-search" class="receipt-search"><label>ค้นหาใบเสร็จ / สินค้า / Lot<input name="q" value="'+h(p.receiptQuery)+'" maxlength="100" placeholder="ค้นหา" /></label><div class="menu-date-range"><label>ตั้งแต่<input name="from" type="date" value="'+h(p.receiptFrom)+'" /></label><label>ถึง<input name="to" type="date" value="'+h(p.receiptTo)+'" /></label></div><button class="primary" '+(p.receiptLoading?'disabled':'')+'>ค้นหา / รีเฟรช</button></form><p class="footnote">เวลาไทย · '+(ctx.canManage()?'ใบเสร็จในร้านนี้':'ใบเสร็จที่บัญชีนี้เป็นผู้ขาย')+' · เปิดอ่านรายละเอียดได้</p>'+
       (p.receiptError?'<p class="alert danger" role="alert">'+h(p.receiptError)+'</p>':'')+'<div class="receipt-list">'+rows+'</div>'+
       (p.receiptLoading?'<p role="status">กำลังอ่านรายการ…</p>':!p.receipts.length&&p.receiptsLoaded?'<p class="menu-empty">ไม่พบใบเสร็จในช่วงที่เลือก</p>':'')+
       (p.receiptCursor?'<button id="receipt-more" class="ghost" '+(p.receiptLoading?'disabled':'')+'>โหลดใบเสร็จถัดไป</button>':'');
   }
-  shell(ctx,titles.receipts,content);
+  shell(ctx,titles.receipts,content+voidControls(ctx));
+  root.querySelector('#receipt-void-form [name="reason"]')?.addEventListener('input',e=>{p.voidReason=e.target.value;p.voidConfirmed=false;root.querySelector('#receipt-void-form [name="confirm"]').checked=false;});
+  root.querySelector('#receipt-void-form [name="confirm"]')?.addEventListener('change',e=>{p.voidConfirmed=e.target.checked;});
+  root.querySelector('#receipt-void-form')?.addEventListener('submit',async e=>{
+    e.preventDefault();if(state.busy||!p.voidConfirmed||ctx.hasPending?.()||!ctx.canManage()||!supportsSaleVoids(state.capabilities))return;
+    const receipt=p.receiptDetail;if(!receipt||receipt.status==='voided')return;
+    const req=p.detailRequest,current=liveGuard(ctx,p,'detailRequest',req);
+    const result=await ctx.voidReceipt?.('start',receipt,p.voidReason);
+    if(!current())return;
+    if(result?.result){p.voidReason='';p.voidConfirmed=false;await loadReceipt(ctx,receipt.id);}
+    else ctx.render();
+  });
+  root.querySelectorAll('[data-void-action]').forEach(button=>button.addEventListener('click',async()=>{
+    const op=state.voidPending,req=p.detailRequest,current=liveGuard(ctx,p,'detailRequest',req);
+    const result=await ctx.voidReceipt?.(button.dataset.voidAction);
+    if(!current())return;if(result?.result&&op)await loadReceipt(ctx,op.sale_id);else ctx.render();
+  }));
   root.querySelector('#receipt-search')?.addEventListener('submit',e=>{
     e.preventDefault();const form=new FormData(e.currentTarget);p.receiptQuery=String(form.get('q')).trim();p.receiptFrom=String(form.get('from'));p.receiptTo=String(form.get('to'));loadReceipts(ctx);
   });
   root.querySelector('#receipt-more')?.addEventListener('click',()=>loadReceipts(ctx,true));
-  root.querySelectorAll('[data-receipt]').forEach(n=>n.addEventListener('click',()=>loadReceipt(ctx,n.dataset.receipt)));
+  root.querySelectorAll('[data-receipt]').forEach(n=>n.addEventListener('click',()=>{p.voidReason='';p.voidConfirmed=false;loadReceipt(ctx,n.dataset.receipt);}));
   root.querySelector('#receipt-back')?.addEventListener('click',()=>{++p.detailRequest;p.receiptDetail=null;p.receiptDetailError='';p.receiptDetailLoading=false;ctx.render();});
 }
 export function productLots(state,product) {
@@ -168,7 +214,7 @@ function renderInformation(ctx,view) {
   let html='';
   if(view==='settings')html='<h1>บัญชีและเครื่องนี้</h1><dl class="menu-facts"><div><dt>บัญชี</dt><dd>'+h(state.user.email||state.user.id)+'</dd></div><div><dt>ร้าน</dt><dd>'+h(state.store.name)+'</dd></div><div><dt>สิทธิ์</dt><dd>'+h(state.role)+'</dd></div><div><dt>เซิร์ฟเวอร์</dt><dd>'+h(api.base)+'</dd></div><div><dt>ระบบขาย</dt><dd>'+(state.store.sales_enabled?'เปิดใช้งาน':'ยังไม่เปิด')+'</dd></div></dl><button id="settings-health" class="ghost" '+(p.healthBusy?'disabled':'')+'>ตรวจการเชื่อมต่อ</button>'+(p.health?'<p class="alert">เชื่อมต่อสำเร็จ · API '+h(p.health.version)+' · schema '+h(p.health.schema_version)+'</p>':'')+(p.healthError?'<p class="alert danger">'+h(p.healthError)+'</p>':'')+'<div class="settings-actions"><button id="settings-server" class="ghost">เปลี่ยนเซิร์ฟเวอร์</button><button id="settings-logout" class="ghost">ออกจากระบบ</button></div>';
   if(view==='apps')html='<h1>RAMAGAN บนเครื่องนี้</h1><p>ใช้เว็บไซต์ร้านใน Chrome แล้วเลือกเมนู “เพิ่มลงในหน้าจอหลัก” หรือ “ติดตั้งแอป” เพื่อเปิดใช้งานครั้งถัดไป</p><p class="footnote">เว็บไซต์และ Android ใช้ข้อมูลกลางจากเซิร์ฟเวอร์ร้านเดียวกัน</p><dl class="menu-facts"><div><dt>รุ่นหน้าร้าน</dt><dd>'+h(ctx.appVersion)+'</dd></div><div><dt>แพลตฟอร์ม</dt><dd>'+(window.Capacitor?.isNativePlatform?.()?'Android':'เว็บเบราว์เซอร์')+'</dd></div></dl>';
-  if(view==='support')html='<h1>ช่วยเหลือการใช้งาน</h1><details open><summary>ติดต่อเซิร์ฟเวอร์ไม่ได้</summary><p>ตรวจอินเทอร์เน็ตและ URL ในการตั้งค่า เปิด Health ผ่าน HTTPS โดยไม่ข้ามคำเตือนใบรับรอง</p></details><details><summary>รายการขายค้างหรือยังไม่ทราบผล</summary><p>กลับหน้าขายเพื่อดูรายการค้าง ใช้การตรวจสอบหรือส่งรายการเดิมด้วย ID เดิม ห้ามสร้างบิลใหม่เพื่อแทนรายการที่ยังไม่ทราบผล</p></details><details><summary>นับสต็อกและแนบรูป</summary><p>Owner/Manager ระบุกะ เหตุผล ยอดนับ และรูปตราชั่งให้ครบทุก Lot ที่นับ ตรวจส่วนต่างแล้วจึงยืนยัน รายการที่ยอดเท่าเดิมยังบันทึกประวัติได้</p></details><details><summary>แจ้งปัญหาให้ผู้ดูแลร้าน</summary><p>ส่งเวลาเกิดปัญหา รุ่นแอป และเลขรายการ พร้อมภาพหน้าจอที่ไม่แสดงรหัสผ่าน PIN หรือ token</p></details>';
+  if(view==='support')html='<h1>ช่วยเหลือการใช้งาน</h1><details open><summary>ติดต่อเซิร์ฟเวอร์ไม่ได้</summary><p>ตรวจอินเทอร์เน็ตและ URL ในการตั้งค่า เปิด Health ผ่าน HTTPS โดยไม่ข้ามคำเตือนใบรับรอง</p></details><details><summary>รายการขายค้างหรือยังไม่ทราบผล</summary><p>กลับหน้าขายเพื่อดูรายการค้าง ใช้การตรวจสอบหรือส่งรายการเดิมด้วย ID เดิม ห้ามสร้างบิลใหม่เพื่อแทนรายการที่ยังไม่ทราบผล</p></details><details><summary>นับสต็อกและแนบรูป</summary><p>Owner/Manager ระบุกะ ยอดนับ และรูปตราชั่งให้ครบทุก Lot ที่นับ ใส่เหตุผลเพิ่มเติมได้ถ้ามี แนบรูปหรือกรอกยอดก่อนก็ได้ ตรวจส่วนต่างแล้วจึงยืนยัน รายการที่ยอดเท่าเดิมยังบันทึกประวัติได้</p></details><details><summary>แจ้งปัญหาให้ผู้ดูแลร้าน</summary><p>ส่งเวลาเกิดปัญหา รุ่นแอป และเลขรายการ พร้อมภาพหน้าจอที่ไม่แสดงรหัสผ่าน PIN หรือ token</p></details>';
   if(view==='settings')html+=ctx.pinSettingsHtml?.()||'';
   shell(ctx,titles[view],html);
   if(view==='settings')ctx.bindPinSettings?.();

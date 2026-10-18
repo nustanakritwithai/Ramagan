@@ -36,6 +36,8 @@ export const inventoryPendingKey = (identity, kind) => 'ramagan.v1.inventory.v1.
   encodeURIComponent(identity.api) + '.' + identity.store + '.' + identity.actor + '.' + kind;
 export const mutationScopeKey = identity => 'ramagan.v1.mutation.v1.' + encodeURIComponent(identity.api) + '.' + identity.store;
 export function assertNoPendingMutation(storage, identity) {
+  if(storage.getItem('ramagan.v1.sale-void.v1.'+encodeURIComponent(identity.api)+'.'+identity.store)!==null)
+    fail('มีคำขอยกเลิกใบเสร็จค้าง ต้องตรวจสอบด้วยบัญชีเดิมก่อนทำรายการใหม่');
   const sale = 'ramagan.v1.pending.v2.' + encodeURIComponent(identity.api) + '.' + identity.store;
   const prefix = 'ramagan.v1.inventory.v1.' + encodeURIComponent(identity.api) + '.' + identity.store + '.';
   if (storage.getItem(sale) !== null || storage.getItem('ramagan.v1.pending.' + identity.store) !== null) {
@@ -54,7 +56,7 @@ function validatePayload(kind, p) {
   if (kind === 'stocktake') {
     if (!UUID.test(p?.client_stocktake_id) || typeof p.shift_label !== 'string' ||
         !p.shift_label.trim() || p.shift_label.length > 80 || typeof p.reason !== 'string' ||
-        !p.reason.trim() || p.reason.length > 300 || !Array.isArray(p.items) ||
+        p.reason.length > 300 || !Array.isArray(p.items) ||
         p.items.length < 1 || p.items.length > 200 ||
         new Set(p.items.map(x => x.lot_id)).size !== p.items.length ||
         p.items.some(x => !UUID.test(x.lot_id) || !integer(x.expected_revision) ||
