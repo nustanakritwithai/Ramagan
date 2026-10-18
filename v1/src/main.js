@@ -12,6 +12,7 @@ import {createDeviceAuth} from './device-auth.js';
 import {createSaleVoid,voidPendingKey} from './sale-void.js';
 import {supportsSharedPin,pendingDeviceActor} from './device-session.js';
 import {renderPinLock,renderPinSetup,pinSettingsHtml,bindPinSettings} from './pin-ui.js';
+import {countEvidenceSummary,inventoryTaskSummary,inventoryStockRow} from './management-ui.js';
 import './style.css';
 import './navigation.css';
 import './pages.css';
@@ -45,7 +46,8 @@ const state = {
   posScreen: 'catalog', posMenuOpen: false, quantityLot: null, quantityText: '1', quantityEditing: false,
   cashReceived: '', splitCash: '', splitTransfer: '', catalogQuery: '',
   draftStore: null, countDraft: null, draftError: '', draftStale: false, photoBusy: null, photoUrls: [], historyPhotoUrls: {}, draftSaving: 0,
-  closeEvidenceViewer: null, pages: createPageState()
+  closeEvidenceViewer: null, pages: createPageState(),
+  managementForms: {}, managementPanels: new Set()
 };
 
 function h(value) {
@@ -165,12 +167,14 @@ function statusChip() {
     '<span class="status offline">ออฟไลน์ · ดูข้อมูลเท่านั้น</span>';
 }
 function render() {
+  captureManagementUi();
   countFormUpdate=null;
   cleanupNavigation();
   if (!configured) return renderSetup();
   const pin=deviceAuth?.snapshot();
   if(pin?.device&&pin.locked&&!pin.passwordOverride)return renderPinLock({root,...pin,
-    onUnlock:(role,value)=>deviceAuth.unlock(role,value),onPasswordLogin:()=>deviceAuth.passwordLogin(),onForget:()=>deviceAuth.forget()});
+    onUnlock:(role,value)=>deviceAuth.unlock(role,value),onUnlockAuto:value=>deviceAuth.unlockAuto(value),
+    onPasswordLogin:()=>deviceAuth.passwordLogin(),onForget:()=>deviceAuth.forget()});
   if (!state.user) return renderLogin();
   if (!state.store) {
     root.innerHTML = '<div class="setup"><h1>RAMAGAN POS</h1><p>' +
@@ -319,6 +323,7 @@ function resetInventoryState() {
   state.shiftLabel = 'กะเช้า';
   state.historyDetail = null; state.historyError = ''; state.historyRequest++;
   state.pages = createPageState();
+  state.managementForms={};state.managementPanels=new Set();
 }
 function restoreInventoryPending() {
   state.inventoryBlocked = false;
@@ -426,10 +431,11 @@ function renderDashboard() {
 function navigationContext() {
   return {root,state,api,currentApi:()=>api,render,canManage,openView,logout,changeServer,
     voidReceipt:runReceiptVoid,hasPending:hasPendingMutation,
-    adminUrl:ADMIN_REPORT_URL,apiUrl,appVersion:'1.5.1',pinSettingsHtml:()=>pinSettingsHtml(pinFlags()),bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
+    adminUrl:ADMIN_REPORT_URL,apiUrl,appVersion:'1.5.2',pinSettingsHtml:()=>pinSettingsHtml(pinFlags()),bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
       if(!canManage())return;
       openView('inventory');
       const form=root.querySelector('#'+section);
+      const panel=form?.closest('details.inventory-task');if(panel){panel.open=true;state.managementPanels.add(panel.id);}
       if(product&&form?.elements.product_id){form.elements.product_id.value=product;form.elements.product_id.dispatchEvent(new Event('change'));}
       form?.scrollIntoView?.({block:'start',behavior:'smooth'});form?.querySelector('input,select')?.focus();
     }};
@@ -445,11 +451,39 @@ function openView(view) {
 function renderManagerPage(renderer,title) {
   renderer();
   const shell=document.createElement('div');shell.className='management-shell';
+  shell.dataset.managementScope=managementScope();
   shell.append(...root.childNodes);root.append(shell);
   const header=root.querySelector('.topbar');
   if(header)header.outerHTML=navigationHeader({title,subtitle:state.store.name,showCart:true,cartCount:state.cart.size});
   root.querySelector('#open-ticket')?.addEventListener('click',()=>{state.posScreen='ticket';openView('sales');});
   mountNavigation(navigationContext());
+}
+function managementScope(){return api&&state.store&&state.user?JSON.stringify([api.base,state.store.id,state.user.id]):'';}
+function captureManagementUi(){
+  const shell=root.querySelector('.management-shell');
+  if(!shell||!managementScope()||shell.dataset.managementScope!==managementScope())return;
+  for(const id of ['new-product','receive-lot']){
+    const form=shell.querySelector('#'+id);if(!form)continue;
+    state.managementForms[id]=Object.fromEntries([...form.querySelectorAll('input[name],select[name]')].map(input=>[input.name,input.value]));
+  }
+  shell.querySelectorAll('details[data-management-panel]').forEach(panel=>{
+    const key=panel.dataset.managementPanel;if(panel.open)state.managementPanels.add(key);else state.managementPanels.delete(key);
+  });
+}
+function managementPanel(key){return ' data-management-panel="'+h(key)+'"'+(state.managementPanels.has(key)?' open':'');}
+function restoreManagementForm(id){
+  const form=root.querySelector('#'+id),values=state.managementForms[id];if(!form||!values)return;
+  form.querySelectorAll('input[name],select[name]').forEach(input=>{if(Object.hasOwn(values,input.name))input.value=values[input.name];});
+}
+function clearManagementForm(id){
+  root.querySelector('#'+id)?.reset();delete state.managementForms[id];
+  const panelId=id+'-panel';state.managementPanels.delete(panelId);
+  const panel=root.querySelector('#'+panelId);if(panel)panel.open=false;
+}
+function bindManagementPanels(){
+  root.querySelectorAll('details[data-management-panel]').forEach(panel=>panel.addEventListener('toggle',()=>{
+    if(panel.isConnected){const key=panel.dataset.managementPanel;if(panel.open)state.managementPanels.add(key);else state.managementPanels.delete(key);}
+  }));
 }
 function previewHtml(totals) {
   if (totals.error) return '<p class="alert danger">' + h(totals.error) + '</p>';
@@ -463,23 +497,22 @@ function renderInventory() {
   const options = state.products.filter((p) => p.active).map((p) =>
     '<option value="' + h(p.id) + '">' + h(p.sku) + ' — ' +
     h(p.name) + '</option>').join('');
-  const rows = (state.inventory?.lots || state.lots).map((lot) =>
-    '<tr><td>' + h(lot.name) + '</td><td>' + h(lot.lot_code) +
-    '</td><td>' + h(milligramsToGrams(lot.quantity_mg)) +
-    ' กรัม</td>' + (costs ? '<td>' + costHtml(lot.cost_satang_per_gram) + '</td><td>' +
-      costHtml(lot.inventory_value_satang) + '</td>' : '') + '</tr>').join('') || '<tr><td colspan="5">ไม่มีสินค้า</td></tr>';
+  const lots=state.inventory?.lots||state.lots,today=toBangkokDay(new Date());
+  const rows=lots.map(lot=>inventoryStockRow({name:lot.name,lotCode:lot.lot_code,quantity:milligramsToGrams(lot.quantity_mg),
+    cost:costs?(lot.cost_satang_per_gram==null?'ยังไม่ทราบ':formatBaht(lot.cost_satang_per_gram)):'',
+    value:costs?(lot.inventory_value_satang==null?'ยังไม่ทราบ':formatBaht(lot.inventory_value_satang)):'',
+    expired:Boolean(lot.expires_on&&lot.expires_on<today),inactive:!lot.active||!lot.product_active})).join('')||'<p class="empty">ยังไม่มีสินค้าในสต็อก</p>';
   root.innerHTML = [
     '<header class="topbar"><div class="brand">R<span>●</span> RAMAGAN <small>V1</small></div>',
     '<div class="top-actions">', statusChip(),
     '<button id="change-server" class="ghost">เซิร์ฟเวอร์</button>',
     '<button id="logout" class="ghost">ออกจากระบบ</button></div></header>',
     '<main class="manager-layout"><div class="view-links">',
-    '<button id="open-sales" class="ghost">หน้าขาย</button><strong>จัดการสต็อก</strong>',
-    '<button id="open-stocktake" class="ghost">นับสต็อกก่อนเข้ากะ</button>',
-    '<a class="ghost admin-link" href="' + ADMIN_REPORT_URL + '" target="_blank" rel="noopener noreferrer">รายงานหลังบ้าน ↗</a></div>',
-    '<div class="heading"><div><div class="eyebrow">INVENTORY</div><h1>รับเข้าและตั้งค่าสินค้า</h1>',
-    '<p class="muted">', h(state.store.name), ' · ', h(state.role),
-    ' · การรับของทุกครั้งมีประวัติผู้บันทึก</p></div>',
+    '<button id="open-sales" class="ghost">หน้าขาย</button>',
+    '<button id="open-stocktake" class="ghost">นับสต็อก</button>',
+    '<a class="ghost admin-link" href="' + ADMIN_REPORT_URL + '" target="_blank" rel="noopener noreferrer">รายงาน ↗</a></div>',
+    '<div class="heading"><div><h1>สต็อกและรับเข้า</h1>',
+    '<p class="muted">', h(lots.length), ' Lot · แตะเมนูเพื่อเพิ่มสินค้า / รับเข้า</p></div>',
     '<button id="refresh" class="ghost">รีเฟรช</button></div>',
     !navigator.onLine ? '<p class="alert danger">ออฟไลน์: ไม่สามารถสร้าง/รับสินค้าได้</p>' : '',
     state.message ? '<div class="alert ' + (state.error ? 'danger' : '') +
@@ -487,37 +520,37 @@ function renderInventory() {
     !costs ? '<div class="alert">เซิร์ฟเวอร์ยังไม่รองรับต้นทุนรุ่น 1 ดูยอดคงเหลือและเพิ่มสินค้าได้ การรับเข้าพร้อมต้นทุนและเลขอ้างอิงป้องกันซ้ำต้องรออัปเกรด Backend</div>' : '',
     state.inventoryError ? '<div class="alert danger">' + h(state.inventoryError) + '</div>' : '',
     inventoryPendingHtml(),
-    '<div class="admin-grid"><section class="main-panel">',
-    '<h2>1 · เพิ่มสินค้าใหม่</h2><form id="new-product">',
+    '<details class="inventory-task" id="new-product-panel"',managementPanel('new-product-panel'),'><summary>',
+    inventoryTaskSummary({title:'เพิ่มสินค้าใหม่',subtitle:'ชื่อสินค้า ราคา และต้นทุนเริ่มต้น'}),'</summary><form id="new-product" class="compact-form-grid">',
     '<label>SKU <input name="sku" maxlength="60" required placeholder="เช่น SKU-01" /></label>',
     '<label>ชื่อสินค้า <input name="name" maxlength="200" required /></label>',
     '<label>หมวดสินค้า <input name="category" maxlength="60" required value="other" /></label>',
     '<label>ราคาต่อกรัม (บาท) <input name="price" inputmode="decimal" required placeholder="100.00" /></label>',
-    costs ? '<label>ต้นทุนเริ่มต้นต่อกรัม (บาท, ไม่บังคับ) <input name="default_cost" inputmode="decimal" placeholder="ว่าง = ยังไม่ทราบต้นทุน / 0 = ต้นทุนศูนย์" /></label><p class="footnote">เป็นค่าเริ่มต้นตอนรับเข้า แก้ต้นทุนจริงแยกได้ในแต่ละ Lot</p>' : '',
+    costs ? '<label>ต้นทุน/กรัม (ถ้ามี) <input name="default_cost" inputmode="decimal" placeholder="ว่าง = ไม่ทราบ" /></label><p class="footnote">ต้นทุนเริ่มต้น แก้แยกได้ตอนรับเข้าแต่ละ Lot · 0 หมายถึงต้นทุนศูนย์</p>' : '',
     '<button class="primary" ', locked ? 'disabled' : '',
-    '>บันทึกสินค้า</button></form></section>',
-    '<section class="main-panel"><h2>2 · รับสินค้าเข้า Lot</h2>',
-    '<form id="receive-lot"><label>สินค้า <select name="product_id" required>',
+    '>บันทึกสินค้า</button></form></details>',
+    '<details class="inventory-task" id="receive-lot-panel"',managementPanel('receive-lot-panel'),'><summary>',
+    inventoryTaskSummary({title:'รับสินค้าเข้า Lot',subtitle:'จำนวน ต้นทุน และข้อมูลรับเข้า',badge:'↓'}),'</summary>',
+    '<form id="receive-lot" class="compact-form-grid"><label class="span-all">สินค้า <select name="product_id" required>',
     options || '<option value="">ยังไม่มีสินค้า</option>', '</select></label>',
     '<label>รหัส Lot (ห้ามซ้ำ) <input name="lot_code" maxlength="100" required /></label>',
     '<label>ผู้ส่งมอบ <input name="supplier_name" maxlength="200" required /></label>',
     '<label>เลขที่เอกสารผู้ส่งมอบ', optionalDocuments(state.capabilities) ? ' (ถ้ามี)' : '',
     ' <input name="supplier_document_ref" maxlength="200" ', optionalDocuments(state.capabilities) ? '' : 'required ', '/></label>',
     '<label>จำนวนรับเข้า (กรัม) <input name="qty" inputmode="decimal" required placeholder="30.000" /></label>',
-    costs ? '<label>ต้นทุน Lot ต่อกรัม (บาท) <input name="cost" inputmode="decimal" placeholder="ว่าง = ใช้ค่าเริ่มต้นของสินค้า" /></label><p id="receive-default-cost" class="footnote"></p>' : '',
+    costs ? '<label>ต้นทุน Lot/กรัม (บาท) <input name="cost" inputmode="decimal" placeholder="ว่าง = ค่าเริ่มต้น" /></label><p id="receive-default-cost" class="footnote"></p>' : '',
     '<label>วันหมดอายุ (ถ้ามี) <input name="expires" type="date" /></label>',
     '<label>เหตุผลการรับสินค้า <input name="reason" maxlength="500" required value="รับสินค้าเข้าร้าน" /></label>',
     '<button class="primary" ', locked || !options || !costs ? 'disabled' : '',
-    '>ยืนยันการรับเข้าผ่านเซิร์ฟเวอร์</button></form></section></div>',
-    '<section class="main-panel inventory-table"><h2>สต็อกปัจจุบัน</h2>',
+    '>ยืนยันการรับเข้าผ่านเซิร์ฟเวอร์</button></form></details>',
+    '<section class="main-panel inventory-stock"><h2>สต็อกปัจจุบัน</h2>',
     costs && state.inventory ? valuationHtml(state.inventory.summary) : '',
-    '<table><thead><tr><th>สินค้า</th><th>Lot</th><th>คงเหลือ</th>',
-    costs ? '<th>ต้นทุน/กรัม</th><th>มูลค่าคงเหลือ</th>' : '', '</tr></thead>',
-    '<tbody>', rows, '</tbody></table></section>',
+    '<div class="inventory-stock-list">', rows, '</div></section>',
     '<p class="footnote">จำนวนในตารางอาจเปลี่ยนจากการขายบนอุปกรณ์อื่น',
     ' — เซิร์ฟเวอร์เป็นผู้ยืนยันยอดจริงทุกครั้ง</p>',
     '</main>'
   ].join('');
+  restoreManagementForm('new-product');restoreManagementForm('receive-lot');bindManagementPanels();
   root.querySelector('#logout').addEventListener('click', logout);
   root.querySelector('#change-server')?.addEventListener('click', changeServer);
   root.querySelector('#refresh').addEventListener('click', refreshLots);
@@ -610,13 +643,15 @@ function renderStocktake() {
     if(photo?.blob && URL.createObjectURL) {const url=URL.createObjectURL(photo.blob);state.photoUrls.push(url);photoHtml='<img class="scale-preview" src="'+h(url)+'" alt="รูปเครื่องชั่ง Lot '+h(lot.lot_code)+'" />';}
     photoHtml+='<label class="photo-control">รูปเครื่องชั่ง (ต้องมี)<input type="file" data-photo="'+h(lot.id)+'" accept="image/jpeg,image/png,image/webp" capture="environment" '+(locked?'disabled':'')+' /></label>'+
       '<p class="footnote" data-photo-note="'+h(lot.id)+'"></p><button type="button" class="ghost" data-photo-upload="'+h(lot.id)+'" hidden disabled>อัปโหลดรูปเครื่องชั่ง</button>';
-    return '<tr><td data-label="สินค้า / Lot"><strong>' + h(lot.name) + '</strong><small>' + h(lot.lot_code) +
+    const evidence='<details class="count-evidence-panel" data-evidence-panel="'+h(lot.id)+'"'+managementPanel('photo:'+lot.id)+'><summary class="count-evidence-summary">'+
+      countEvidenceSummary({lotId:lot.id,hasPhoto:Boolean(photo?.blob),uploaded:Boolean(photo?.metadata),counted:value.trim()!==''})+'</summary>'+photoHtml+'</details>';
+    return '<tr><td class="count-product" data-label="สินค้า / Lot"><strong>' + h(lot.name) + '</strong><small>' + h(lot.lot_code) +
       (lot.expires_on && lot.expires_on < today ? ' · หมดอายุ' : '') +
-      (!lot.active || !lot.product_active ? ' · ไม่ใช้งาน' : '') + '</small></td><td data-label="ยอดระบบ">' +
-      h(milligramsToGrams(lot.quantity_mg)) + ' กรัม</td><td data-label="ยอดนับจริง (กรัม)"><input data-count="' + h(lot.id) +
+      (!lot.active || !lot.product_active ? ' · ไม่ใช้งาน' : '') + '</small></td><td class="count-system" data-label="ยอดระบบ">' +
+      h(milligramsToGrams(lot.quantity_mg)) + ' กรัม</td><td class="count-input" data-label="ยอดนับจริง (กรัม)"><input data-count="' + h(lot.id) +
       '" aria-label="ยอดนับจริง ' + h(lot.lot_code) + ' (กรัม)" inputmode="decimal" value="' + h(value) +
-      '" placeholder="ว่าง = ไม่นับ Lot นี้" ' + (locked ? 'disabled' : '') + ' /></td><td data-label="ส่วนต่าง" data-variance="' + h(lot.id) + '">' + h(variance) + '</td><td data-label="หลักฐานเครื่องชั่ง">'+photoHtml+'</td></tr>';
-  }).join('') || '<tr><td colspan="4">ยังไม่มียอดระบบสำหรับตรวจนับ</td></tr>';
+      '" placeholder="ยังไม่นับ" ' + (locked ? 'disabled' : '') + ' /></td><td class="count-variance" data-label="ส่วนต่าง" data-variance="' + h(lot.id) + '">' + h(variance) + '</td><td class="count-evidence" data-label="หลักฐานเครื่องชั่ง">'+evidence+'</td></tr>';
+  }).join('') || '<tr><td colspan="5">ยังไม่มียอดระบบสำหรับตรวจนับ</td></tr>';
   const history = state.stocktakes.map(x => '<tr><td>' + h(new Date(x.created_at).toLocaleString('th-TH', {timeZone: 'Asia/Bangkok'})) +
     '<small>' + h(x.id) + '</small></td><td>' + h(x.shift_label) + '<small>' + h(x.reason) + '</small></td><td>' +
     h(x.actor_email || x.actor_user_id) + '</td><td>' + h(x.line_count) + '</td><td>' + h(signedGrams(x.variance_mg)) +
@@ -625,30 +660,30 @@ function renderStocktake() {
     '<header class="topbar"><div class="brand">R<span>●</span> RAMAGAN <small>V1</small></div><div class="top-actions">', statusChip(),
     '<button id="change-server" class="ghost">เซิร์ฟเวอร์</button><button id="logout" class="ghost">ออกจากระบบ</button></div></header>',
     '<main class="manager-layout"><div class="view-links"><button id="open-sales" class="ghost">หน้าขาย</button>',
-    '<button id="open-inventory" class="ghost">จัดการสินค้า / รับเข้า</button><strong>นับสต็อกก่อนเข้ากะ</strong></div>',
-    '<section class="main-panel"><h1>นับสต็อกก่อนเข้ากะ</h1><p class="muted">', h(state.store.name),
-    ' · เปรียบเทียบยอดระบบกับยอดนับจริง ยืนยันแล้วบันทึกส่วนต่างพร้อมประวัติ</p>',
+    '<button id="open-inventory" class="ghost">สินค้า / รับเข้า</button></div>',
+    '<section class="main-panel"><div class="heading"><div><h1>นับสต็อก</h1><p class="muted" id="count-progress" aria-live="polite"></p></div></div>',
     !supported ? '<div class="alert">เซิร์ฟเวอร์ยังไม่รองรับการนับพร้อมรูปหลักฐานรุ่น 2 ดูยอดคงเหลือได้ การยืนยันนับยังไม่เปิดให้ใช้</div>' : '',
     state.inventoryError ? '<div class="alert danger">' + h(state.inventoryError) + '</div>' : '',
     state.message ? '<div class="alert ' + (state.error ? 'danger' : '') + '">' + h(state.message) + '</div>' : '',
     inventoryPendingHtml(),
-    '<form id="stocktake-form"><div class="admin-grid"><label>กะ / รอบ <input id="shift-label" maxlength="80" required value="', h(state.shiftLabel), '" ', locked ? 'disabled' : '', ' /></label>',
-    '<label>ผู้ตรวจนับ (บัญชีที่เข้าสู่ระบบ) <input value="', h(state.user.email || state.user.id), '" readonly /></label></div>',
-    '<label>เหตุผลการตรวจนับและปรับยอด (ถ้ามี) <input id="count-reason" maxlength="300" value="', h(state.countReason), '" ', locked ? 'disabled' : '', ' /></label>',
-    '<p class="footnote">กรอก 0 เมื่อนับแล้วไม่มีสินค้า ช่องว่างหมายถึงไม่นับ Lot นั้น · รวม Lot หมดอายุและไม่ใช้งาน · ยอดอาจเปลี่ยนจากอุปกรณ์อื่น หากเปลี่ยนต้องโหลดและนับใหม่</p>',
+    '<form id="stocktake-form"><details class="count-session-details"',managementPanel('count-session'),'><summary><span id="count-session-summary">',h(state.shiftLabel),' · ตั้งค่ารอบ / เหตุผล</span></summary><div class="compact-form-grid"><label>กะ / รอบ <input id="shift-label" maxlength="80" required value="', h(state.shiftLabel), '" ', locked ? 'disabled' : '', ' /></label>',
+    '<label>เหตุผล (ถ้ามี) <input id="count-reason" maxlength="300" value="', h(state.countReason), '" ', locked ? 'disabled' : '', ' /></label>',
+    '<p class="muted span-all">ผู้ตรวจนับ: ',h(state.user.display_name||({owner:'เจ้าของร้าน',manager:'ผู้จัดการ',staff:'พนักงาน'}[state.role])||state.user.email||state.user.id),'</p>',
+    '<p class="footnote">กรอก 0 เมื่อนับแล้วไม่มีสินค้า · ช่องว่าง = ไม่นับ Lot นั้น · รวม Lot หมดอายุและไม่ใช้งาน · ถ้าสต็อกเปลี่ยนต้องโหลดและนับใหม่</p></div></details>',
     '<div class="inventory-table count-table"><table><thead><tr><th>สินค้า / Lot</th><th>ยอดระบบ</th><th>ยอดนับจริง (กรัม)</th><th>ส่วนต่าง</th><th>รูปหลักฐาน</th></tr></thead><tbody>', rows, '</tbody></table></div>',
     '<label class="count-confirm"><input id="count-confirm" type="checkbox" ', state.countConfirmed ? 'checked ' : '', locked ? 'disabled ' : '',
     '/> ตรวจนับจริงและตรวจสอบส่วนต่างแล้ว ยืนยันให้บันทึกการปรับยอดตามรายการที่กรอก</label>',
     '<p id="count-validation" class="alert" role="status" aria-live="polite"></p>',
     '<div class="stocktake-actions"><button type="button" id="reload-count" class="ghost" ', state.busy || hasInventoryPending() || state.photoBusy || state.draftSaving ? 'disabled' : '',
     '>รีโหลดยอดระบบ / เริ่มนับใหม่</button><button id="confirm-count" aria-describedby="count-validation" type="submit" class="primary" disabled>ยืนยันการนับและปรับยอดผ่านเซิร์ฟเวอร์</button></div></form></section>',
-    '<section class="main-panel inventory-table stocktake-history"><h2>ประวัติการนับและปรับยอดล่าสุด</h2>',
+    '<details class="main-panel inventory-table stocktake-history"',managementPanel('count-history'),'><summary><h2>ประวัติการนับและปรับยอดล่าสุด (',h(state.stocktakes.length),')</h2></summary><div class="stocktake-history-body">',
     '<p class="footnote">บนหน้าจอเล็ก เลื่อนตารางซ้าย / ขวาเพื่อดูผู้บันทึกและรายละเอียดแต่ละ Lot</p>',
     state.stocktakeError ? '<p class="alert danger">' + h(state.stocktakeError) + '</p>' : '',
     '<table><thead><tr><th>วันเวลา (ไทย) / เลขรายการ</th><th>กะ / เหตุผล</th><th>ผู้บันทึก</th><th>จำนวน Lot</th><th>ส่วนต่างรวม</th><th>รายละเอียด</th></tr></thead><tbody>', history, '</tbody></table>',
     state.historyError ? '<p class="alert danger">' + h(state.historyError) + '</p>' : '',
-    historyDetailHtml(), '</section></main>'
+    historyDetailHtml(), '</div></details></main>'
   ].join('');
+  bindManagementPanels();
   root.querySelector('#logout').addEventListener('click', logout);
   root.querySelector('#change-server').addEventListener('click', changeServer);
   root.querySelector('#open-sales').addEventListener('click', () => { state.view = 'sales'; render(); });
@@ -672,9 +707,16 @@ function renderStocktake() {
     root.querySelector('#count-validation').textContent=reason||'ข้อมูลและรูปครบ พร้อมยืนยันการนับ';
     root.querySelector('#confirm-count').disabled = locked || !state.countConfirmed || !valid || Boolean(state.draftError);
     root.querySelector('#reload-count').disabled = state.busy || hasInventoryPending() || Boolean(state.photoBusy) || Boolean(state.draftSaving);
+    const counted=[...state.counts.values()].filter(value=>value.trim()!=='').length;
+    const uploaded=Object.values(state.countDraft?.photos||{}).filter(photo=>photo?.metadata).length;
+    root.querySelector('#count-progress').textContent='นับแล้ว '+counted+' / '+(state.inventory?.lots?.length||0)+' Lot · รูปพร้อม '+uploaded;
+    root.querySelector('#count-session-summary').textContent=state.shiftLabel+' · ตั้งค่ารอบ / เหตุผล';
     root.querySelectorAll('[data-photo-upload]').forEach(button=>{
       const lot=button.dataset.photoUpload,photo=state.countDraft?.photos[lot];
       const uploaded=Boolean(photo?.metadata);
+      const status=root.querySelector('[data-evidence-status="'+CSS.escape(lot)+'"]');
+      status.textContent=uploaded?'พร้อมส่ง':photo?.blob?'มีรูป · รออัปโหลด':(state.counts.get(lot)||'').trim()!==''?'ต้องแนบรูป':'ยังไม่แนบรูป';
+      status.classList.toggle('ready',uploaded);
       const note=root.querySelector('[data-photo-note="'+CSS.escape(lot)+'"]');
       note.textContent=uploaded?'อัปโหลดรูปแล้ว':photo?.blob?
         'รูปยังไม่ยืนยันการอัปโหลด ส่งซ้ำได้ด้วยรูปและเลขอ้างอิงเดิม':
@@ -843,6 +885,7 @@ async function createProduct(event) {
   });
   if(!current())return;
   if (error) return setMessage('สร้างสินค้าไม่สำเร็จ: ' + error.message, true);
+  clearManagementForm('new-product');
   await refreshLots();
   if(!current())return;
   setMessage('บันทึกสินค้าในฐานข้อมูลกลางแล้ว');
@@ -893,6 +936,7 @@ async function performInventory(kind, action, payload) {
       // Any accepted/rejected count consumes the frozen snapshot. Recount after
       // a conflict; never update revisions under previously entered counts.
       if (kind === 'stocktake') { state.counts.clear(); state.countConfirmed = false; }
+      if(kind==='receive'&&result.result&&!result.rejected)clearManagementForm('receive-lot');
       if(kind==='stocktake'&&state.countDraft&&draftStore){await draftStore.clear(result.op.payload.client_stocktake_id);if(!current())return;state.countDraft=null;}
       const fresh = await refreshLots();
       if(!current())return;

@@ -19,10 +19,11 @@ const settle=async()=>{await new Promise(setImmediate);await new Promise(setImme
 const reply=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json'}});
 function saleIntent(actor=ACTORS.staff){return JSON.stringify({version:2,status:'pending',identity:{api:BASE,store:STORE,cashier:actor},payload:{client_sale_id:SALE}});}
 
-function fixture({remember=true,legacy=false,fetchHandler,actors=ACTORS,configuration={configured:false,roles:[],device_enrollment_contract_version:2}}={}) {
+function fixture({remember=true,legacy=false,fetchHandler,actors=ACTORS,autoRole=false,configuration={configured:false,roles:[],device_enrollment_contract_version:2}}={}) {
   const oldFetch=globalThis.fetch,oldSession=globalThis.sessionStorage;
   const local=new Storage(),session=new Storage(),calls=[],timers=new Map();let clock=Date.UTC(2026,9,18),nextTimer=0,nextToken=0;
-  const metadata={device_id:DEVICE,store:{id:STORE,name:'Synthetic PIN store'},roles:['owner','manager','staff'],expires_at:Math.floor(clock/1000)+86400};
+  const metadata={device_id:DEVICE,store:{id:STORE,name:'Synthetic PIN store'},roles:['owner','manager','staff'],expires_at:Math.floor(clock/1000)+86400,
+    auto_role_pin:autoRole,auto_role_pin_contract_version:1};
   if(remember)createDeviceStore(local,BASE).save({...metadata,device_credential:CREDENTIAL},actors);
   if(legacy)session.setItem(SESSION,'legacy-password-session');
   globalThis.sessionStorage=session;
@@ -34,9 +35,11 @@ function fixture({remember=true,legacy=false,fetchHandler,actors=ACTORS,configur
     if(fetchHandler){const handled=await fetchHandler(call,{tokens,clock});if(handled!==undefined)return handled;}
     if(path==='/v1/auth/device/status')return reply(metadata);
     if(path==='/v1/auth/device/unlock'){
-      const issued='memory-pin-'+(++nextToken)+'-'.repeat(50);tokens.set(issued,{id:ACTORS[body.role],role:body.role});
-      return reply({token:issued,auth_method:'shared_role_pin',device_id:DEVICE,role:body.role,
-        expires_at:Math.floor(clock/1000)+300,user:{id:ACTORS[body.role],email:'shared-'+body.role+'@role.invalid'}});
+      const role=body.role??Object.entries({owner:'6402',manager:'2846',staff:'1729'}).find(([,pin])=>pin===body.pin)?.[0];
+      if(!role)return reply({detail:'Invalid role or PIN'},401);
+      const issued='memory-pin-'+(++nextToken)+'-'.repeat(50);tokens.set(issued,{id:ACTORS[role],role});
+      return reply({token:issued,auth_method:'shared_role_pin',device_id:DEVICE,role,
+        expires_at:Math.floor(clock/1000)+300,user:{id:ACTORS[role],email:'shared-'+role+'@role.invalid'}});
     }
     if(path==='/v1/auth/login'){
       const issued='memory-password-'+(++nextToken)+'-'.repeat(40);tokens.set(issued,{id:ORIGINAL,role:'owner'});
@@ -62,6 +65,49 @@ function fixture({remember=true,legacy=false,fetchHandler,actors=ACTORS,configur
     advance(ms,fire=true){clock+=ms;if(fire)for(const [id,timer]of timers)if(timer.at<=clock){timers.delete(id);timer.fn();}},
     close(){controller.invalidate();globalThis.fetch=oldFetch;globalThis.sessionStorage=oldSession;}};
 }
+
+test('automatic PIN unlock uses exactly one request without a role and learns only the server-confirmed actor',async()=>{
+  const f=fixture({autoRole:true,actors:{}});try{
+    await f.controller.boot();assert.equal(f.controller.snapshot().autoRolePin,true);
+    assert.equal(await f.controller.unlockAuto('1729'),true);assert.equal(f.state.role,'staff');assert.equal(f.state.user.id,ACTORS.staff);
+    const attempts=f.calls.filter(call=>call.path==='/v1/auth/device/unlock');assert.equal(attempts.length,1);
+    assert.deepEqual(attempts[0].body,{device_credential:CREDENTIAL,pin:'1729'});
+    const stored=JSON.parse(f.local.getItem(deviceKey(BASE)));assert.deepEqual(stored.actors,{staff:ACTORS.staff});
+    assert.equal(stored.auto_role_pin,undefined);assert(!JSON.stringify(stored).includes('1729'));assert.equal(f.session.length,0);
+    await f.controller.lock();assert.equal(f.controller.snapshot().autoRolePin,true);assert.equal(f.privateDrafts.size,1);
+  }finally{f.close();}
+});
+test('automatic unlock requires the advertised exact contract and never probes old servers or guesses roles',async()=>{
+  for(const value of [false,'true',undefined]){
+    const f=fixture({autoRole:value});try{
+      await f.controller.boot();assert.equal(await f.controller.unlockAuto('1729'),false);
+      assert.equal(f.calls.filter(call=>call.path==='/v1/auth/device/unlock').length,0);
+      assert.equal(await f.controller.unlock('staff','1729'),true);
+    }finally{f.close();}
+  }
+  const f=fixture({autoRole:true});try{f.metadata.auto_role_pin_contract_version=2;await f.controller.boot();assert.equal(await f.controller.unlockAuto('1729'),false);}
+  finally{f.close();}
+});
+test('automatic role mismatch with a frozen pending actor revokes the issued session before loading any profile',async()=>{
+  const f=fixture({autoRole:true});try{
+    const key=pendingKey({api:BASE,store:STORE}),frozen=saleIntent(ACTORS.staff);f.local.setItem(key,frozen);
+    await f.controller.boot();assert.equal(f.controller.snapshot().pendingRole,'staff');
+    assert.equal(await f.controller.unlockAuto('6402'),false);assert.equal(f.state.profileLoads,0);assert.equal(f.api.auth.isPinSession(),false);
+    assert.equal(f.calls.filter(call=>call.path==='/v1/auth/device/unlock').length,1);assert.equal(f.calls.filter(call=>call.path==='/v1/auth/device/lock').length,1);
+    assert.equal(f.local.getItem(key),frozen);assert.equal(f.privateDrafts.size,1);
+    assert.equal(await f.controller.unlockAuto('1729'),true);assert.equal(f.state.role,'staff');
+  }finally{f.close();}
+});
+test('automatic unlock ignores duplicate submissions while pending and rejects late cross-window actor changes',async()=>{
+  const delayed=deferred(),f=fixture({autoRole:true,fetchHandler:call=>call.path==='/v1/auth/device/unlock'?delayed.promise:undefined});try{
+    await f.controller.boot();const attempt=f.controller.unlockAuto('1729');await settle();
+    assert.equal(await f.controller.unlockAuto('6402'),false);assert.equal(f.calls.filter(call=>call.path==='/v1/auth/device/unlock').length,1);
+    const frozen=saleIntent(ACTORS.manager),key=pendingKey({api:BASE,store:STORE});f.local.setItem(key,frozen);
+    delayed.resolve(reply({token:'S'.repeat(64),auth_method:'shared_role_pin',device_id:DEVICE,role:'staff',expires_at:Date.UTC(2026,9,18)/1000+300,user:{id:ACTORS.staff}}));
+    assert.equal(await attempt,false);assert.equal(f.api.auth.isPinSession(),false);assert.equal(f.state.profileLoads,0);
+    assert.equal(f.calls.filter(call=>call.path==='/v1/auth/device/lock').length,1);assert.equal(f.local.getItem(key),frozen);
+  }finally{f.close();}
+});
 
 test('remembered device boot removes legacy bearer before status and stays locked without an automatic unlock',async()=>{
   const f=fixture({legacy:true});try{

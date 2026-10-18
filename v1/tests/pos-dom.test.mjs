@@ -72,9 +72,9 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
     const path = parsed.pathname;
     let data, status = 200;
     if (path === '/health') data = {status: 'ok'};
-    else if (path === '/v1/auth/login') data = {token: 'offline-test-token', user: {id: user}};
+    else if (path === '/v1/auth/login') data = {token: 'offline-test-token', user: {id: f.user || user}};
     else if (path === '/v1/auth/logout') data = {ok: true};
-    else if (path === '/v1/me') data = {user: {id: user}, store_id: store, role: f.role,
+    else if (path === '/v1/me') data = {user: {id: f.user || user}, store_id: store, role: f.role,
       store: {name: 'OFFLINE MOCK STORE', sales_enabled: true, requires_authorization: f.requiresAuthorization ?? true},
       capabilities: typeof f.capabilities === 'object' ? f.capabilities :
         f.capabilities ? {discounts: true, discount_contract_version: 1} : undefined};
@@ -96,7 +96,9 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
     } else if (path === '/v1/inventory') data = f.inventory;
     else if (path === '/v1/stocktakes' && options.method !== 'POST') data = {stocktakes: f.history};
     else if (path === '/v1/products' && options.method === 'POST') {
-      f.productPosts.push(JSON.parse(options.body)); data = {product_id: product, created: true};
+      f.productPosts.push(JSON.parse(options.body));
+      if (f.failProduct) {status = 503; data = {detail: 'mock product rejected'};}
+      else data = {product_id: product, created: true};
     } else if (path === '/v1/lots/receive' && options.method === 'POST') {
       const p = JSON.parse(options.body); f.receipts.push(p);
       if (f.failReceipt) throw new TypeError('mock lost receipt response');
@@ -602,4 +604,194 @@ test('cumulative same-Lot quantity cannot exceed 1000 grams before creating a ch
     app.click('#quantity-confirm');assert.equal(f.posts.length,0);
     assert(!app.snapshot().local.some(([key])=>key.startsWith('ramagan.v1.pending.v2.')));
   }finally{app.close();}
+});
+
+function setManagementForm(app, id, values) {
+  for (const [name, value] of Object.entries(values)) {
+    const selector = '#' + id + ' [name="' + name + '"]';
+    app.input(selector, value, app.q(selector).tagName === 'SELECT' ? 'change' : 'input');
+  }
+}
+function assertManagementValues(app, id, values) {
+  for (const [name, value] of Object.entries(values)) {
+    assert.equal(app.q('#' + id + ' [name="' + name + '"]').value, value, id + '.' + name);
+  }
+}
+const productRawDraft = {sku: 'UNSENT PRIVATE SKU', name: 'UNSENT PRIVATE PRODUCT', category: 'fixture',
+  price: '100.', default_cost: '0.'};
+const intakeRawDraft = {product_id: product, lot_code: 'UNSENT PRIVATE LOT', supplier_name: 'Fixture supplier',
+  supplier_document_ref: 'OPTIONAL-REF', qty: '1.250', cost: '10.', expires: '2027-12-31', reason: 'Fixture intake'};
+
+test('compact management starts with visible stock and closed task, count metadata, photo and history panels', async () => {
+  const f = inventoryFixture(), app = await boot(f);
+  try {
+    app.menu('#open-inventory');
+    const stock = app.q('.inventory-stock-list');
+    assert(stock?.querySelector('.inventory-stock-row'), 'Stock overview is visible without opening a task form');
+    assert.equal(stock.closest('details'), null);
+    for (const id of ['new-product-panel', 'receive-lot-panel']) {
+      const panel = app.q('details.inventory-task#' + id);
+      assert(panel, id + ' is a native expandable task');
+      assert.equal(panel.open, false, id + ' is compact on first entry');
+      assert(panel.querySelector('summary'));
+    }
+    app.click('#receive-lot-panel > summary');
+    assert.equal(app.q('#receive-lot-panel').open, true);
+    assert.equal(app.q('#new-product-panel').open, false);
+    assert(app.q('#receive-lot [name=qty]'));
+    app.click('#open-stocktake');
+    assert.equal(app.q('details.count-session-details').open, false);
+    assert.equal(app.q('details.stocktake-history').open, false);
+    for (const id of [lot, lot2]) {
+      const panel = app.q('details[data-evidence-panel="' + id + '"]');
+      assert(panel?.querySelector('.count-evidence-summary'));
+      assert.equal(panel.open, false, 'Each photo selector starts collapsed');
+      assert.match(app.q('[data-evidence-status="' + id + '"]').textContent, /ยังไม่แนบรูป/);
+      assert(app.q('[data-count="' + id + '"]'));
+      assert(app.q('[data-variance="' + id + '"]'));
+    }
+    assert.equal(f.productPosts.length + f.receipts.length + f.countPosts.length, 0);
+  } finally { app.close(); }
+});
+
+test('native compact stocktake toggles keep the same numeric field, caret, raw count and optional reason', async () => {
+  const f = inventoryFixture(), app = await boot(f);
+  try {
+    app.menu('#open-stocktake');
+    const selector = '[data-count="' + lot + '"]', input = app.q(selector);
+    const document = input.ownerDocument;
+    for (const value of ['1', '10', '100', '100.', '100.125']) {
+      input.focus(); app.input(selector, value); input.setSelectionRange(value.length, value.length);
+      // Expanding a native disclosure does not require re-rendering the form.
+      const panel = app.q('details[data-evidence-panel="' + lot + '"]');
+      panel.open = !panel.open;
+      app.q('details.count-session-details').open = !app.q('details.count-session-details').open;
+      await until(() => !app.q('#reload-count').disabled);
+      assert.equal(app.q(selector), input);
+      assert.equal(document.activeElement, input);
+      assert.equal(input.selectionStart, value.length);
+      assert.equal(input.value, value);
+    }
+    app.q('details.count-session-details').open = true;
+    app.input('#shift-label', 'กะเย็น'); app.input('#count-reason', '');
+    await until(() => !app.q('#reload-count').disabled);
+    assert.equal(app.q('#count-reason').required, false);
+    app.click('#open-inventory'); app.click('#open-stocktake');
+    assert.equal(app.q(selector).value, '100.125');
+    assert.equal(app.q('#shift-label').value, 'กะเย็น');
+    assert.equal(app.q('#count-reason').value, '');
+    assert.equal(f.countPosts.length, 0);
+  } finally { app.close(); }
+});
+
+test('compact photo disclosures preserve open state and evidence whether the photo or count is entered first', async () => {
+  const f = inventoryFixture(), app = await boot(f);
+  try {
+    app.menu('#open-stocktake');
+    app.click('details[data-evidence-panel="' + lot + '"] > summary');
+    app.click('details.count-session-details > summary');
+    app.input('#shift-label', 'Photo-first fixture');
+    await until(() => !app.q('#reload-count').disabled);
+    app.photo('[data-photo="' + lot + '"]');
+    await until(() => f.uploads.length === 1 && /อัปโหลดรูปแล้ว/.test(app.text()));
+    assert.equal(app.q('details[data-evidence-panel="' + lot + '"]').open, true);
+    assert.equal(app.q('details.count-session-details').open, true);
+    assert.equal(app.q('[data-count="' + lot + '"]').value, '');
+    assert.equal(app.q('#confirm-count').disabled, true, 'A photo does not imply a numeric zero count');
+    app.input('[data-count="' + lot + '"]', '10.000');
+    app.input('[data-count="' + lot2 + '"]', '0');
+    await until(() => !app.q('#reload-count').disabled);
+    assert.match(app.q('[data-evidence-status="' + lot2 + '"]').textContent, /ต้องแนบรูป/);
+    app.click('details[data-evidence-panel="' + lot2 + '"] > summary');
+    app.photo('[data-photo="' + lot2 + '"]');
+    await until(() => f.uploads.length === 2 && app.q('[data-photo-note="' + lot2 + '"]')?.textContent.includes('อัปโหลดรูปแล้ว'));
+    for (const id of [lot, lot2]) {
+      assert.equal(app.q('details[data-evidence-panel="' + id + '"]').open, true);
+      assert.match(app.q('[data-evidence-status="' + id + '"]').textContent, /พร้อมส่ง/);
+      assert(app.q('[data-photo="' + id + '"]').closest('details').querySelector('.scale-preview'));
+    }
+    assert.equal(app.q('[data-count="' + lot + '"]').value, '10.000');
+    assert.equal(app.q('[data-count="' + lot2 + '"]').value, '0');
+    assert.equal(app.q('#shift-label').value, 'Photo-first fixture');
+    app.check('#count-confirm'); assert.equal(app.q('#confirm-count').disabled, false);
+    assert.equal(f.countPosts.length, 0, 'This regression test never submits a stocktake');
+  } finally { app.close(); }
+});
+
+test('both compact inventory forms retain raw unsent values through toggles, navigation, refresh and photo rendering', async () => {
+  const f = inventoryFixture(), app = await boot(f);
+  try {
+    app.menu('#open-inventory');
+    app.click('#new-product-panel > summary'); app.click('#receive-lot-panel > summary');
+    setManagementForm(app, 'new-product', productRawDraft);
+    setManagementForm(app, 'receive-lot', intakeRawDraft);
+    const productForm = app.q('#new-product'), receiptForm = app.q('#receive-lot');
+    app.click('#new-product-panel > summary'); app.click('#new-product-panel > summary');
+    app.click('#receive-lot-panel > summary'); app.click('#receive-lot-panel > summary');
+    assert.equal(app.q('#new-product'), productForm); assert.equal(app.q('#receive-lot'), receiptForm);
+    assertManagementValues(app, 'new-product', productRawDraft); assertManagementValues(app, 'receive-lot', intakeRawDraft);
+    app.click('#refresh');
+    await until(() => app.q('#new-product') !== productForm && !app.q('#new-product button').disabled);
+    assertManagementValues(app, 'new-product', productRawDraft); assertManagementValues(app, 'receive-lot', intakeRawDraft);
+    app.click('#open-stocktake');
+    // Refresh clears the current inventory snapshot before the HTTP requests
+    // settle. Navigation may finish first; wait for the fresh Lot controls.
+    await until(() => app.q('details[data-evidence-panel="' + lot + '"] > summary'));
+    app.click('details[data-evidence-panel="' + lot + '"] > summary'); app.photo('[data-photo="' + lot + '"]');
+    await until(() => /อัปโหลดรูปแล้ว/.test(app.text()));
+    app.click('#open-inventory');
+    assertManagementValues(app, 'new-product', productRawDraft); assertManagementValues(app, 'receive-lot', intakeRawDraft);
+    assert(!JSON.stringify(app.snapshot()).includes('UNSENT PRIVATE'), 'Unsent form text remains in actor-scoped memory');
+    assert.equal(f.productPosts.length + f.receipts.length + f.countPosts.length, 0);
+  } finally { app.close(); }
+});
+
+test('successful compact task clears only its own form, and a rejected product leaves both drafts intact', async () => {
+  const f = inventoryFixture({failProduct: true}), app = await boot(f);
+  try {
+    app.menu('#open-inventory');
+    app.click('#new-product-panel > summary'); app.click('#receive-lot-panel > summary');
+    const validProduct = {...productRawDraft, price: '100.00', default_cost: '0.00'};
+    const validIntake = {...intakeRawDraft, qty: '1.250', cost: '10.00'};
+    setManagementForm(app, 'new-product', validProduct); setManagementForm(app, 'receive-lot', validIntake);
+    app.submit('#new-product'); await until(() => /mock product rejected/.test(app.text()) && !app.q('#new-product button').disabled);
+    assertManagementValues(app, 'new-product', validProduct); assertManagementValues(app, 'receive-lot', validIntake);
+    f.failProduct = false; app.submit('#new-product');
+    await until(() => f.productPosts.length === 2 && !app.q('#new-product button').disabled);
+    assert.equal(app.q('#new-product [name=sku]').value, '');
+    assert.equal(app.q('#new-product [name=name]').value, '');
+    assertManagementValues(app, 'receive-lot', validIntake);
+    if (!app.q('#new-product-panel').open) app.click('#new-product-panel > summary');
+    setManagementForm(app, 'new-product', productRawDraft);
+    app.submit('#receive-lot'); await until(() => f.receipts.length === 1 && !app.q('#receive-lot button').disabled);
+    assert.equal(f.receipts[0].quantity_mg, 1250); assert.equal(f.receipts[0].cost_satang_per_gram, 1000);
+    assert.equal(app.q('#receive-lot [name=lot_code]').value, '');
+    assert.equal(app.q('#receive-lot [name=qty]').value, '');
+    assertManagementValues(app, 'new-product', productRawDraft);
+  } finally { app.close(); }
+});
+
+test('management drafts cannot leak to a new actor after logout while old count evidence remains actor-scoped', async () => {
+  const f = inventoryFixture(), app = await boot(f);
+  try {
+    app.menu('#open-inventory');
+    app.click('#new-product-panel > summary'); app.click('#receive-lot-panel > summary');
+    setManagementForm(app, 'new-product', productRawDraft); setManagementForm(app, 'receive-lot', intakeRawDraft);
+    app.click('#open-stocktake'); app.input('[data-count="' + lot + '"]', '9.125');
+    await until(() => !app.q('#reload-count').disabled);
+    app.click('details[data-evidence-panel="' + lot + '"] > summary'); app.photo('[data-photo="' + lot + '"]');
+    await until(() => /อัปโหลดรูปแล้ว/.test(app.text()));
+    app.menu('#logout'); await until(() => app.q('#login-form'));
+    f.user = '77777777-7777-4777-8777-777777777777';
+    app.input('[name=email]', 'second-fixture@example.test'); app.input('[name=password]', 'fixture-password');
+    app.submit('#login-form'); await until(() => app.q('[data-add]'));
+    app.menu('#open-inventory');
+    assert.equal(app.q('#new-product [name=sku]').value, '');
+    assert.equal(app.q('#receive-lot [name=lot_code]').value, '');
+    assert(!app.text().includes('UNSENT PRIVATE'));
+    app.click('#open-stocktake');
+    assert.equal(app.q('[data-count="' + lot + '"]').value, ''); assert.equal(app.q('.scale-preview'), null);
+    assert.equal(f.countPosts.length + f.receipts.length + f.productPosts.length, 0);
+    assert.equal(f.uploads.length, 1);
+  } finally { app.close(); }
 });
