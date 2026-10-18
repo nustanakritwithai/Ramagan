@@ -17,6 +17,54 @@ function fixture(changes={}) {
     close(){dom.window.close();}};
 }
 const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
+function keypad(f){renderPinLock(f.ctx);return value=>f.q('[data-pin-key="'+value+'"]').click();}
+
+test('automatic keypad has four masked dots and submits exactly once after the fourth touch',async()=>{
+  let release;const received=[],f=fixture({autoRolePin:true,onUnlockAuto:pin=>{received.push(pin);return new Promise(resolve=>{release=resolve;});}});
+  try{
+    const press=keypad(f);assert.equal(f.q('[name=role]'),null);assert.equal(f.q('input'),null);assert.equal(f.root.querySelectorAll('.pin-dots span').length,4);
+    for(const digit of ['2','4','6'])press(digit);
+    assert.equal(received.length,0);assert.equal(f.root.querySelectorAll('.pin-dots .filled').length,3);
+    press('8');assert.deepEqual(received,['2468']);assert.equal(f.root.querySelectorAll('.pin-dots .filled').length,0);
+    press('1');press('0');assert.equal(received.length,1);assert([...f.root.querySelectorAll('.pin-keypad button')].every(button=>button.disabled));
+    assert(!f.root.innerHTML.includes('2468'));assert.equal(f.dom.window.localStorage.length,0);assert.equal(f.dom.window.sessionStorage.length,0);
+    release(false);await tick();assert.match(f.q('[data-pin-error]').textContent,/ไม่สำเร็จ/);
+    assert.equal(f.root.querySelectorAll('.pin-dots .filled').length,0);assert([...f.root.querySelectorAll('.pin-keypad button')].every(button=>!button.disabled));
+  }finally{f.close();}
+});
+
+test('automatic keypad supports keyboard editing, ignores repeat/modifier keys and clears all digits on failure',async()=>{
+  const received=[],f=fixture({autoRolePin:true,onUnlockAuto:async pin=>{received.push(pin);throw new Error('Synthetic rejection');}});
+  try{
+    keypad(f);const card=f.q('.pin-keypad-card');
+    const key=(value,extra={})=>card.dispatchEvent(new f.dom.window.KeyboardEvent('keydown',{key:value,bubbles:true,cancelable:true,...extra}));
+    key('1');key('1',{repeat:true});key('2',{ctrlKey:true});key('2');key('Backspace');key('3');key('Escape');
+    assert.equal(f.root.querySelectorAll('.pin-dots .filled').length,0);
+    for(const digit of ['0','2','7','9'])key(digit);
+    await tick();assert.deepEqual(received,['0279']);assert.equal(f.root.querySelectorAll('.pin-dots .filled').length,0);
+    assert.match(f.q('[data-pin-error]').textContent,/ไม่สำเร็จ/);assert.equal(f.dom.window.document.activeElement,card);
+    assert(!f.root.innerHTML.includes('0279'));assert.equal(f.dom.window.localStorage.length,0);assert.equal(f.dom.window.sessionStorage.length,0);
+  }finally{f.close();}
+});
+
+test('automatic keypad never sends partial PINs and clear/backspace and recovery erase local entry',()=>{
+  const received=[],f=fixture({autoRolePin:true,onUnlockAuto:async pin=>received.push(pin)});
+  try{
+    const press=keypad(f);press('7');press('8');press('backspace');assert.equal(f.root.querySelectorAll('.pin-dots .filled').length,1);
+    press('clear');assert.equal(f.root.querySelectorAll('.pin-dots .filled').length,0);press('1');press('2');
+    f.q('#pin-password-login').click();assert.equal(f.calls.password,1);assert.equal(f.root.querySelectorAll('.pin-dots .filled').length,0);
+    assert.equal(received.length,0);assert.equal(f.calls.unlock.length,0);
+  }finally{f.close();}
+});
+
+test('automatic keypad stays disabled for busy, expired or blocked pending-actor states',()=>{
+  for(const changes of [{busy:true},{device:{...device(),expires_at:1}},{pendingRole:'blocked'}, {device:{...device(),roles:[]}}]){
+    const received=[],f=fixture({autoRolePin:true,onUnlockAuto:async pin=>received.push(pin),...changes});
+    try{const press=keypad(f);assert([...f.root.querySelectorAll('.pin-keypad button')].every(button=>button.disabled));
+      for(const digit of ['1','2','3','4'])press(digit);assert.equal(received.length,0);assert.equal(f.root.querySelectorAll('.pin-dots .filled').length,0);
+    }finally{f.close();}
+  }
+});
 function enroll(f,{pins={owner:'1234',manager:'5678',staff:'9012'},password='fixture-password'}={}) {
   f.input('#pin-device-label','  Counter 1  ');f.input('#pin-owner-password',password);
   for(const role of ['owner','manager','staff']){f.input('#pin-enroll-'+role,pins[role]);f.input('#pin-confirm-'+role,pins[role]);}

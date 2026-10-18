@@ -8,7 +8,8 @@ export function createDeviceAuth({api,storage,isBusy=()=>false,clearDisplay=()=>
   loadProfile=async()=>{},canConfigure=()=>false,currentStore=()=>null,cartEmpty=()=>true,
   exclusive=async task=>task(),now=()=>Date.now(),setTimer=setTimeout,clearTimer=clearTimeout}) {
   const store=createDeviceStore(storage,api.base);
-  let device=null,locked=false,passwordOverride=false,busy=false,error='',epoch=0,timer=null,expires=0,disposed=false,activeActor=null,configuration=null;
+  let device=null,locked=false,passwordOverride=false,busy=false,error='',epoch=0,timer=null,expires=0,disposed=false,activeActor=null,configuration=null,autoRolePin=false;
+  const supportsAuto=data=>data?.auto_role_pin===true&&data?.auto_role_pin_contract_version===1;
   const alive=n=>!disposed&&epoch===n;
   const stopTimer=()=>{if(timer!==null)clearTimer(timer);timer=null;expires=0;};
   const guard=()=>{const n=epoch;return()=>alive(n);};
@@ -22,7 +23,7 @@ export function createDeviceAuth({api,storage,isBusy=()=>false,clearDisplay=()=>
       return role;
     }catch{error='อ่านเจ้าของรายการค้างไม่ได้ กรุณาเข้าด้วยบัญชีเดิมเพื่อตรวจสอบ';return 'blocked';}
   }
-  function snapshot(){const pendingRole=restriction();return {device,locked,passwordOverride,busy:busy||isBusy(),error,pendingRole,configuration,isPinSession:api.auth.isPinSession()};}
+  function snapshot(){const pendingRole=restriction();return {device,locked,passwordOverride,busy:busy||isBusy(),error,pendingRole,configuration,autoRolePin,isPinSession:api.auth.isPinSession()};}
   function fail(message){error=message;render();return false;}
   async function lock(message=''){
     if(disposed)return;
@@ -32,7 +33,7 @@ export function createDeviceAuth({api,storage,isBusy=()=>false,clearDisplay=()=>
     await request; // A failed remote lock never restores local authorization.
   }
   async function boot(){
-    const n=++epoch;busy=true;error='';configuration=null;
+    const n=++epoch;busy=true;error='';configuration=null;autoRolePin=false;
     try{
       // Discard the legacy password-session token BEFORE parsing a remembered
       // device or making its unauthenticated status request.
@@ -44,6 +45,7 @@ export function createDeviceAuth({api,storage,isBusy=()=>false,clearDisplay=()=>
       if(!alive(n))return true;
       if(response.error)throw response.error;
       if(response.data?.device_id!==device.device_id||response.data?.store?.id!==device.store.id)throw new Error('ข้อมูลเครื่องไม่ตรงกับร้านที่จำไว้');
+      autoRolePin=supportsAuto(response.data);
       device=store.save({...response.data,device_credential:device.device_credential},device.actors);
       return true;
     }catch(problem){
@@ -51,17 +53,19 @@ export function createDeviceAuth({api,storage,isBusy=()=>false,clearDisplay=()=>
       return true;
     }finally{busy=false;if(!disposed)render();}
   }
-  async function unlock(role,pin){
+  async function unlock(role,pin,auto=false){
     if(disposed||busy||isBusy())return fail('รายการเดิมยังทำงานอยู่ กรุณารอให้สิ้นสุดก่อนปลดล็อก');
-    if(!device||!ROLES.includes(role)||!device.roles.includes(role)||!/^\d{4}$/.test(pin))return fail('เลือกบทบาทและกรอก PIN 4 หลัก');
-    const restricted=restriction();if(restricted&&restricted!==role)return fail('ต้องใช้บทบาทหรือบัญชีเดิมเพื่อตรวจสอบรายการค้าง');
+    if(!device||typeof pin!=='string'||!/^\d{4}$/.test(pin)||(auto?!autoRolePin:!ROLES.includes(role)||!device.roles.includes(role)))return fail('กรอก PIN 4 หลักที่ได้รับอนุญาต');
+    const restricted=restriction();if(restricted==='blocked'||(!auto&&restricted&&restricted!==role))return fail('ต้องใช้บทบาทหรือบัญชีเดิมเพื่อตรวจสอบรายการค้าง');
     const n=++epoch;busy=true;error='';render();
     try{
-      const response=await api.auth.unlockDevice({device_credential:device.device_credential,role,pin});
+      const response=await api.auth.unlockDevice({device_credential:device.device_credential,...(!auto?{role}:{}),pin});
       if(!alive(n))return false;
       if(response.error)throw response.error;
       const data=response.data;
-      if(data?.device_id!==device.device_id||data?.role!==role||!data.user?.id||!Number.isSafeInteger(data.expires_at)||data.expires_at*1000<=now())throw new Error('คำตอบปลดล็อกไม่ตรงกับเครื่องหรือบทบาท');
+      if(data?.device_id!==device.device_id||!ROLES.includes(data?.role)||!device.roles.includes(data.role)||(!auto&&data.role!==role)||!data.user?.id||!Number.isSafeInteger(data.expires_at)||data.expires_at*1000<=now())throw new Error('คำตอบปลดล็อกไม่ตรงกับเครื่องหรือบทบาท');
+      role=data.role;
+      if(restricted&&restricted!==role)throw new Error('ต้องใช้บทบาทเดิมเพื่อตรวจสอบรายการค้าง');
       // Recheck durable bytes AFTER the server unlock: another window may have
       // written an intent while the PIN request was in flight.
       const actor=pending();if(actor&&actor!==data.user.id)throw new Error('มีรายการค้างของบัญชีอื่น กรุณากลับเข้าบัญชีเดิม');
@@ -116,10 +120,11 @@ export function createDeviceAuth({api,storage,isBusy=()=>false,clearDisplay=()=>
         if(!alive(n))return false;
         if(response.error)throw response.error;
         if(method==='enrollDevice'){
+          autoRolePin=supportsAuto(response.data);
           device=store.save(response.data,{});
           await lock();
         }else if(method==='revokeDevice'){
-          store.forget();device=null;error='เพิกถอนเครื่องนี้แล้ว';render();
+          store.forget();device=null;autoRolePin=false;error='เพิกถอนเครื่องนี้แล้ว';render();
         }else{error='เปลี่ยน PIN แล้ว บทบาทที่ใช้ PIN ต้องปลดล็อกใหม่';render();}
         return true;
       });
@@ -130,7 +135,7 @@ export function createDeviceAuth({api,storage,isBusy=()=>false,clearDisplay=()=>
     if(busy||isBusy())return fail('รายการเดิมยังทำงานอยู่ จึงยังลืมเครื่องไม่ได้');
     try{
       if(device&&pending())return fail('ต้องตรวจสอบรายการค้างด้วยบทบาทเดิมก่อนลืมเครื่อง');
-      store.forget();device=null;
+      store.forget();device=null;autoRolePin=false;
       if(api.auth.isPinSession()){++epoch;stopTimer();api.auth.lockDevice();clearDisplay();}
       locked=false;passwordOverride=true;error='';render();return true;
     }catch(problem){return fail(problem.message||'ลืมเครื่องไม่สำเร็จ');}
@@ -151,7 +156,7 @@ export function createDeviceAuth({api,storage,isBusy=()=>false,clearDisplay=()=>
     }catch{void lock('อ่านข้อมูลเครื่องหรือรายการค้างไม่ได้ กรุณาเข้าด้วยบัญชีเดิม');device=null;locked=false;passwordOverride=true;render();}
   }
   const subscription=api.auth.onAuthStateChange(event=>{if(event==='PIN_LOCKED')void lock('สิทธิ์ PIN หมดอายุหรือถูกเพิกถอน กรุณาปลดล็อกใหม่');});
-  return {boot,unlock,lock,passwordLogin,forget,snapshot,guard,checkExpiry,storageChanged,refreshConfiguration,
+  return {boot,unlock,unlockAuto:pin=>unlock(null,pin,true),lock,passwordLogin,forget,snapshot,guard,checkExpiry,storageChanged,refreshConfiguration,
     enroll:payload=>configure('enrollDevice',payload),changePins:payload=>configure('changePins',payload),revoke:payload=>configure('revokeDevice',payload),
     pendingActor:pending,
     invalidate(){++epoch;disposed=true;configuration=null;stopTimer();subscription?.data?.subscription?.unsubscribe();api.auth.forgetSession();}};

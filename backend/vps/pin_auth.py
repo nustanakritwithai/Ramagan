@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
 CONTRACT_VERSION = 1
 ENROLLMENT_CONTRACT_VERSION = 2
+AUTO_ROLE_CONTRACT_VERSION = 1
 SESSION_SECONDS = 300
 DEVICE_SECONDS = 90 * 24 * 3600
 LOCK_SECONDS = 15 * 60
@@ -65,7 +66,9 @@ class DeviceInput(PrivateInput):
 
 
 class Unlock(DeviceInput):
-    role: Role
+    # Omitting the role opts into a single server-side match. Existing clients
+    # may continue to name a role; no client needs to try three requests.
+    role: Role | None = None
     pin: Pin = Field(pattern=r"^[0-9]{4}$")
 
 
@@ -102,7 +105,8 @@ def resolve_pepper(value=None):
 def capabilities(enabled=False, *, required=None):
     return {"shared_role_pin": bool(enabled), "shared_role_pin_contract_version": CONTRACT_VERSION,
             "pos_pin_required": bool(enabled) if required is None else bool(required), "pin_preserving_enrollment": True,
-            "device_enrollment_contract_version": ENROLLMENT_CONTRACT_VERSION}
+            "device_enrollment_contract_version": ENROLLMENT_CONTRACT_VERSION,
+            "auto_role_pin": bool(enabled), "auto_role_pin_contract_version": AUTO_ROLE_CONTRACT_VERSION}
 
 
 def _digest(value):
@@ -269,7 +273,8 @@ class DeviceAuth:
 
     def _device_reply(self, device):
         return {"device_id": device["id"], "store": {"id": device["store_id"], "name": device["store_name"]},
-                "roles": list(ROLES), "expires_at": device["expires_at"]}
+                "roles": list(ROLES), "expires_at": device["expires_at"],
+                "auto_role_pin": True, "auto_role_pin_contract_version": AUTO_ROLE_CONTRACT_VERSION}
 
     def valid_session(self, db, token_hash, actor, now):
         binding = db.execute("SELECT * FROM device_pin_sessions WHERE token_hash=?", (token_hash,)).fetchone()
@@ -349,7 +354,7 @@ class DeviceAuth:
                 for role in ROLES:
                     rows = [self._limit(db, device["store_id"], *scope) for scope in (
                         ("store_role", device["store_id"], role), ("device_role", device["id"], role),
-                        ("device", device["id"], ""))]
+                        ("device", device["id"], ""), ("store_role", device["store_id"], ""))]
                     lockouts[role] = {"locked_until": max((r["locked_until"] for r in rows if r), default=0),
                                       "recovery_required": any(bool(r["recovery_required"]) for r in rows if r)}
                 reply = {**self._device_reply(device), "locked": True, "role_lockouts": lockouts}
@@ -361,20 +366,44 @@ class DeviceAuth:
             with self.transaction() as db:
                 device = self._device(db, payload.device_credential, now)
                 store, role = device["store_id"], payload.role
-                scopes = [("store_role", store, role), ("device_role", device["id"], role), ("device", device["id"], "")]
-                if self._blocked(db, store, scopes, now):
+                # The legacy explicit-role contract must fail closed on the
+                # same damaged configuration as automatic role detection.
+                if not self._configured(db, store):
+                    raise HTTPException(409, "Role authentication requires owner recovery")
+                # The aggregate budgets apply to BOTH request modes. Alternating
+                # auto-match and explicit-role requests, devices or roles cannot
+                # obtain an extra guessing budget. Success never clears them.
+                # An empty role is the existing schema's store-wide scope;
+                # named role rows retain their original lockout semantics.
+                aggregate = [("device", device["id"], ""), ("store_role", store, "")]
+                if self._blocked(db, store, aggregate, now):
                     # A stolen device credential must not grow the immutable
                     # audit forever by hammering an already-blocked role.
                     raise HTTPException(429, "PIN temporarily locked or owner recovery required")
-                record = self._role(db, store, role)
+                if role is None:
+                    # Always verify all three independently salted hashes. Do
+                    # not stop on the first match or reveal candidate roles.
+                    matches = [record for candidate in ROLES
+                               if self._pin_matches(payload.pin, store, candidate,
+                                                    (record := self._role(db, store, candidate))["pin_hash"])]
+                    if len(matches) > 1:
+                        raise HTTPException(409, "Role authentication requires owner recovery")
+                    record = matches[0] if matches else None
+                    role = record["role"] if record else None
+                else:
+                    record = self._role(db, store, role)
+                role_scopes = [("store_role", store, role), ("device_role", device["id"], role)] if role else []
+                if self._blocked(db, store, role_scopes, now):
+                    raise HTTPException(429, "PIN temporarily locked or owner recovery required")
+                scopes = role_scopes + aggregate
                 if (not record or not record["is_active"] or record["actual_role"] != role
                         or record["actual_store"] != store
-                        or not self._pin_matches(payload.pin, store, role, record["pin_hash"])):
+                        or (payload.role is not None and not self._pin_matches(payload.pin, store, role, record["pin_hash"]))):
                     transition = self._fail(db, store, scopes, now)
                     self._event(db, store, "LOCKED" if transition else "PIN_FAILURE", device=device["id"], role=role)
                     self._deny(db, 401, "Invalid role or PIN")
                 # Success for one role must not reset another role's guessing budget.
-                self._clear(db, store, scopes[:2])
+                self._clear(db, store, role_scopes)
                 db.execute("UPDATE sessions SET revoked=1 WHERE token_hash IN (SELECT token_hash FROM device_pin_sessions WHERE device_id=?)",
                            (device["id"],))
                 token = secrets.token_urlsafe(48)

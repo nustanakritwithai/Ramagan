@@ -20,7 +20,42 @@ function pinField({id,name,label,required=true}) {
 function showError(scope,message) {
   const node=scope.querySelector('[data-pin-error]');if(node)node.textContent=message;
 }
+function renderPinKeypad(ctx){
+  const {root}=ctx,allowed=rolesFor(ctx.device,ctx.pendingRole),busy=ctx.busy===true,dead=expired(ctx.device);
+  const available=allowed.length>0&&!dead&&typeof ctx.onUnlockAuto==='function';
+  const info=dead?'การเชื่อมต่อเครื่องหมดอายุ กรุณาเข้าด้วยบัญชี Owner':!allowed.length?'มีรายการค้าง กรุณาเข้าด้วยบัญชีเดิมเพื่อตรวจสอบ':'';
+  root.innerHTML='<main class="pin-keypad-shell"><section class="pin-keypad-card" tabindex="-1" aria-label="ป้อน PIN เพื่อเริ่มงาน">'+
+    '<header class="pin-keypad-heading"><div class="pin-keypad-brand">R<span>•</span> RAMAGAN</div><p class="pin-keypad-store">'+h(ctx.device?.store?.name||'ร้านของคุณ')+'</p><h1>ป้อน PIN</h1><p class="pin-keypad-help">ระบบจะเข้าสิทธิ์ของ PIN ที่กรอกโดยอัตโนมัติ</p>'+
+    '<div class="pin-dots" role="status" aria-live="polite" aria-label="กรอกแล้ว 0 จาก 4 หลัก">'+Array.from({length:4},()=>'<span aria-hidden="true"></span>').join('')+'</div>'+
+    '<p class="pin-error" data-pin-error role="status" aria-live="polite">'+h(ctx.error||info)+'</p></header>'+
+    '<div class="pin-keypad" role="group" aria-label="แป้นตัวเลข PIN">'+['1','2','3','4','5','6','7','8','9','backspace','0','clear'].map(value=>'<button type="button" data-pin-key="'+value+'" '+(busy||!available?'disabled ':'')+'aria-label="'+(value==='backspace'?'ลบหลักสุดท้าย':value==='clear'?'ล้าง PIN':value)+'">'+(value==='backspace'?'⌫':value==='clear'?'ล้างข้อมูล':value)+'</button>').join('')+'</div>'+
+    '<footer class="pin-keypad-footer"><button type="button" id="pin-password-login" class="pin-text" '+(busy?'disabled':'')+'>จัดการเครื่อง / กู้คืนด้วยบัญชี Owner</button><details><summary>ข้อมูลการเชื่อมต่อ</summary><p class="pin-note">'+auditCopy+'</p><p class="pin-note">หมดอายุ '+h(expiryText(ctx.device))+'</p>'+
+    (typeof ctx.onForget==='function'?'<button type="button" id="pin-forget-device" class="pin-text" '+(busy?'disabled':'')+'>ลืมการเชื่อมต่อบนเครื่องนี้</button>':'')+'</details></footer></section></main>';
+  const card=root.querySelector('.pin-keypad-card'),dots=card.querySelector('.pin-dots');
+  let digits='',submitting=false;
+  const paint=()=>{dots.setAttribute('aria-label','กรอกแล้ว '+digits.length+' จาก 4 หลัก');dots.querySelectorAll('span').forEach((dot,index)=>dot.classList.toggle('filled',index<digits.length));};
+  const disable=value=>card.querySelectorAll('button').forEach(button=>{button.disabled=value;});
+  async function submit(){
+    if(submitting||busy||!available||!validPin(digits))return;
+    const pin=digits;digits='';submitting=true;paint();disable(true);showError(card,'กำลังตรวจสอบ…');
+    try{const unlocked=await ctx.onUnlockAuto(pin);if(unlocked===false&&card.isConnected)showError(card,'ปลดล็อกไม่สำเร็จ กรุณาตรวจสอบ PIN แล้วลองใหม่');}catch{if(card.isConnected)showError(card,'ปลดล็อกไม่สำเร็จ กรุณาลองใหม่');}
+    finally{if(card.isConnected){digits='';submitting=false;paint();disable(false);card.focus({preventScroll:true});}}
+  }
+  function enter(value){
+    if(submitting||busy||!available)return;
+    if(value==='clear')digits='';else if(value==='backspace')digits=digits.slice(0,-1);else if(/^[0-9]$/.test(value)&&digits.length<4)digits+=value;
+    paint();if(digits.length===4)void submit();
+  }
+  card.querySelectorAll('[data-pin-key]').forEach(button=>button.addEventListener('click',()=>enter(button.dataset.pinKey)));
+  card.addEventListener('keydown',event=>{if(event.ctrlKey||event.metaKey||event.altKey||event.repeat)return;const key=event.key;
+    if(/^[0-9]$/.test(key)||key==='Backspace'||key==='Delete'||key==='Escape'){event.preventDefault();enter(key==='Backspace'?'backspace':key==='Delete'||key==='Escape'?'clear':key);}
+  });
+  card.querySelector('#pin-password-login').onclick=()=>{if(!busy&&!submitting){digits='';paint();ctx.onPasswordLogin();}};
+  card.querySelector('#pin-forget-device')?.addEventListener('click',()=>{if(!busy&&!submitting){digits='';paint();ctx.onForget();}});
+  if(!busy)card.focus({preventScroll:true});
+}
 export function renderPinLock(ctx) {
+  if(ctx.autoRolePin===true)return renderPinKeypad(ctx);
   const {root}=ctx,doc=root.ownerDocument,allowed=rolesFor(ctx.device,ctx.pendingRole);
   const busy=ctx.busy===true,dead=expired(ctx.device),available=allowed.length>0&&!dead;
   const info=dead?'การเชื่อมต่อของเครื่องนี้หมดอายุแล้ว กรุณาเข้าด้วยบัญชีและรหัสผ่าน':!allowed.length?'ไม่พบบทบาทที่เปิดใช้บนเครื่องนี้ กรุณาเข้าด้วยบัญชีและรหัสผ่าน':'';
