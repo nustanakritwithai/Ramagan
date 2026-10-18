@@ -1,11 +1,12 @@
 // Integer-only inventory inputs and durable intent. Server roles and revisions
 // remain authoritative; local storage never grants authority or stores tokens.
 import {bahtToSatang} from './math.js';
+import {supportsEvidence} from './evidence-draft.js';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const integer = (x, max = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(x) && x >= 0 && x <= max;
 const fail = message => { throw new Error(message); };
 export const supportsCosts = c => c?.inventory_costs === true && c?.cost_contract_version === 1;
-export const supportsStocktakes = c => c?.stocktakes === true && c?.stocktake_contract_version === 1;
+export const supportsStocktakes = c => c?.stocktakes === true && [1, 2].includes(c?.stocktake_contract_version);
 export const optionalDocuments = c => c?.optional_document_references === true && c?.document_contract_version === 1;
 export function optionalCost(value) {
   if (typeof value !== 'string') fail('ระบุต้นทุนเป็นบาท');
@@ -85,6 +86,7 @@ function validateResult(kind, data, op) {
     for (const item of data.items) {
       const requested = p.items.find(x => x.lot_id === item.lot_id);
       if (!requested || item.counted_quantity_mg !== requested.counted_quantity_mg ||
+          (requested.evidence_id && item.evidence?.evidence_id !== requested.evidence_id) ||
           item.stock_revision_before !== requested.expected_revision ||
           item.stock_revision_after !== item.stock_revision_before + 1 ||
           !integer(item.system_quantity_mg) ||
@@ -178,10 +180,13 @@ export function createInventoryOperation({storage, identity, kind, transport, uu
     start: payload => exclusive(async () => {
       if (storage.getItem(completedKey) !== observed) fail('อีกหน้าต่างบันทึกสต็อกแล้ว กรุณารีโหลดยอดระบบ');
       if (read()) fail('มีรายการสต็อกค้าง ต้องตรวจสอบรายการเดิมก่อน');
+      const c = await transport.capabilities(identity);
+      if (kind === 'stocktake' && (!supportsEvidence(c) || !UUID.test(payload.client_stocktake_id) ||
+          payload.items.some(x => !UUID.test(x.evidence_id)))) fail('ต้องมีรูปเครื่องชั่งครบทุก Lot และเซิร์ฟเวอร์รองรับหลักฐานรุ่น 2 ก่อนส่งการนับ');
       await capabilities();
       const idField = kind === 'stocktake' ? 'client_stocktake_id' : 'client_receive_id';
       const op = persist({version: 1, kind, status: 'pending', uncertain: false, identity: {...identity},
-        payload: {...payload, [idField]: uuid()}});
+        payload: {...payload, [idField]: kind === 'stocktake' ? payload.client_stocktake_id : uuid()}});
       return post(op);
     }),
     retry: () => exclusive(async () => {

@@ -7,12 +7,12 @@ import {createInventoryOperation, supportsCosts, supportsStocktakes, optionalCos
 const identity = {api: 'https://fixture.invalid/api', store: '22222222-2222-4222-8222-222222222222', actor: '11111111-1111-4111-8111-111111111111'};
 const id = '44444444-4444-4444-8444-444444444444';
 const lot = '33333333-3333-4333-8333-333333333333';
-const caps = {inventory_costs: true, cost_contract_version: 1, stocktakes: true, stocktake_contract_version: 1};
-const payload = () => ({shift_label: 'กะเช้า', reason: 'นับจริง', items: [{lot_id: lot, expected_revision: 2, counted_quantity_mg: 900} ]});
+const caps = {inventory_costs: true, cost_contract_version: 1, stocktakes: true, stocktake_contract_version: 2, stocktake_evidence: true, evidence_contract_version: 1};
+const payload = () => ({client_stocktake_id:id,shift_label: 'กะเช้า', reason: 'นับจริง', items: [{lot_id: lot, expected_revision: 2, counted_quantity_mg: 900,evidence_id:lot} ]});
 const response = p => ({id, client_stocktake_id: p.client_stocktake_id, shift_label: p.shift_label,
   reason: p.reason, actor_user_id: identity.actor, duplicate: false, items: p.items.map(x => ({lot_id: x.lot_id,
     system_quantity_mg: 1000, counted_quantity_mg: x.counted_quantity_mg, variance_mg: x.counted_quantity_mg - 1000,
-    stock_revision_before: x.expected_revision, stock_revision_after: x.expected_revision + 1}))});
+    stock_revision_before: x.expected_revision, stock_revision_after: x.expected_revision + 1,evidence:{evidence_id:x.evidence_id}}))});
 function fixture(changes = {}) {
   const map = new Map();
   const f = {calls: [], saved: null, caps, ...changes};
@@ -67,7 +67,7 @@ test('storage failure, changed identity, absent lock/capability and corrupt resu
   const f = fixture(), op = f.create();
   f.storage.setItem = () => {throw Error('disk full');};
   await assert.rejects(op.start(payload()), /disk full/); assert.equal(f.calls.length, 0);
-  const g = fixture({caps: {}}); await assert.rejects(g.create().start(payload()), /ยังไม่รองรับ/); assert.equal(g.calls.length, 0);
+  const g = fixture({caps: {}}); await assert.rejects(g.create().start(payload()), /รูปเครื่องชั่ง|ยังไม่รองรับ/); assert.equal(g.calls.length, 0);
   const noLock = fixture(); noLock.options.lock = null;
   await assert.rejects(async () => noLock.create().start(payload()), /ไม่รองรับการล็อก/);
   const h = fixture({fail: true}); await h.create().start(payload());

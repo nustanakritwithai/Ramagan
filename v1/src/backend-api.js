@@ -40,7 +40,7 @@ export function createClient(serverUrl) {
   let token = sessionStorage.getItem(sessionKey) || '';
   const listeners = [];
 
-  const request = async (method, endpoint, payload) => {
+  const request = async (method, endpoint, payload, raw = false, responseKind = 'json') => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20000);
     try {
@@ -52,11 +52,12 @@ export function createClient(serverUrl) {
         signal: controller.signal,
         headers: {
           'Accept': 'application/json',
-          ...(payload === undefined ? {} : {'Content-Type': 'application/json'}),
+          ...(payload === undefined ? {} : {'Content-Type': raw ? payload.type : 'application/json'}),
           ...(token ? {'Authorization': 'Bearer ' + token} : {})
         },
-        ...(payload === undefined ? {} : {body: JSON.stringify(payload)})
+        ...(payload === undefined ? {} : {body: raw ? payload : JSON.stringify(payload)})
       });
+      if (res.ok && responseKind === 'blob') return res.blob();
       let data;
       try { data = await res.json(); } catch { data = null; }
       if (!res.ok) {
@@ -146,6 +147,9 @@ export function createClient(serverUrl) {
     inventory: () => result(() => request('GET', '/v1/inventory')),
     stocktakes: () => result(() => request('GET', '/v1/stocktakes')),
     stocktake: id => result(() => request('GET', '/v1/stocktakes/by-client/' + encodeURIComponent(id))),
+    uploadEvidence: (photo, context) => result(() => request('POST', '/v1/stocktake-evidence/' + encodeURIComponent(photo.client_upload_id) +
+      '?lot_id=' + encodeURIComponent(context.lot_id) + '&client_stocktake_id=' + encodeURIComponent(context.client_stocktake_id), photo.blob, true)),
+    evidence: id => result(() => request('GET', '/v1/stocktake-evidence/' + encodeURIComponent(id), undefined, false, 'blob')),
     inventoryTransport(kind) {
       return {
         async capabilities(identity) {
@@ -173,6 +177,7 @@ export function createClient(serverUrl) {
         return me.capabilities;
       },
       post: payload => request('POST', '/v1/sales', payload),
+      reconcile: payload => request('POST', '/v1/sales/reconcile', payload),
       async lookup(id) {
         try { return await request('GET', '/v1/sales/by-client/' + encodeURIComponent(id)); }
         catch (error) { if (error.status === 404) return null; throw error; }

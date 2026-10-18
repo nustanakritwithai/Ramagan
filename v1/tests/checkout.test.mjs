@@ -52,6 +52,29 @@ test('capability gate requires explicit discount contract version', () => {
   assert.equal(supportsDiscount(capabilities), true);
   for (const value of [null, {}, {discounts: true}, {discounts: 1, discount_contract_version: 1}, {discounts: true, discount_contract_version: '1'}, {discounts: true, discount_contract_version: 2}]) assert.equal(supportsDiscount(value), false);
 });
+test('split checkout freezes one UUID and exact positive payment allocations across restart',async()=>{
+  const caps={...capabilities,split_payments:true,payment_contract_version:1};
+  const f=fixture({transport:{capabilities:async()=>caps}});
+  const p={...payload(100),payment_method:'split',payments:[{payment_method:'cash',amount_satang:4000},{payment_method:'transfer',amount_satang:5900}]};
+  await f.checkout.start(p,10000);const original=f.checkout.read();
+  p.payments[0].amount_satang=1;
+  const restored=createCheckout(f.args);await restored.retry();assert.deepEqual(f.calls.post[0],f.calls.post[1]);
+  assert.equal(f.calls.uuid,1);assert.equal(original.payload.payments[0].amount_satang,4000);
+  const answer={...sale(100),payment_method:'split',payments:original.payload.payments};
+  assert.equal(normalizeSale(answer,original).total_satang,9900);
+  assert.throws(()=>normalizeSale({...answer,payments:[{payment_method:'cash',amount_satang:5900},{payment_method:'transfer',amount_satang:4000}]},original));
+  const old=fixture();await assert.rejects(old.checkout.start({...p,payments:original.payload.payments},10000));assert.equal(old.checkout.read(),null);
+});
+test('only explicit verify may authoritatively cancel an absent sale; wrong ID cannot clear pending',async()=>{
+  let cancellations=0;
+  const f=fixture({transport:{capabilities:async()=>({...capabilities,sale_reconciliation:true,sale_reconciliation_contract_version:1}),
+    reconcile:async p=>{cancellations++;return {status:'rejected',client_sale_id:p.client_sale_id,code:'SALE_CANCELLED',committed:false};}}});
+  await f.checkout.start(payload(),10000);await f.checkout.retry();assert.equal(cancellations,0);
+  const rejected=await f.checkout.verify();assert.equal(rejected.rejected,true);assert.equal(cancellations,1);
+  await f.checkout.acknowledge();assert.equal(f.checkout.read(),null);
+  const g=fixture({transport:{capabilities:f.transport.capabilities,reconcile:async()=>({status:'rejected',client_sale_id:'wrong',code:'SALE_CANCELLED',committed:false})}});
+  await g.checkout.start(payload(),10000);await assert.rejects(g.checkout.verify());assert.equal(g.checkout.read().status,'pending');
+});
 
 test('storage exception before persistence prevents every POST', async () => {
   const storage = memoryStorage();
