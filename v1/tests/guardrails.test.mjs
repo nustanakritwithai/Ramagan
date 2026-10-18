@@ -15,7 +15,8 @@ test('no Supabase in V1 runtime and all inventory writes use central API', () =>
   assert.doesNotMatch(main + bridge, /supabase-js|VITE_SUPABASE/);
   assert.match(main, /VITE_RAMAGAN_API_URL/);
   assert.match(main, /ramagan_create_product/);
-  assert.match(main, /ramagan_receive_lot/);
+  assert.match(main, /transport: api\.inventoryTransport\(kind\)/);
+  assert.match(bridge, /\/v1\/lots\/receive/);
   assert.match(main, /transport: api\.checkoutTransport/);
   assert.match(bridge, /post: payload => request\('POST', '\/v1\/sales', payload\)/);
   assert.match(bridge, /\/v1\/sales/);

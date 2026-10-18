@@ -11,7 +11,12 @@ import {supportsDiscount} from './checkout.js';
 const PREFIX = 'ramagan.v1.session.';
 
 export function validateServerUrl(raw) {
-  const value = String(raw || '').trim();
+  const text = String(raw || '');
+  // URL() silently removes tabs/newlines and encodes invisible suffixes. Such a
+  // visually identical endpoint can reach a different route. Reject, never fix it.
+  if (/[\p{Cc}\p{Cf}]/u.test(text)) return null;
+  const value = text.trim();
+  if (/\s/u.test(value) || value.includes('\\')) return null;
   let u;
   try { u = new URL(value); } catch { return null; }
   if (u.username || u.password || u.search || u.hash) return null;
@@ -20,6 +25,10 @@ export function validateServerUrl(raw) {
     if (!localDev) return null;
   }
   if (!u.hostname || u.hostname === '0.0.0.0') return null;
+  try {
+    const path = decodeURIComponent(u.pathname);
+    if (/[\p{Cc}\p{Cf}\s\\?#]/u.test(path) || /%[0-9a-f]{2}/i.test(path)) return null;
+  } catch { return null; }
   // Backend may be proxied under /ramagan-api; preserve the path prefix.
   return u.origin + u.pathname.replace(/\/+$/, '');
 }
@@ -134,6 +143,27 @@ export function createClient(serverUrl) {
   return {
     base,
     health: () => result(() => request('GET', '/health')),
+    inventory: () => result(() => request('GET', '/v1/inventory')),
+    stocktakes: () => result(() => request('GET', '/v1/stocktakes')),
+    stocktake: id => result(() => request('GET', '/v1/stocktakes/by-client/' + encodeURIComponent(id))),
+    inventoryTransport(kind) {
+      return {
+        async capabilities(identity) {
+          const me = await request('GET', '/v1/me');
+          if (me.user?.id !== identity.actor || me.store_id !== identity.store ||
+              !['owner', 'manager'].includes(me.role)) {
+            throw new Error('บัญชี ร้าน หรือสิทธิ์เปลี่ยนไป กรุณาใช้บัญชีผู้จัดการเดิม');
+          }
+          return me.capabilities;
+        },
+        post: payload => request('POST', kind === 'stocktake' ? '/v1/stocktakes' : '/v1/lots/receive', payload),
+        reconcile: payload => request('POST', kind === 'stocktake' ? '/v1/stocktakes/reconcile' : '/v1/lots/receive/reconcile', payload),
+        ...(kind === 'stocktake' ? {async lookup(id) {
+          try { return await request('GET', '/v1/stocktakes/by-client/' + encodeURIComponent(id)); }
+          catch (error) { if (error.status === 404) return null; throw error; }
+        }} : {})
+      };
+    },
     checkoutTransport: {
       async capabilities(identity) {
         const me = await request('GET', '/v1/me');
@@ -198,7 +228,9 @@ export function createClient(serverUrl) {
         ramagan_create_product: {
           endpoint: '/v1/products', payload: {
             sku: a.p_sku, name: a.p_name, category: a.p_category,
-            price_satang_per_gram: a.p_price_satang_per_gram
+            price_satang_per_gram: a.p_price_satang_per_gram,
+            ...(a.p_default_cost_satang_per_gram === undefined ? {} :
+              {default_cost_satang_per_gram: a.p_default_cost_satang_per_gram})
           }
         },
         ramagan_receive_lot: {
