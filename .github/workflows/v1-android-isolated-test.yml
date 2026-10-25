@@ -1,22 +1,25 @@
-name: Ramagan isolated Android TEST APK
+name: Ramagan full-app Android TEST APK
 
 on:
   workflow_dispatch:
   pull_request:
     paths:
-      - 'v1/camera-test.html'
-      - 'v1/src/camera-test.js'
-      - 'v1/src/camera-test.css'
+      - 'v1/index.html'
+      - 'v1/index.test.html'
+      - 'v1/src/**'
+      - 'v1/public/**'
+      - 'v1/tests/**'
+      - 'v1/package.json'
+      - 'v1/package-lock.json'
       - 'v1/capacitor.test.config.json'
       - 'v1/vite.test.config.js'
-      - 'v1/tests/camera-test.test.mjs'
       - '.github/workflows/v1-android-isolated-test.yml'
 
 permissions:
   contents: read
 
 jobs:
-  isolated-test-apk:
+  full-app-test-apk:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +28,7 @@ jobs:
       - name: Record exact TEST artifact provenance
         run: |
           git rev-parse HEAD > BUILD_COMMIT.txt
-          printf 'TEST ONLY. Synthetic camera and on-device IndexedDB. No shop API or production transactions.\n' > BUILD_NOTICE.txt
+          printf 'TEST package of the full V1 app with existing login, modules and configurable VPS API. No endpoint or credentials are baked in. Do not record real sales or stock changes.\n' > BUILD_NOTICE.txt
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -40,23 +43,44 @@ jobs:
           if [ -z "$SDKMGR" ]; then echo "sdkmanager not installed in $SDK_ROOT"; exit 1; fi
           yes | "$SDKMGR" --licenses >/dev/null || true
           "$SDKMGR" --install "platforms;android-36" "build-tools;36.0.0"
-      - name: Run isolated synthetic-mode tests and build web assets
+      - name: Run existing-app tests and build full V1 TEST web assets
         working-directory: v1
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
           npm test
-          npx vite build --config vite.test.config.js
-          test -s dist-test/camera-test.html
-          cp dist-test/camera-test.html dist-test/index.html
+          npx vite build --config vite.test.config.js --mode test
+          test -s dist-test/index.test.html
+          cp dist-test/index.test.html dist-test/index.html
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           const html = fs.readFileSync('dist-test/index.html', 'utf8');
+          const testIndex = fs.readFileSync('index.test.html', 'utf8');
+          const main = fs.readFileSync('src/main.js', 'utf8');
           const config = JSON.parse(fs.readFileSync('capacitor.test.config.json', 'utf8'));
-          if (!html.includes("connect-src 'none'")) throw new Error('TEST page must block all network connections');
-          if (!html.includes('camera-test')) throw new Error('TEST page is not the camera-only entry point');
-          if (config.appId !== 'online.ramagan.pos.test' || config.appName !== 'Ramagan POS TEST' || config.webDir !== 'dist-test') {
-            throw new Error('Unexpected isolated Capacitor TEST identity or web directory');
+          const original = JSON.parse(fs.readFileSync('capacitor.config.json', 'utf8'));
+          const assets = fs.readdirSync('dist-test/assets').filter(name => name.endsWith('.js'));
+          const bundle = assets.map(name => fs.readFileSync('dist-test/assets/' + name, 'utf8')).join('\n');
+          if (!html.includes('test-build-banner') || !testIndex.includes('Do not record real sales or stock changes')) {
+            throw new Error('The full-app TEST warning must appear in the TEST entrypoint');
           }
+          if (!/src="\.\/assets\/[^"]+\.js"/.test(html)) throw new Error('The TEST page did not bundle an app entrypoint');
+          if (config.appId !== 'online.ramagan.pos.test' || config.appName !== 'Ramagan POS TEST' || config.webDir !== 'dist-test') {
+            throw new Error('Unexpected isolated TEST app identity or web directory');
+          }
+          if (config.appId === original.appId || original.appId !== 'online.ramagan.pos') {
+            throw new Error('TEST and original application identities must stay separate');
+          }
+          for (const feature of ['./backend-api.js', './inventory.js', './pages.js', './sale-void.js', './device-auth.js']) {
+            if (!main.includes(feature)) throw new Error('Missing full-app module: ' + feature);
+          }
+          for (const endpoint of ['/v1/auth/login', '/v1/sales', '/v1/stocktakes']) {
+            if (!bundle.includes(endpoint)) throw new Error('Missing existing VPS API route: ' + endpoint);
+          }
+          if (testIndex.includes('fixture.invalid') || testIndex.includes('offline-test-token') ||
+              testIndex.includes('VITE_RAMAGAN_API_URL')) {
+            throw new Error('A fixture endpoint or test credential was added to the TEST entrypoint');
+          }
+          if (fs.existsSync('dist-test/camera-test.html')) throw new Error('A disconnected camera demo must not be packaged');
           NODE
       - name: Generate separate TEST Android wrapper
         working-directory: v1
@@ -64,12 +88,12 @@ jobs:
           cp capacitor.test.config.json capacitor.config.json
           npx cap add android
           npx cap sync android
-      - name: Build TEST debug APK
+      - name: Build full-app TEST debug APK
         working-directory: v1/android
         run: |
           chmod +x ./gradlew
           ./gradlew assembleDebug --no-daemon
-      - name: Verify TEST package and label
+      - name: Verify full-app TEST package and label
         env:
           APK_PATH: v1/android/app/build/outputs/apk/debug/app-debug.apk
         run: |
@@ -80,24 +104,34 @@ jobs:
           "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK_PATH" > "$RUNNER_TEMP/test-signature.txt"
           grep -F "package: name='online.ramagan.pos.test'" "$RUNNER_TEMP/test-badging.txt"
           grep -F "application-label:'Ramagan POS TEST'" "$RUNNER_TEMP/test-badging.txt"
-          grep -Fq "connect-src 'none'" v1/dist-test/index.html
+          package_line="$(grep -F "package: name='online.ramagan.pos.test'" "$RUNNER_TEMP/test-badging.txt" | head -n 1)"
+          version_code="$(printf '%s\n' "$package_line" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")"
+          version_name="$(printf '%s\n' "$package_line" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
+          certificate_sha256="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/test-signature.txt" | head -n 1)"
+          if [ -z "$version_code" ] || [ -z "$version_name" ] || [ -z "$certificate_sha256" ]; then
+            echo 'Could not extract standard APK identity or signer metadata' >&2
+            exit 1
+          fi
+          apk_sha256="$(sha256sum "$APK_PATH" | awk '{print $1}')"
+          apk_bytes="$(wc -c < "$APK_PATH" | tr -d ' ')"
           cat > APK_VERIFICATION.txt <<EOF
           commit=$(cat BUILD_COMMIT.txt)
           application_id=online.ramagan.pos.test
           application_label=Ramagan POS TEST
-          web_entry=synthetic camera test only
-          csp_connect_src=none
-          api_client_included_in_entry=no
-          production_api_url_configured=no
-          certificate_sha256=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/test-signature.txt" | head -n 1)
+          packaged_entry=full existing V1 app
+          login_and_vps_api=existing code retained; runtime endpoint configured in app
+          production_endpoint_or_credentials_baked=no
+          version_name=$version_name
+          version_code=$version_code
+          certificate_sha256=$certificate_sha256
           release_signing_key_used=no (standard debug signing only)
-          apk_sha256=$(sha256sum "$APK_PATH" | awk '{print $1}')
-          apk_bytes=$(wc -c < "$APK_PATH" | tr -d ' ')
+          apk_sha256=$apk_sha256
+          apk_bytes=$apk_bytes
           EOF
           cat APK_VERIFICATION.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: ramagan-pos-test-isolated-TEST
+          name: ramagan-pos-full-app-TEST
           path: |
             v1/android/app/build/outputs/apk/debug/app-debug.apk
             BUILD_COMMIT.txt
