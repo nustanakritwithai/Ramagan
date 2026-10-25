@@ -68,6 +68,62 @@ jobs:
         run: |
           chmod +x ./gradlew
           ./gradlew assembleDebug --no-daemon
+      - name: Verify APK identity and compare debug signer
+        env:
+          PREVIOUS_APK_URL: https://157.85.96.139/ramagan-v1/downloads/ramagan-owner-visibility-edd7f2f-debug.apk
+          PREVIOUS_APK_SHA256: c74013835d6eac14261dbf0a54ab9beea51b7914d988241d362df48dc3973826
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          BUILD_TOOLS="$SDK_ROOT/build-tools/36.0.0"
+          CANDIDATE="v1/android/app/build/outputs/apk/debug/app-debug.apk"
+          PREVIOUS="$RUNNER_TEMP/ramagan-edd7f2f-hosted.apk"
+
+          # Keep normal TLS certificate verification enabled. Verify the exact
+          # previously audited APK before using it as an update comparison.
+          curl --fail --silent --show-error --location --max-time 90 \
+            --output "$PREVIOUS" "$PREVIOUS_APK_URL"
+          printf '%s  %s\n' "$PREVIOUS_APK_SHA256" "$PREVIOUS" | sha256sum --check --strict
+
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$CANDIDATE" > "$RUNNER_TEMP/candidate-signature.txt"
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$PREVIOUS" > "$RUNNER_TEMP/previous-signature.txt"
+          "$BUILD_TOOLS/aapt" dump badging "$CANDIDATE" > "$RUNNER_TEMP/candidate-badging.txt"
+          "$BUILD_TOOLS/aapt" dump badging "$PREVIOUS" > "$RUNNER_TEMP/previous-badging.txt"
+
+          candidate_package="$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" "$RUNNER_TEMP/candidate-badging.txt" | head -n 1)"
+          previous_package="$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" "$RUNNER_TEMP/previous-badging.txt" | head -n 1)"
+          candidate_code="$(sed -n "s/^package:.*versionCode='\([^']*\)'.*/\1/p" "$RUNNER_TEMP/candidate-badging.txt" | head -n 1)"
+          previous_code="$(sed -n "s/^package:.*versionCode='\([^']*\)'.*/\1/p" "$RUNNER_TEMP/previous-badging.txt" | head -n 1)"
+          candidate_name="$(sed -n "s/^package:.*versionName='\([^']*\)'.*/\1/p" "$RUNNER_TEMP/candidate-badging.txt" | head -n 1)"
+          previous_name="$(sed -n "s/^package:.*versionName='\([^']*\)'.*/\1/p" "$RUNNER_TEMP/previous-badging.txt" | head -n 1)"
+          candidate_signer="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/candidate-signature.txt" | head -n 1)"
+          previous_signer="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/previous-signature.txt" | head -n 1)"
+          for value in "$candidate_package" "$previous_package" "$candidate_code" "$previous_code" "$candidate_name" "$previous_name" "$candidate_signer" "$previous_signer"; do
+            if [ -z "$value" ]; then echo 'Could not extract standard APK identity or signer metadata' >&2; exit 1; fi
+          done
+
+          if [ "$candidate_signer" = "$previous_signer" ]; then signer_match=true; else signer_match=false; fi
+          if [ "$candidate_code" -gt "$previous_code" ]; then code_status=forward; \
+            elif [ "$candidate_code" -eq "$previous_code" ]; then code_status=same; else code_status=lower; fi
+          candidate_sha256="$(sha256sum "$CANDIDATE" | awk '{print $1}')"
+          cat > APK_VERIFICATION.txt <<EOF
+          commit=$(cat BUILD_COMMIT.txt)
+          candidate_apk_sha256=$candidate_sha256
+          previous_hosted_apk_sha256=$PREVIOUS_APK_SHA256
+          tls_verification=normal (curl default; no certificate bypass)
+          candidate_package=$candidate_package
+          previous_package=$previous_package
+          candidate_version_code=$candidate_code
+          previous_version_code=$previous_code
+          version_code_comparison=$code_status
+          candidate_version_name=$candidate_name
+          previous_version_name=$previous_name
+          candidate_signer_sha256=$candidate_signer
+          previous_signer_sha256=$previous_signer
+          signer_match=$signer_match
+          release_signing_key_used=no (standard Gradle debug build only)
+          EOF
+          cat APK_VERIFICATION.txt
       - uses: actions/upload-artifact@v4
         with:
           name: ramagan-v1-vps-android-configurable-TEST
@@ -75,5 +131,6 @@ jobs:
             v1/android/app/build/outputs/apk/debug/app-debug.apk
             BUILD_COMMIT.txt
             BUILD_NOTICE.txt
+            APK_VERIFICATION.txt
           if-no-files-found: error
           retention-days: 7
