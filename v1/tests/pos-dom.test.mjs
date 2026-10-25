@@ -768,6 +768,74 @@ test('compact photo disclosures preserve open state and evidence whether the pho
   } finally { app.close(); }
 });
 
+test('stocktake camera and file actions use separate inputs; cancel and repeated camera selection preserve evidence', async () => {
+  const f = inventoryFixture(), app = await boot(f);
+  try {
+    app.menu('#open-stocktake');
+    await until(() => app.q('input[data-photo-source="camera"][data-photo="' + lot + '"]'));
+    const cameraSelector = 'input[data-photo-source="camera"][data-photo="' + lot + '"]';
+    const fileSelector = 'input[data-photo-source="file"][data-photo="' + lot + '"]';
+    const camera = app.q(cameraSelector), file = app.q(fileSelector);
+    assert.equal(camera.accept, 'image/*');
+    assert.equal(camera.getAttribute('capture'), 'environment');
+    assert.equal(file.accept, 'image/jpeg,image/png,image/webp');
+    assert.equal(file.hasAttribute('capture'), false);
+
+    let cameraClicks = 0, fileClicks = 0;
+    camera.click = () => { cameraClicks++; assert.equal(camera.value, ''); };
+    file.click = () => { fileClicks++; assert.equal(file.value, ''); };
+    app.click('button[data-photo-trigger="camera"][data-photo-lot="' + lot + '"]');
+    app.click('button[data-photo-trigger="file"][data-photo-lot="' + lot + '"]');
+    assert.equal(cameraClicks, 1, 'Take Photo opens only the camera capture input');
+    assert.equal(fileClicks, 1, 'Choose File opens only the file-picker input');
+
+    const firstPhoto = new Blob(['fixture camera image'], {type: 'image/jpeg'});
+    app.photo(cameraSelector, firstPhoto);
+    await until(() => f.uploads.length === 1 && /อัปโหลดรูปแล้ว/.test(app.text()));
+    assert(app.q('[data-photo="' + lot + '"]').closest('details').querySelector('.scale-preview'));
+
+    // Capacitor reports cancel or denied capture to the web callback as no file.
+    // That empty change must not clear the previously uploaded evidence.
+    const currentCameraInput = app.q(cameraSelector);
+    const statusBeforeCancel = app.q('[data-evidence-status="' + lot + '"]').textContent;
+    currentCameraInput.dispatchEvent(new currentCameraInput.ownerDocument.defaultView.Event('change', {bubbles: true}));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(f.uploads.length, 1);
+    assert(app.q('[data-photo="' + lot + '"]').closest('details').querySelector('.scale-preview'));
+    assert.equal(app.q('[data-evidence-status="' + lot + '"]').textContent, statusBeforeCancel);
+
+    // Choosing a replacement from camera again, including the same image, must work.
+    app.photo(cameraSelector, firstPhoto);
+    await until(() => f.uploads.length === 2 && /อัปโหลดรูปแล้ว/.test(app.text()));
+    assert.notEqual(f.uploads[1].id, f.uploads[0].id, 'A new selection receives a fresh idempotency key');
+
+    const filePhoto = new Blob(['fixture file image'], {type: 'image/webp'});
+    app.photo(fileSelector, filePhoto);
+    await until(() => f.uploads.length === 3 && /อัปโหลดรูปแล้ว/.test(app.text()));
+    assert(app.q('[data-photo="' + lot + '"]').closest('details').querySelector('.scale-preview'));
+    assert.equal(f.countPosts.length, 0, 'Photo tests never submit or adjust stock');
+  } finally { app.close(); }
+});
+
+test('stocktake upload errors retain the selected preview and retry with the same upload id', async () => {
+  const f = inventoryFixture({failUpload: true}), app = await boot(f);
+  try {
+    app.menu('#open-stocktake');
+    await until(() => app.q('input[data-photo-source="camera"][data-photo="' + lot + '"]'));
+    app.photo('input[data-photo-source="camera"][data-photo="' + lot + '"]');
+    await until(() => f.uploads.length === 1 && /mock lost upload response/.test(app.text()));
+    assert(app.q('[data-photo="' + lot + '"]').closest('details').querySelector('.scale-preview'), 'Preview remains after upload failure');
+    assert.equal(app.q('[data-photo-upload="' + lot + '"]').hidden, false, 'Retry is offered for the retained local draft');
+    assert.equal(f.countPosts.length, 0);
+
+    f.failUpload = false;
+    app.click('[data-photo-upload="' + lot + '"]');
+    await until(() => f.uploads.length === 2 && /อัปโหลดรูปแล้ว/.test(app.text()));
+    assert.equal(f.uploads[1].id, f.uploads[0].id, 'Retry reuses the original idempotency key');
+    assert.equal(f.countPosts.length, 0, 'Retry does not submit or adjust stock');
+  } finally { app.close(); }
+});
+
 test('both compact inventory forms retain raw unsent values through toggles, navigation, refresh and photo rendering', async () => {
   const f = inventoryFixture(), app = await boot(f);
   try {
