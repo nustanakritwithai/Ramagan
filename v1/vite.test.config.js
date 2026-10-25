@@ -6,9 +6,8 @@ const root=fileURLToPath(new URL('.',import.meta.url));
 export default defineConfig({
   root,
   base:'./',
-  envDir:false,
   build:{
     outDir:resolve(root,'dist-test'),
-    rollupOptions:{input:resolve(root,'index.test.html')}
+    rollupOptions:{input:resolve(root,'camera-test.html')}
   }
 });
