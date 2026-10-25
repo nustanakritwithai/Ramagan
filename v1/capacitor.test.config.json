@@ -1,0 +1,8 @@
+{
+  "appId": "online.ramagan.pos.test",
+  "appName": "Ramagan POS TEST",
+  "webDir": "dist-test",
+  "server": {
+    "androidScheme": "https"
+  }
+}
