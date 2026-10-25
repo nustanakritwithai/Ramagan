@@ -1,0 +1,59 @@
+name: Verify exact Ramagan camera APK
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/verify-ramagan-camera-apk.yml'
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install Android build tools
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMGR="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          test -n "$SDKMGR"
+          yes | "$SDKMGR" --licenses >/dev/null || true
+          "$SDKMGR" --install 'build-tools;36.0.0'
+      - name: Download exact APK artifact from original camera build
+        uses: actions/download-artifact@v4
+        with:
+          name: ramagan-v1-vps-android-configurable-TEST
+          repository: ${{ github.repository }}
+          run-id: 40203009563
+          github-token: ${{ github.token }}
+          path: artifact
+      - name: Verify artifact identity, package, and signing certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_COMMIT=f52f0c8cc6d32ad304e95ced54201794f78d68fa
+          EXPECTED_APK_SHA256=7b72447c34c4842054f347481cb5a582f21f61f263c01c2313de3ebd5c3c2adc
+          EXPECTED_BASELINE_CERT_SHA256=1dc730ea24707b9e80de850c446126c488551dc549521c6247617138064c2c7b
+          grep -Fx "$EXPECTED_COMMIT" artifact/BUILD_COMMIT.txt
+          APK="$(find artifact -type f -name app-debug.apk -print -quit)"
+          test -n "$APK"
+          ACTUAL_APK_SHA256="$(sha256sum "$APK" | awk '{print $1}')"
+          echo "APK_SHA256=$ACTUAL_APK_SHA256"
+          test "$ACTUAL_APK_SHA256" = "$EXPECTED_APK_SHA256"
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          TOOL_DIR="$SDK_ROOT/build-tools/36.0.0"
+          "$TOOL_DIR/aapt" dump badging "$APK" | grep -F "package: name='online.ramagan.pos' versionCode='1' versionName='1.0'"
+          "$TOOL_DIR/apksigner" verify --verbose --print-certs "$APK" | tee apksigner-report.txt
+          ACTUAL_CERT_SHA256="$(awk '/Signer #1 certificate SHA-256 digest:/ {print tolower($6); exit}' apksigner-report.txt)"
+          test -n "$ACTUAL_CERT_SHA256"
+          echo "APK_SIGNER_SHA256=$ACTUAL_CERT_SHA256"
+          if [ "$ACTUAL_CERT_SHA256" != "$EXPECTED_BASELINE_CERT_SHA256" ]; then
+            echo "::error::APK signer differs from the known original baseline; it cannot update that installation in place."
+            exit 1
+          fi
+          echo "APK signer matches the known original baseline."
