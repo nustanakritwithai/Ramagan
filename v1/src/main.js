@@ -5,7 +5,7 @@ import {createInventoryOperation, supportsCosts, supportsStocktakes, optionalCos
   countedMilligrams, receivedMilligrams, signedGrams, optionalDocuments,
   assertNoPendingMutation, mutationScopeKey} from './inventory.js';
 import {renderPos, paymentPreview} from './pos.js';
-import {createEvidenceDraft, supportsEvidence} from './evidence-draft.js';
+import {createEvidenceDraft, supportsEvidence, validatePhoto} from './evidence-draft.js';
 import {cleanupNavigation, mountNavigation, navigationHeader} from './navigation.js';
 import {createPageState, renderSidePage, loadReceipts, supportsReceipts} from './pages.js';
 import {createDeviceAuth} from './device-auth.js';
@@ -649,7 +649,12 @@ function renderStocktake() {
     }
     const photo=state.countDraft?.photos[lot.id]; let photoHtml='';
     if(photo?.blob && URL.createObjectURL) {const url=URL.createObjectURL(photo.blob);state.photoUrls.push(url);photoHtml='<img class="scale-preview" src="'+h(url)+'" alt="รูปเครื่องชั่ง Lot '+h(lot.lot_code)+'" />';}
-    photoHtml+='<label class="photo-control">รูปเครื่องชั่ง (ต้องมี)<input type="file" data-photo="'+h(lot.id)+'" accept="image/jpeg,image/png,image/webp" capture="environment" '+(locked?'disabled':'')+' /></label>'+
+    const cameraId='camera-photo-'+h(lot.id), fileId='file-photo-'+h(lot.id);
+    photoHtml+='<div class="photo-control photo-actions">'+
+      '<button type="button" class="ghost" data-photo-trigger="camera" data-photo-lot="'+h(lot.id)+'" aria-controls="'+cameraId+'" aria-label="ถ่ายรูปเครื่องชั่ง Lot '+h(lot.lot_code)+'" '+(locked?'disabled':'')+'>ถ่ายรูป</button>'+
+      '<button type="button" class="ghost" data-photo-trigger="file" data-photo-lot="'+h(lot.id)+'" aria-controls="'+fileId+'" aria-label="เลือกไฟล์รูปเครื่องชั่ง Lot '+h(lot.lot_code)+'" '+(locked?'disabled':'')+'>เลือกไฟล์</button></div>'+
+      '<input id="'+cameraId+'" type="file" data-photo="'+h(lot.id)+'" data-photo-source="camera" accept="image/*" capture="environment" hidden '+(locked?'disabled':'')+' />'+
+      '<input id="'+fileId+'" type="file" data-photo="'+h(lot.id)+'" data-photo-source="file" accept="image/jpeg,image/png,image/webp" hidden '+(locked?'disabled':'')+' />'+
       '<p class="footnote" data-photo-note="'+h(lot.id)+'"></p><button type="button" class="ghost" data-photo-upload="'+h(lot.id)+'" hidden disabled>อัปโหลดรูปเครื่องชั่ง</button>';
     const evidence='<details class="count-evidence-panel" data-evidence-panel="'+h(lot.id)+'"'+managementPanel('photo:'+lot.id)+'><summary class="count-evidence-summary">'+
       countEvidenceSummary({lotId:lot.id,hasPhoto:Boolean(photo?.blob),uploaded:Boolean(photo?.metadata),counted:value.trim()!==''})+'</summary>'+photoHtml+'</details>';
@@ -757,18 +762,28 @@ function renderStocktake() {
     catch (error) { setMessage(error.message, true); }
   });
   bindInventoryPending(); update();
+  root.querySelectorAll('[data-photo-trigger]').forEach(button=>button.onclick=()=>{
+    const input=root.querySelector('[data-photo="'+CSS.escape(button.dataset.photoLot)+'"][data-photo-source="'+button.dataset.photoTrigger+'"]');
+    if(button.disabled||!input||input.disabled)return;
+    // Capacitor Android routes capture inputs to ACTION_IMAGE_CAPTURE only when
+    // capture is set and acceptTypes contains image/*. Keep file picking separate.
+    input.value='';
+    try{input.click();}catch(error){state.message='เปิดกล้องหรือเลือกไฟล์ไม่ได้: '+error.message;state.error=true;render();}
+  });
   root.querySelectorAll('[data-photo]').forEach(input=>input.addEventListener('change',async()=>{
     if(locked||!input.files?.[0])return;
     const lot=input.dataset.photo,file=input.files[0],actor=state.user?.id,shop=state.store?.id,store=state.draftStore,session=authGuard();
     const current=()=>session()&&actor===state.user?.id&&shop===state.store?.id&&store===state.draftStore;
-    // Invalidate the old selection synchronously, before any IndexedDB await.
-    activeIO++;state.photoBusy=lot;state.countConfirmed=false;if(state.countDraft)delete state.countDraft.photos[lot];render();
+    try{validatePhoto(file);}catch(error){state.message=error.message;state.error=true;render();return;}
+    // Lock counting synchronously, but keep the prior photo until the validated
+    // replacement is atomically committed to IndexedDB.
+    activeIO++;state.photoBusy=lot;state.countConfirmed=false;render();
     try{
       await countDraftWrites;
       if(!current())return;
-      await ensureCountDraft();const cleared=await store.invalidate(lot);
+      await ensureCountDraft();
       if(!current())return;
-      state.countDraft=cleared;const draft=await store.select(lot,file);
+      const draft=await store.select(lot,file);
       if(!current())return;
       state.countDraft=draft;state.photoBusy=null;await uploadCountPhoto(lot);
     }catch(error){if(current()){state.photoBusy=null;state.message=error.message;state.error=true;}}

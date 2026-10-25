@@ -73,6 +73,8 @@
 .management-shell .count-evidence-status.ready{color:#2b7244}
 .management-shell .count-evidence-panel[open]>.count-evidence-summary{margin-bottom:8px;background:#e4f0e7}
 .management-shell .photo-control{font-size:.76rem;max-width:100%;margin-bottom:5px}
+.management-shell .photo-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin:6px 0;max-width:100%}
+.management-shell .photo-actions button{min-width:0;min-height:44px;padding:8px 6px;font-size:.74rem;white-space:normal}
 .management-shell .scale-preview{border-color:#abc9b4;background:#f5f8f5;max-width:160px;max-height:140px;margin:6px 0}
 .management-shell .photo-thumbnail{color:#245e3c;text-decoration:underline;text-underline-offset:3px}
 .management-shell .count-confirm{line-height:1.5;font-size:.78rem;gap:9px;margin-top:12px;margin-bottom:8px;align-items:center;min-height:44px}
