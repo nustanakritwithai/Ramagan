@@ -1,3 +1,11 @@
+> **Ramagan V1 — centralized website + Android (under development):**
+> The new self-hosted Windows VPS architecture is in v1/ and backend/vps/.
+> It no longer depends on Supabase. See
+> [Windows VPS installation](backend/vps/README.md) and
+> [agent handoff](backend/vps/DEPLOY_AGENT_HANDOFF.md).
+> This README below documents legacy V0 (localStorage demo) which is
+> **NOT suitable as the production source of truth**.
+
 # Cannabis Stock Ledger V0 / สมุดสต็อกกัญชา V0
 
 Local-only prototype for Thai cannabis **retail stock ledger** with retrospective (as-of) balance checks.  
