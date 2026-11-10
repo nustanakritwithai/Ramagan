@@ -1,0 +1,74 @@
+name: Ramagan mobile unsigned release
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Record source and install Android packages
+        run: |
+          git rev-parse HEAD > BUILD_COMMIT.txt
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMGR="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          test -n "$SDKMGR"
+          yes | "$SDKMGR" --licenses >/dev/null || true
+          "$SDKMGR" --install "platforms;android-36" "build-tools;36.0.0"
+      - name: Test and build current POS assets
+        working-directory: v1
+        env:
+          VITE_RAMAGAN_API_URL: https://157.85.96.139/ramagan-api
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test
+          npm run build
+      - name: Generate separate Android package
+        working-directory: v1
+        run: |
+          node -e "const c=require('./capacitor.config.json');if(c.appId!=='online.ramagan.pos.mobile'||c.appName!=='Ramagan POS 2')throw Error('Unexpected mobile identity')"
+          npx cap add android
+          npx cap sync android
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('android/app/build.gradle')
+          s=p.read_text()
+          assert s.count('versionCode 1') == 1 and s.count('versionName "1.0"') == 1
+          s=s.replace('versionCode 1','versionCode 10504').replace('versionName "1.0"','versionName "1.5.4"')
+          p.write_text(s)
+          PY
+      - name: Build unsigned non-debuggable release
+        working-directory: v1/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+      - name: Check release identity and alignment
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          TOOLS="$SDK_ROOT/build-tools/36.0.0"
+          APK=v1/android/app/build/outputs/apk/release/app-release-unsigned.apk
+          "$TOOLS/aapt2" dump badging "$APK" > ANDROID_MANIFEST.txt
+          grep -q "package: name='online.ramagan.pos.mobile' versionCode='10504' versionName='1.5.4'" ANDROID_MANIFEST.txt
+          if grep -q 'application-debuggable\|application-testOnly' ANDROID_MANIFEST.txt; then exit 1; fi
+          "$TOOLS/zipalign" -c -P 16 -v 4 "$APK" > ZIPALIGN.txt
+          sha256sum "$APK" > UNSIGNED_SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ramagan-mobile-1.5.4-unsigned
+          path: |
+            v1/android/app/build/outputs/apk/release/app-release-unsigned.apk
+            v1/dist/
+            BUILD_COMMIT.txt
+            ANDROID_MANIFEST.txt
+            ZIPALIGN.txt
+            UNSIGNED_SHA256.txt
+          if-no-files-found: error
+          retention-days: 14

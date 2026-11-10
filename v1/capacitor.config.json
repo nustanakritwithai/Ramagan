@@ -1,6 +1,6 @@
 {
-  "appId": "online.ramagan.pos",
-  "appName": "Ramagan POS",
+  "appId": "online.ramagan.pos.mobile",
+  "appName": "Ramagan POS 2",
   "webDir": "dist",
   "server": {
     "androidScheme": "https"
