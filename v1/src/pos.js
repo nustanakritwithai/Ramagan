@@ -1,6 +1,7 @@
 import {gramsToMilligrams, milligramsToGrams, lineTotalSatang, formatBaht, discountSatang} from './math.js';
 import {supportsDiscount, supportsSplitPayments, supportsSaleReconciliation} from './checkout.js';
 import {mountNavigation} from './navigation.js';
+import {canViewStockQuantities,lotHasStock,stockLabel} from './permissions.js';
 const h = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export function paymentPreview(state, total) {
   try {
@@ -23,6 +24,7 @@ export function paymentPreview(state, total) {
 }
 export function renderPos(ctx) {
   const {root,state} = ctx, totals = ctx.preview(), locked = state.busy || ctx.hasPending(), today = ctx.today();
+  const quantities = canViewStockQuantities(state.role,state.capabilities);
   const go = screen => {state.posScreen=screen;state.posMenuOpen=false; state.message=''; ctx.render();};
   const screen = state.posScreen || 'catalog';
   if(screen!=='catalog')state.posMenuOpen=false;
@@ -38,13 +40,13 @@ export function renderPos(ctx) {
     const query=(state.catalogQuery||'').trim().toLowerCase();
     content='<div class="pos-toolbar"><h1>รายการสินค้า</h1><button id="refresh" class="ghost">รีเฟรชสต็อก</button></div><label class="pos-search"><span>ค้นหาสินค้า / Lot</span><input id="catalog-query" value="'+h(state.catalogQuery||'')+'" placeholder="ค้นหาสินค้า" /></label><div class="pos-catalog">'+state.lots.filter(l=>!query||[l.name,l.sku,l.lot_code].some(v=>String(v).toLowerCase().includes(query))).map(l=>{
       const expired=l.expires_on&&l.expires_on<today;
-      return '<button class="pos-product" data-add="'+h(l.id)+'" '+(locked||expired||l.quantity_mg<=0?'disabled':'')+'><span class="pos-product-icon">'+h(l.name.slice(0,1))+'</span><span><strong>'+h(l.name)+'</strong><small>'+h(l.lot_code)+' · คงเหลือ '+h(milligramsToGrams(l.quantity_mg))+' กรัม'+(expired?' · หมดอายุ':'')+'</small></span><b>'+h(formatBaht(l.price))+'<small>/ กรัม</small></b></button>';
+      return '<button class="pos-product" data-add="'+h(l.id)+'" '+(locked||expired||!lotHasStock(l)?'disabled':'')+'><span class="pos-product-icon">'+h(l.name.slice(0,1))+'</span><span><strong>'+h(l.name)+'</strong><small>'+h(l.lot_code)+' · '+(quantities?'คงเหลือ ':'')+h(stockLabel(l,quantities,milligramsToGrams))+(expired?' · หมดอายุ':'')+'</small></span><b>'+h(formatBaht(l.price))+'<small>/ กรัม</small></b></button>';
     }).join('')+'</div><footer class="pos-bottom"><button id="catalog-pay" class="primary" '+(!items.length?'disabled':'')+'>ชำระเงิน <strong>'+h(totalLabel)+'</strong></button></footer>';
   } else if (screen==='quantity') {
     const lot=state.lots.find(x=>x.id===state.quantityLot);
     if (!lot) {state.posScreen='catalog'; return renderPos(ctx);}
     let error='',quantity,amount;
-    try {quantity=gramsToMilligrams(state.quantityText); const next=state.quantityEditing?quantity:quantity+(state.cart.get(lot.id)||0); if(next>1000000)throw Error('จำนวนรวมต่อ Lot ต้องไม่เกิน 1,000 กรัม'); if(next>lot.quantity_mg)throw Error('จำนวนมากกว่าสต็อกที่แสดง กรุณารีเฟรช'); amount=lineTotalSatang(lot.price,quantity);}catch(e){error=e.message;}
+    try {quantity=gramsToMilligrams(state.quantityText); const next=state.quantityEditing?quantity:quantity+(state.cart.get(lot.id)||0); if(next>1000000)throw Error('จำนวนรวมต่อ Lot ต้องไม่เกิน 1,000 กรัม'); if(quantities&&next>lot.quantity_mg)throw Error('จำนวนมากกว่าสต็อกที่แสดง กรุณารีเฟรช'); amount=lineTotalSatang(lot.price,quantity);}catch(e){error=e.message;}
     content='<section class="pos-quantity"><h1>'+h(lot.name)+'</h1><p class="muted">Lot '+h(lot.lot_code)+' · '+h(formatBaht(lot.price))+' / กรัม</p><label>จำนวน (กรัม)<input id="quantity-input" data-qty="'+h(lot.id)+'" inputmode="decimal" value="'+h(state.quantityText)+'" '+(locked?'disabled':'')+' /></label><p id="quantity-error" class="danger-text">'+h(error)+'</p><div class="pos-quantity-total">'+h(amount===undefined?'—':formatBaht(amount))+'</div><div class="pos-keypad">'+['1','2','3','4','5','6','7','8','9','.','0','⌫'].map(k=>'<button type="button" data-key="'+k+'" '+(locked?'disabled':'')+'>'+k+'</button>').join('')+'</div><button id="quantity-confirm" class="primary" '+(locked||error?'disabled':'')+'>ยืนยัน '+h(state.quantityText)+' กรัม</button><button id="quantity-cancel" class="ghost">ยกเลิก</button></section>';
   } else {
     const rows=items.map(({lot,lot_id,quantity_mg})=>lot?'<article class="pos-order-line"><div><strong>'+h(lot.name)+'</strong><small>Lot '+h(lot.lot_code)+' · '+h(milligramsToGrams(quantity_mg))+' กรัม × '+h(formatBaht(lot.price))+'</small><button data-edit="'+h(lot_id)+'" class="ghost" '+(locked?'disabled':'')+'>แก้ไขจำนวน</button></div><div><strong>'+h(formatBaht(lineTotalSatang(lot.price,quantity_mg)))+'</strong><button class="remove" data-remove="'+h(lot_id)+'" '+(locked?'disabled':'')+' aria-label="ลบสินค้า">×</button></div></article>':'').join('');
@@ -76,7 +78,7 @@ export function renderPos(ctx) {
   root.querySelector('#quantity-input')?.addEventListener('input',e=>{if(!locked){state.quantityText=e.target.value;state.quantityReplace=false;ctx.render();const n=root.querySelector('#quantity-input');n.focus();n.setSelectionRange(n.value.length,n.value.length);}});
   root.querySelectorAll('[data-key]').forEach(n=>n.onclick=()=>{if(locked)return;const k=n.dataset.key;state.quantityText=k==='⌫'?state.quantityText.slice(0,-1):(state.quantityReplace?'':state.quantityText)+(k==='.'&&(state.quantityReplace||!state.quantityText)?'0.':k);state.quantityReplace=false;ctx.render();});
   root.querySelector('#quantity-confirm')?.addEventListener('click',()=>{
-    if(locked)return;try{const lot=state.lots.find(x=>x.id===state.quantityLot),q=gramsToMilligrams(state.quantityText),next=state.quantityEditing?q:q+(state.cart.get(lot.id)||0);if(next>1000000)throw Error('จำนวนรวมต่อ Lot ต้องไม่เกิน 1,000 กรัม');if(next>lot.quantity_mg)throw Error('จำนวนมากกว่าสต็อกที่แสดง');state.cart.set(lot.id,next);go('catalog');}catch(e){ctx.message(e.message,true);}
+    if(locked)return;try{const lot=state.lots.find(x=>x.id===state.quantityLot),q=gramsToMilligrams(state.quantityText),next=state.quantityEditing?q:q+(state.cart.get(lot.id)||0);if(next>1000000)throw Error('จำนวนรวมต่อ Lot ต้องไม่เกิน 1,000 กรัม');if(quantities&&next>lot.quantity_mg)throw Error('จำนวนมากกว่าสต็อกที่แสดง');state.cart.set(lot.id,next);go('catalog');}catch(e){ctx.message(e.message,true);}
   });
   root.querySelector('#discount')?.addEventListener('input',e=>{if(!locked){state.discount=e.target.value;ctx.render();const n=root.querySelector('#discount');n.focus();n.setSelectionRange(n.value.length,n.value.length);}});
   const method=value=>{if(!locked&&['cash','transfer','split'].includes(value)&&(value!=='split'||supportsSplitPayments(state.capabilities))){state.payment=value;ctx.render();}};

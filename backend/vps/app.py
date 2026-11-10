@@ -38,10 +38,10 @@ from stocktake_evidence import register_evidence_routes
 from cost_stock import (
     COST_CONTRACT_VERSION, STOCKTAKE_CONTRACT_VERSION, EXTRA_SCHEMA,
     capabilities as cost_capabilities, canonical_hash, inventory_value,
-    product_rows, register_stock_routes, cost_response,
+    product_rows, register_stock_routes, cost_response, stock_balance_response,
 )
 
-APP_VERSION = "1.5.3-vps-preview"
+APP_VERSION = "1.5.4-vps-preview"
 BKK = ZoneInfo("Asia/Bangkok")
 ROLES = ("owner", "manager", "staff")
 DEFAULT_PATH = str(Path.home() / "Ramagan" / "data" / "ramagan.sqlite3")
@@ -466,7 +466,7 @@ def create_app(db_path: str | None = None, origins: list[str] | None = None,
               WHERE l.store_id=? AND l.active=1
               ORDER BY p.name,l.lot_code
             """, (actor["store_id"],))]
-        return cost_response({"products": products, "lots": lots}, actor)
+        return stock_balance_response({"products": products, "lots": lots}, actor)
 
     @app.post("/v1/products")
     def add_product(payload: ProductIn, request: Request, actor: Annotated[dict, Depends(current)]):

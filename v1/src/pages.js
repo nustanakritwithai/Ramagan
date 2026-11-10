@@ -1,6 +1,7 @@
 import {formatBaht, milligramsToGrams, sumSatang} from './math.js';
 import {navigationHeader, mountNavigation} from './navigation.js';
 import {supportsSaleVoids} from './sale-void.js';
+import {canViewStockQuantities,lotHasStock,stockLabel} from './permissions.js';
 
 const h = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const paymentName = method => ({cash:'เงินสด', transfer:'โอนเงิน', split:'เงินสด + โอน'}[method] || 'ไม่ระบุ');
@@ -173,6 +174,7 @@ export function productLots(state,product) {
 }
 function renderProducts(ctx) {
   const {state,root}=ctx,p=state.pages,products=state.products;
+  const quantities=canViewStockQuantities(state.role,state.capabilities);
   const go=screen=>{p.productScreen=screen;ctx.render();};
   let title=titles.products,html='';
   const row=(target,icon,label,note='')=>'<button class="menu-row" data-product-screen="'+target+'"><span class="menu-row-icon" aria-hidden="true">'+icon+'</span><span><strong>'+label+'</strong>'+(note?'<small>'+note+'</small>':'')+'<span class="menu-chevron">›</span></span></button>';
@@ -181,20 +183,20 @@ function renderProducts(ctx) {
     title='หมวดหมู่';const cats=[...new Set(products.map(x=>x.category||'other'))].sort((a,b)=>a.localeCompare(b,'th'));
     html='<div class="menu-options">'+cats.map(cat=>'<button class="menu-row" data-category="'+h(cat)+'"><span class="menu-row-icon">▣</span><span><strong>'+h(cat)+'</strong><small>'+products.filter(x=>(x.category||'other')===cat).length+' สินค้า</small></span><span>›</span></button>').join('')+'</div>'+(cats.length?'':'<p class="menu-empty">ยังไม่มีหมวดหมู่</p>');
   }else if(p.productScreen==='extras'){
-    title='ตัวเลือกเพิ่มเติม';html='<h1>ตัวเลือกสินค้า</h1><div class="menu-options">'+row('list','☷','เลือกสินค้าและดู Lot','ดูราคา วันหมดอายุ และยอดคงเหลือราย Lot')+'</div><p class="footnote">ระบบนี้ขายตามน้ำหนักกรัม ทศนิยมได้ 3 ตำแหน่ง ยังไม่มีตัวเลือกเสริมหรือราคาท็อปปิ้ง</p>';
+    title='ตัวเลือกเพิ่มเติม';html='<h1>ตัวเลือกสินค้า</h1><div class="menu-options">'+row('list','☷','เลือกสินค้าและดู Lot','ดูราคา วันหมดอายุ และสถานะราย Lot')+'</div><p class="footnote">ระบบนี้ขายตามน้ำหนักกรัม ทศนิยมได้ 3 ตำแหน่ง ยังไม่มีตัวเลือกเสริมหรือราคาท็อปปิ้ง</p>';
   }else if(p.productScreen==='discounts'){
     title='ส่วนลด';html='<h1>ส่วนลดท้ายบิล</h1><p>ระบุส่วนลดเป็นบาทในหน้าตรวจออร์เดอร์ ตั้งแต่ 0 ถึงยอดก่อนลด</p><p class="footnote">ส่วนลดบิลจะกระจายลงสินค้าและรายงานตามยอดที่เซิร์ฟเวอร์บันทึก</p><button id="discount-ticket" class="primary">ไปส่วนลดในตั๋วออร์เดอร์</button>';
   }else if(p.productScreen==='detail'){
     const product=products.find(x=>x.id===p.productId);
     if(!product){p.productScreen='list';return renderProducts(ctx);}
     title=product.name;const lots=productLots(state,product);
-    html='<h1>'+h(product.name)+'</h1><p class="muted">'+h(product.sku)+' · '+h(product.category)+'</p><dl class="menu-facts"><div><dt>ราคาขาย / กรัม</dt><dd>'+h(formatBaht(product.price_satang_per_gram))+'</dd></div><div><dt>สถานะสินค้า</dt><dd>'+(product.active?'ใช้งาน':'ปิดใช้งาน')+'</dd></div></dl><h2>Lot และยอดคงเหลือ</h2>'+lots.map(lot=>'<article class="product-lot"><div><strong>'+h(lot.lot_code)+'</strong><small>'+(lot.expires_on?'หมดอายุ '+h(lot.expires_on):'ไม่ระบุวันหมดอายุ')+'</small></div><b>'+h(milligramsToGrams(lot.quantity_mg))+' กรัม</b></article>').join('')+(lots.length?'':'<p class="menu-empty">ยังไม่มี Lot ที่แสดงได้</p>')+(ctx.canManage()?'<button id="product-receive" class="primary">รับสินค้าเข้า Lot</button>':'');
+    html='<h1>'+h(product.name)+'</h1><p class="muted">'+h(product.sku)+' · '+h(product.category)+'</p><dl class="menu-facts"><div><dt>ราคาขาย / กรัม</dt><dd>'+h(formatBaht(product.price_satang_per_gram))+'</dd></div><div><dt>สถานะสินค้า</dt><dd>'+(product.active?'ใช้งาน':'ปิดใช้งาน')+'</dd></div></dl><h2>Lot สินค้า</h2>'+lots.map(lot=>'<article class="product-lot"><div><strong>'+h(lot.lot_code)+'</strong><small>'+(lot.expires_on?'หมดอายุ '+h(lot.expires_on):'ไม่ระบุวันหมดอายุ')+'</small></div><b>'+h(stockLabel(lot,quantities,milligramsToGrams))+'</b></article>').join('')+(lots.length?'':'<p class="menu-empty">ยังไม่มี Lot ที่แสดงได้</p>')+(ctx.canManage()?'<button id="product-receive" class="primary">รับสินค้าเข้า Lot</button>':'');
   }else{
     title=p.productCategory||'รายการทั้งหมด';const query=p.productQuery.trim().toLowerCase();
     const selected=products.filter(x=>(!p.productCategory||(x.category||'other')===p.productCategory)&&(!query||[x.name,x.sku,x.category].some(v=>String(v).toLowerCase().includes(query))));
     html='<div class="product-filters"><label>ค้นหา<input id="product-query" value="'+h(p.productQuery)+'" placeholder="ชื่อสินค้า / SKU" /></label><label>หมวดหมู่<select id="product-category"><option value="">รายการทั้งหมด</option>'+[...new Set(products.map(x=>x.category||'other'))].sort().map(cat=>'<option '+(cat===p.productCategory?'selected ':'')+'value="'+h(cat)+'">'+h(cat)+'</option>').join('')+'</select></label></div><div class="product-list">'+selected.map(product=>{
-      const lots=productLots(state,product),quantity=sumSatang(lots.map(x=>x.quantity_mg));
-      return '<button class="product-list-row" data-product="'+h(product.id)+'"><span class="pos-product-icon">'+h(product.name.slice(0,1))+'</span><span><strong>'+h(product.name)+'</strong><small>'+h(milligramsToGrams(quantity))+' กรัมในสต็อก'+(!product.active?' · ปิดใช้งาน':'')+'</small></span><b>'+h(formatBaht(product.price_satang_per_gram))+'</b></button>';
+      const lots=productLots(state,product),label=quantities?milligramsToGrams(sumSatang(lots.map(x=>x.quantity_mg)))+' กรัมในสต็อก':lots.some(lotHasStock)?'มีสินค้า':'สินค้าหมด';
+      return '<button class="product-list-row" data-product="'+h(product.id)+'"><span class="pos-product-icon">'+h(product.name.slice(0,1))+'</span><span><strong>'+h(product.name)+'</strong><small>'+h(label)+(!product.active?' · ปิดใช้งาน':'')+'</small></span><b>'+h(formatBaht(product.price_satang_per_gram))+'</b></button>';
     }).join('')+'</div>'+(!selected.length?'<p class="menu-empty">ไม่พบสินค้า</p>':'')+(ctx.canManage()?'<button id="product-add" class="product-add" aria-label="เพิ่มสินค้าใหม่">+</button>':'');
   }
   if(p.productScreen!=='menu')html='<button id="product-back" class="ghost">‹ '+(p.productScreen==='detail'?'กลับรายการสินค้า':'เมนูรายการสินค้า')+'</button>'+html;

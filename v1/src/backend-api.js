@@ -133,7 +133,8 @@ export function createClient(serverUrl) {
               price_satang_per_gram: l.price_satang_per_gram,
               active: !!l.product_active
             },
-            ramagan_lot_balances: {quantity_mg: l.quantity_mg}
+            ramagan_lot_balances: {...(Object.hasOwn(l,'quantity_mg')?{quantity_mg:l.quantity_mg}:{}),
+              ...(typeof l.has_stock==='boolean'?{has_stock:l.has_stock}:{})}
           }));
         }
         if (this.table === 'ramagan_sales') {

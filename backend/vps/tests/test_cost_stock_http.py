@@ -136,7 +136,9 @@ class CostStockHttpTests(unittest.TestCase):
                     self.assertEqual(pending.json()["status"],"pending")
                     history=client.get("/v1/stocktakes",headers=headers["manager"]).json()["stocktakes"]
                     self.assertEqual(len(history),1)
-                    self.assertEqual(history[0]["variance_mg"],-500)
+                    self.assertNotIn("variance_mg",history[0])
+                    owner_history=client.get("/v1/stocktakes",headers=headers["owner"]).json()["stocktakes"]
+                    self.assertEqual(owner_history[0]["variance_mg"],-500)
                     self.assertEqual(client.get("/v1/inventory",headers=headers["staff"]).status_code,403)
                     self.assertEqual(client.get("/v1/stocktakes",headers=headers["staff"]).status_code,403)
                     self.assertEqual(client.post("/v1/stocktakes",headers=headers["staff"],json=stale).status_code,403)

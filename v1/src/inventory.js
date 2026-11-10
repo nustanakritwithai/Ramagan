@@ -2,7 +2,7 @@
 // remain authoritative; local storage never grants authority or stores tokens.
 import {bahtToSatang} from './math.js';
 import {supportsEvidence} from './evidence-draft.js';
-import {withoutPrivateCosts} from './permissions.js';
+import {withoutPrivateCosts,withoutStockComparisons} from './permissions.js';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const integer = (x, max = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(x) && x >= 0 && x <= max;
 const fail = message => { throw new Error(message); };
@@ -72,7 +72,7 @@ function validatePayload(kind, p) {
     }
   } else fail('Unknown inventory action');
 }
-function validateResult(kind, data, op, allowRedactedCosts = false) {
+function validateResult(kind, data, op, allowRedactedCosts = false, allowRedactedStock = false) {
   const p = op.payload;
   if (kind === 'receive') {
     if (!UUID.test(data?.lot_id) || data.client_receive_id !== p.client_receive_id ||
@@ -93,15 +93,19 @@ function validateResult(kind, data, op, allowRedactedCosts = false) {
           (requested.evidence_id && item.evidence?.evidence_id !== requested.evidence_id) ||
           item.stock_revision_before !== requested.expected_revision ||
           item.stock_revision_after !== item.stock_revision_before + 1 ||
-          !integer(item.system_quantity_mg) ||
-          item.variance_mg !== item.counted_quantity_mg - item.system_quantity_mg) fail('ยอดนับยืนยันไม่ตรงกับรายการ ต้องตรวจสอบรายการเดิม');
+          (!(allowRedactedStock && !Object.hasOwn(item,'system_quantity_mg') && !Object.hasOwn(item,'variance_mg')) &&
+           (!integer(item.system_quantity_mg) || item.variance_mg !== item.counted_quantity_mg - item.system_quantity_mg))) fail('ยอดนับยืนยันไม่ตรงกับรายการ ต้องตรวจสอบรายการเดิม');
     }
   }
   return data;
 }
 
-export function createInventoryOperation({storage, identity, kind, transport, uuid, lock, allowRedactedCosts = false}) {
+export function createInventoryOperation({storage, identity, kind, transport, uuid, lock, allowRedactedCosts = false, allowRedactedStock = false}) {
   const key = inventoryPendingKey(identity, kind), completedKey = key + '.completed';
+  const project = value => {
+    const costs = allowRedactedCosts ? withoutPrivateCosts(value) : value;
+    return allowRedactedStock ? withoutStockComparisons(costs) : costs;
+  };
   let observed;
   try { observed = storage.getItem(completedKey); } catch { /* fail closed on read/start */ }
   function validate(op) {
@@ -113,7 +117,7 @@ export function createInventoryOperation({storage, identity, kind, transport, uu
     }
     validatePayload(kind, op.payload);
     if (op.status === 'confirmed') op = {...op, result: validateResult(kind,
-      allowRedactedCosts === true ? withoutPrivateCosts(op.result) : op.result, op, allowRedactedCosts)};
+      project(op.result), op, allowRedactedCosts, allowRedactedStock)};
     return op;
   }
   function read() {
@@ -124,7 +128,7 @@ export function createInventoryOperation({storage, identity, kind, transport, uu
     return validate(JSON.parse(raw));
   }
   function needsCleanup(stored, projected) {
-    return allowRedactedCosts === true && stored?.status === 'confirmed' &&
+    return (allowRedactedCosts === true || allowRedactedStock === true) && stored?.status === 'confirmed' &&
       JSON.stringify(stored.result) !== JSON.stringify(projected.result);
   }
   function sanitizeLocked() {
@@ -153,11 +157,11 @@ export function createInventoryOperation({storage, identity, kind, transport, uu
     }
   }
   function confirmed(data, op) {
-    const result = validateResult(kind, allowRedactedCosts?withoutPrivateCosts(data):data, op, allowRedactedCosts);
+    const result = validateResult(kind, project(data), op, allowRedactedCosts, allowRedactedStock);
     return {result, op: persist({...op, status: 'confirmed', result})};
   }
   async function lookup(op, explicitReceiveVerification = false) {
-    if (op.status === 'confirmed') return {result: validateResult(kind, allowRedactedCosts?withoutPrivateCosts(op.result):op.result, op, allowRedactedCosts), op};
+    if (op.status === 'confirmed') return {result: validateResult(kind, project(op.result), op, allowRedactedCosts, allowRedactedStock), op};
     if (op.status === 'rejected') return {rejected: true, op, error: new Error(op.rejection)};
     if (transport.lookup) {
       const found = await transport.lookup(op.payload.client_stocktake_id);

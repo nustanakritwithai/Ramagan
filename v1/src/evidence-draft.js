@@ -1,5 +1,6 @@
 // Unsubmitted count drafts are separate from submitted mutation intents. Blobs
 // and upload UUIDs are committed in IndexedDB before any network request.
+import {withoutStockBalances} from './permissions.js';
 const DB = 'ramagan-stocktake-drafts-v1', STORE = 'drafts';
 export const supportsEvidence = c => c?.stocktakes === true && c?.stocktake_contract_version === 2 &&
   c?.stocktake_evidence === true && c?.evidence_contract_version === 1;
@@ -10,7 +11,7 @@ export function validatePhoto(blob) {
     throw new Error('เลือกรูป JPEG, PNG หรือ WebP ขนาดไม่เกิน 5 MB');
   }
 }
-export function createEvidenceDraft({indexedDB, identity, uuid}) {
+export function createEvidenceDraft({indexedDB, identity, uuid, hideStockBalances = false}) {
   const key = draftScope(identity);
   let opened;
   const db = () => opened ||= new Promise((resolve, reject) => {
@@ -23,14 +24,16 @@ export function createEvidenceDraft({indexedDB, identity, uuid}) {
   async function transact(change) {
     const database = await db();
     return new Promise((resolve, reject) => {
-      const tx = database.transaction(STORE, change ? 'readwrite' : 'readonly'), store = tx.objectStore(STORE);
+      const tx = database.transaction(STORE, change || hideStockBalances ? 'readwrite' : 'readonly'), store = tx.objectStore(STORE);
       const request = store.get(key); let result, failure;
       request.onsuccess = () => {
         try {
           const current = request.result || null;
           if (current && (current.version !== 1 || draftScope(current.identity) !== key)) throw new Error('ข้อมูลแบบร่างไม่ถูกต้อง ให้ผู้จัดการตรวจสอบ');
+          if (current && hideStockBalances) current.snapshot = withoutStockBalances(current.snapshot);
           result = change ? change(current) : current;
-          if (change) {if (result === null) store.delete(key); else store.put(result, key);}
+          if (result && hideStockBalances) result.snapshot = withoutStockBalances(result.snapshot);
+          if (change || (hideStockBalances && current)) {if (result === null) store.delete(key); else store.put(result, key);}
         } catch (error) {failure = error; tx.abort();}
       };
       tx.oncomplete = () => resolve(result);
@@ -40,7 +43,7 @@ export function createEvidenceDraft({indexedDB, identity, uuid}) {
   function requireDraft(draft) {if (!draft) throw new Error('ไม่พบแบบร่าง กรุณาเริ่มนับใหม่'); return draft;}
   return {key, read: () => transact(),
     ensure: (snapshot, meta) => transact(current => current || {version: 1, identity: {...identity}, id: uuid(),
-      snapshot: snapshot.map(x => ({id: x.id, lot_code: x.lot_code, name: x.name, quantity_mg: x.quantity_mg,
+      snapshot: snapshot.map(x => ({id: x.id, lot_code: x.lot_code, name: x.name, ...(hideStockBalances?{}:{quantity_mg: x.quantity_mg}),
         stock_revision: x.stock_revision})), counts: {}, photos: {}, shift_label: meta.shift_label, reason: meta.reason}),
     setCount: (lot, value) => transact(current => {
       const draft = requireDraft(current);

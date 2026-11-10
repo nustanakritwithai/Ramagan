@@ -177,7 +177,7 @@ test('products submenu has list/categories/extras/discounts and restricts intake
       f.click('[data-product-screen="categories"]');assert.equal(f.root.querySelectorAll('[data-category]').length,2);
       f.click('[data-category="flower"]');assert.equal(f.root.querySelectorAll('[data-product]').length,1);assert.equal(f.q('[data-product]').dataset.product,'product-a');
       assert.equal(Boolean(f.q('#product-add')),role!=='staff');
-      f.click('[data-product]');assert.match(f.root.textContent,/1\.25 กรัม/);assert.equal(Boolean(f.q('#product-receive')),role!=='staff');
+      f.click('[data-product]');if(role==='owner')assert.match(f.root.textContent,/1\.25 กรัม/);else assert.doesNotMatch(f.root.textContent,/1\.25 กรัม/);assert.equal(Boolean(f.q('#product-receive')),role!=='staff');
       if(role!=='staff'){f.click('#product-receive');assert.deepEqual(f.calls.inventory,[{id:'product-a',mode:'receive-lot'}]);}
     }finally{f.close();}
   }
@@ -215,4 +215,18 @@ test('old API capability fallback and settings/support destinations remain hones
     f.ctx.openView('apps');assert.match(f.root.textContent,/fixture-v1/);
     assert.equal(f.calls.requests.some(x=>x.method!=='GET'),false);
   }finally{f.close();}
+});
+
+
+test('Product lists and detail never render stock amounts for Manager/Staff even from stale Owner data',()=>{
+  for(const role of ['manager','staff']){
+    const f=fixture({role,view:'products'});
+    try{
+      f.state.pages.productScreen='list';f.render();
+      assert.doesNotMatch(f.root.textContent,/1.25 กรัม|2 กรัม|กรัมในสต็อก/);
+      assert.match(f.q('.product-list-row').textContent,/มีสินค้า/);
+      f.click('[data-product]');assert.doesNotMatch(f.root.textContent,/1.25 กรัม/);
+      assert.match(f.q('.product-lot').textContent,/มีสินค้า/);
+    }finally{f.close();}
+  }
 });

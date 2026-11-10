@@ -494,7 +494,7 @@ class StocktakeEvidenceAcceptanceTests(unittest.TestCase):
         self.assertEqual(replay.json(), {**result.json(), "duplicate": True})
         lookup = self.client.get("/v1/stocktakes/by-client/" + payload["client_stocktake_id"], headers=self.headers["manager"])
         expected = {**replay.json(), "items": [{key: value for key, value in item.items()
-                    if key != "inventory_delta_satang"} for item in replay.json()["items"]]}
+                    if key not in {"inventory_delta_satang", "system_quantity_mg", "variance_mg"}} for item in replay.json()["items"]]}
         self.assertEqual(lookup.json(), expected)
         self.assert_unchanged(before)
 

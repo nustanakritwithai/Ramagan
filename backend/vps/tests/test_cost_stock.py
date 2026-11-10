@@ -228,11 +228,12 @@ class CostStockTests(unittest.TestCase):
         result = response.json()
         self.assertEqual(result["actor_user_id"], self.users["manager"])
         self.assertEqual(len(result["items"]), 3)
-        self.assertEqual(sorted(line["variance_mg"] for line in result["items"]), [-3, 0, 7])
+        self.assertTrue(all("variance_mg" not in line and "system_quantity_mg" not in line for line in result["items"]))
         self.assertTrue(all(line["stock_revision_after"] == 1 for line in result["items"]))
         self.assertTrue(all("inventory_delta_satang" not in line for line in result["items"]))
         owner_result = self.client.get("/v1/stocktakes/by-client/" + payload["client_stocktake_id"],
                                        headers=self.headers["owner"]).json()
+        self.assertEqual(sorted(line["variance_mg"] for line in owner_result["items"]), [-3, 0, 7])
         for line in owner_result["items"]:
             lot = next(row for row in lots if row["id"] == line["lot_id"])
             c = lot["cost_satang_per_gram"]
@@ -282,7 +283,10 @@ class CostStockTests(unittest.TestCase):
                 self.assertEqual(result.status_code, 200, result.text)
                 saved = result.json()
                 self.assertEqual(saved["reason"], "")
-                self.assertEqual(saved["items"][0]["variance_mg"], -1)
+                if actor == "owner":
+                    self.assertEqual(saved["items"][0]["variance_mg"], -1)
+                else:
+                    self.assertNotIn("variance_mg", saved["items"][0])
                 before = self.state()
                 for retry_reason in (None, "", " \t\n "):
                     retry_payload = {**payload, "reason": retry_reason}

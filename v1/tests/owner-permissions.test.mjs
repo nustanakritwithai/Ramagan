@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {canViewCosts,canAccessDashboard,canManageSettings,withoutPrivateCosts} from '../src/permissions.js';
+import {canViewCosts,canAccessDashboard,canManageSettings,withoutPrivateCosts,canViewStockQuantities} from '../src/permissions.js';
 import {createInventoryOperation,inventoryPendingKey} from '../src/inventory.js';
 
 test('Only Owner can expose private screens even if a non-Owner receives forged permissive flags',()=>{
@@ -133,5 +133,35 @@ test('Inventory retry verify and acknowledge scrub legacy results inside their e
       assert.deepEqual(found.op.payload,old.payload);assert.deepEqual(JSON.parse(f.map.get(f.key)).payload,old.payload);
       assert.equal(Object.hasOwn(JSON.parse(f.map.get(f.key)).result,'cost_satang_per_gram'),false);
     }
+  }
+});
+
+
+test('Stock visibility is Owner-only and cannot be granted to another role by capability flags',()=>{
+  const caps={stock_privacy_contract_version:1,can_view_stock_quantities:true};
+  for(const role of ['manager','staff',null,'OWNER'])assert.equal(canViewStockQuantities(role,caps),false);
+  assert.equal(canViewStockQuantities('owner',caps),true);
+  assert.equal(canViewStockQuantities('owner',{...caps,can_view_stock_quantities:false}),false);
+  assert.equal(canViewStockQuantities('owner',{...caps,stock_privacy_contract_version:2}),false);
+});
+
+test('Redacted count confirmations retain frozen intent validation and remove old balances under the operation lock',async()=>{
+  const f=intake(),key=inventoryPendingKey(f.identity,'stocktake');
+  const id='55555555-5555-4555-8555-555555555555',lot='44444444-4444-4444-8444-444444444444';
+  const payload={client_stocktake_id:id,shift_label:'test',reason:'fixture',items:[{lot_id:lot,expected_revision:2,counted_quantity_mg:9876}]};
+  const result={id,client_stocktake_id:id,actor_user_id:f.identity.actor,shift_label:'test',reason:'fixture',duplicate:true,
+    items:[{lot_id:lot,counted_quantity_mg:9876,system_quantity_mg:10000,variance_mg:-124,stock_revision_before:2,stock_revision_after:3}]};
+  const stored={version:1,kind:'stocktake',status:'confirmed',uncertain:false,identity:f.identity,payload,result};
+  f.map.set(key,JSON.stringify(stored));let held=false;
+  const op=createInventoryOperation({storage:{...f.storage,setItem:(k,v)=>{assert(held);f.map.set(k,v);}},identity:f.identity,
+    kind:'stocktake',transport:{},allowRedactedStock:true,lock:(_,task)=>{held=true;try{return task();}finally{held=false;}}});
+  assert.equal(op.read().result.items[0].system_quantity_mg,undefined);
+  assert.equal(JSON.parse(f.map.get(key)).result.items[0].system_quantity_mg,10000,'Synchronous read does not race storage');
+  await op.sanitize();const clean=JSON.parse(f.map.get(key));
+  assert.equal(clean.result.items[0].system_quantity_mg,undefined);assert.equal(clean.result.items[0].variance_mg,undefined);
+  assert.deepEqual(clean.payload,payload);assert.deepEqual((await op.verify()).result,clean.result);
+  for(const field of ['counted_quantity_mg','stock_revision_before','stock_revision_after']){
+    const bad=structuredClone(clean);bad.result.items[0][field]++;f.map.set(key,JSON.stringify(bad));
+    assert.throws(()=>op.read(),/ยอดนับยืนยัน/);
   }
 });

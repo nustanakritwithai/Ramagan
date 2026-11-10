@@ -59,3 +59,19 @@ test('missing browser storage, invalid MIME, empty and oversized images fail bef
   assert.equal(supportsEvidence({stocktakes:true,stocktake_contract_version:1}),false);
   assert.equal(supportsEvidence({stocktakes:true,stocktake_contract_version:2,stocktake_evidence:true,evidence_contract_version:1}),true);
 });
+
+
+test('Manager reopening an old Owner draft removes balances transactionally and preserves counts, revisions and photos',async()=>{
+  const config=options(),owner=createEvidenceDraft(config);
+  const original=await owner.ensure(snapshot,meta);await owner.setCount('lot','99');
+  const photo=await owner.select('lot',new Blob(['unchanged-photo'],{type:'image/jpeg'}));
+  const manager=createEvidenceDraft({...config,hideStockBalances:true});
+  const clean=await manager.read();
+  assert.equal(clean.id,original.id);assert.equal(clean.snapshot[0].quantity_mg,undefined);
+  assert.equal(clean.snapshot[0].stock_revision,3);assert.equal(clean.counts.lot,'99');
+  assert.equal(clean.photos.lot.client_upload_id,photo.photos.lot.client_upload_id);
+  assert.equal(await clean.photos.lot.blob.text(),'unchanged-photo');
+  assert.equal((await owner.read()).snapshot[0].quantity_mg,undefined,'Old stored balance is removed');
+  await manager.clear(clean.id);
+  assert.equal((await manager.ensure(snapshot,meta)).snapshot[0].quantity_mg,undefined);
+});

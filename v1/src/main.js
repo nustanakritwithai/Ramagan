@@ -13,7 +13,7 @@ import {createSaleVoid,voidPendingKey} from './sale-void.js';
 import {supportsSharedPin,pendingDeviceActor} from './device-session.js';
 import {renderPinLock,renderPinSetup,pinSettingsHtml,bindPinSettings} from './pin-ui.js';
 import {countEvidenceSummary,inventoryTaskSummary,inventoryStockRow} from './management-ui.js';
-import {canViewCosts,canAccessDashboard,canManageSettings,usesRedactedCosts,withoutPrivateCosts} from './permissions.js';
+import {canViewCosts,canAccessDashboard,canManageSettings,usesRedactedCosts,withoutPrivateCosts,canViewStockQuantities,usesRedactedStockQuantities,withoutStockBalances,withoutStockComparisons,stockLabel,lotHasStock} from './permissions.js';
 import './style.css';
 import './navigation.css';
 import './pages.css';
@@ -288,6 +288,9 @@ function canManage() {
   return state.role === 'owner' || state.role === 'manager';
 }
 function viewCosts(){return supportsCosts(state.capabilities)&&canViewCosts(state.role,state.capabilities);}
+function viewQuantities(){return canViewStockQuantities(state.role,state.capabilities);}
+function visibleInventory(data){return viewQuantities()?data:withoutStockBalances(data);}
+function visibleCounts(data){return viewQuantities()?data:withoutStockComparisons(data);}
 function canDashboard(){return canAccessDashboard(state.role,state.capabilities);}
 function canSettings(){return canManageSettings(state.role,state.capabilities);}
 function hasInventoryPending() {
@@ -438,7 +441,7 @@ function navigationContext() {
   return {root,state,api,currentApi:()=>api,render,canManage,canDashboard,canSettings,openView,logout,changeServer,
     lockDevice:()=>{if(!state.busy&&!activeIO)void deviceAuth?.lock();},canLockDevice:()=>Boolean(deviceAuth?.snapshot().device),
     voidReceipt:runReceiptVoid,hasPending:hasPendingMutation,
-    adminUrl:canDashboard()?ADMIN_REPORT_URL:null,apiUrl,appVersion:'1.5.3',pinSettingsHtml:()=>canSettings()?pinSettingsHtml(pinFlags()):'',bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
+    adminUrl:canDashboard()?ADMIN_REPORT_URL:null,apiUrl,appVersion:'1.5.4',pinSettingsHtml:()=>canSettings()?pinSettingsHtml(pinFlags()):'',bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
       if(!canManage())return;
       openView('inventory');
       const form=root.querySelector('#'+section);
@@ -506,7 +509,7 @@ function renderInventory() {
     '<option value="' + h(p.id) + '">' + h(p.sku) + ' — ' +
     h(p.name) + '</option>').join('');
   const lots=state.inventory?.lots||state.lots,today=toBangkokDay(new Date());
-  const rows=lots.map(lot=>inventoryStockRow({name:lot.name,lotCode:lot.lot_code,quantity:milligramsToGrams(lot.quantity_mg),
+  const rows=lots.map(lot=>inventoryStockRow({name:lot.name,lotCode:lot.lot_code,quantity:viewQuantities()?milligramsToGrams(lot.quantity_mg):null,availability:viewQuantities()?'':stockLabel(lot,false,milligramsToGrams),
     cost:costs?(lot.cost_satang_per_gram==null?'ยังไม่ทราบ':formatBaht(lot.cost_satang_per_gram)):'',
     value:costs?(lot.inventory_value_satang==null?'ยังไม่ทราบ':formatBaht(lot.inventory_value_satang)):'',
     expired:Boolean(lot.expires_on&&lot.expires_on<today),inactive:!lot.active||!lot.product_active})).join('')||'<p class="empty">ยังไม่มีสินค้าในสต็อก</p>';
@@ -643,7 +646,7 @@ function renderStocktake() {
   const rows = (state.inventory?.lots || []).map(lot => {
     const value = state.counts.get(lot.id) || '';
     let variance = '—';
-    if (value.trim() !== '') {
+    if (viewQuantities() && value.trim() !== '') {
       try { variance = signedGrams(countedMilligrams(value) - lot.quantity_mg) + ' กรัม'; }
       catch { variance = 'ยอดนับไม่ถูกต้อง'; }
     }
@@ -656,14 +659,14 @@ function renderStocktake() {
     return '<tr><td class="count-product" data-label="สินค้า / Lot"><strong>' + h(lot.name) + '</strong><small>' + h(lot.lot_code) +
       (lot.expires_on && lot.expires_on < today ? ' · หมดอายุ' : '') +
       (!lot.active || !lot.product_active ? ' · ไม่ใช้งาน' : '') + '</small></td><td class="count-system" data-label="ยอดระบบ">' +
-      h(milligramsToGrams(lot.quantity_mg)) + ' กรัม</td><td class="count-input" data-label="ยอดนับจริง (กรัม)"><input data-count="' + h(lot.id) +
+      (viewQuantities()?h(milligramsToGrams(lot.quantity_mg))+' กรัม':'เฉพาะเจ้าของ') + '</td><td class="count-input" data-label="ยอดนับจริง (กรัม)"><input data-count="' + h(lot.id) +
       '" aria-label="ยอดนับจริง ' + h(lot.lot_code) + ' (กรัม)" inputmode="decimal" value="' + h(value) +
       '" placeholder="ยังไม่นับ" ' + (locked ? 'disabled' : '') + ' /></td><td class="count-variance" data-label="ส่วนต่าง" data-variance="' + h(lot.id) + '">' + h(variance) + '</td><td class="count-evidence" data-label="หลักฐานเครื่องชั่ง">'+evidence+'</td></tr>';
   }).join('') || '<tr><td colspan="5">ยังไม่มียอดระบบสำหรับตรวจนับ</td></tr>';
   const history = state.stocktakes.map(x => '<tr><td>' + h(new Date(x.created_at).toLocaleString('th-TH', {timeZone: 'Asia/Bangkok'})) +
     '<small>' + h(x.id) + '</small></td><td>' + h(x.shift_label) + '<small>' + h(x.reason) + '</small></td><td>' +
-    h(x.actor_email || x.actor_user_id) + '</td><td>' + h(x.line_count) + '</td><td>' + h(signedGrams(x.variance_mg)) +
-    ' กรัม</td><td><button type="button" class="ghost" data-history="' + h(x.client_stocktake_id) + '">ดูรายการ</button></td></tr>').join('') || '<tr><td colspan="6">ยังไม่มีประวัติการนับ</td></tr>';
+    h(x.actor_email || x.actor_user_id) + '</td><td>' + h(x.line_count) + '</td><td>' + (viewQuantities()?h(signedGrams(x.variance_mg))+' กรัม':'—') +
+    '</td><td><button type="button" class="ghost" data-history="' + h(x.client_stocktake_id) + '">ดูรายการ</button></td></tr>').join('') || '<tr><td colspan="6">ยังไม่มีประวัติการนับ</td></tr>';
   root.innerHTML = [
     '<header class="topbar"><div class="brand">R<span>●</span> RAMAGAN <small>V1</small></div><div class="top-actions">', statusChip(),
     canSettings()?'<button id="change-server" class="ghost">เซิร์ฟเวอร์</button>':'','<button id="logout" class="ghost">ออกจากระบบ</button></div></header>',
@@ -680,7 +683,7 @@ function renderStocktake() {
     '<p class="footnote">กรอก 0 เมื่อนับแล้วไม่มีสินค้า · ช่องว่าง = ไม่นับ Lot นั้น · รวม Lot หมดอายุและไม่ใช้งาน · ถ้าสต็อกเปลี่ยนต้องโหลดและนับใหม่</p></div></details>',
     '<div class="inventory-table count-table"><table><thead><tr><th>สินค้า / Lot</th><th>ยอดระบบ</th><th>ยอดนับจริง (กรัม)</th><th>ส่วนต่าง</th><th>รูปหลักฐาน</th></tr></thead><tbody>', rows, '</tbody></table></div>',
     '<label class="count-confirm"><input id="count-confirm" type="checkbox" ', state.countConfirmed ? 'checked ' : '', locked ? 'disabled ' : '',
-    '/> ตรวจนับจริงและตรวจสอบส่วนต่างแล้ว ยืนยันให้บันทึกการปรับยอดตามรายการที่กรอก</label>',
+    '/> ตรวจนับจริงแล้ว ยืนยันให้บันทึกการปรับยอดตามรายการที่กรอก</label>',
     '<p id="count-validation" class="alert" role="status" aria-live="polite"></p>',
     '<div class="stocktake-actions"><button type="button" id="reload-count" class="ghost" ', state.busy || hasInventoryPending() || state.photoBusy || state.draftSaving ? 'disabled' : '',
     '>รีโหลดยอดระบบ / เริ่มนับใหม่</button><button id="confirm-count" aria-describedby="count-validation" type="submit" class="primary" disabled>ยืนยันการนับและปรับยอดผ่านเซิร์ฟเวอร์</button></div></form></section>',
@@ -742,7 +745,7 @@ function renderStocktake() {
     state.countConfirmed = false; root.querySelector('#count-confirm').checked = false;
     const lot = state.inventory.lots.find(x => x.id === input.dataset.count);
     const node = root.querySelector('[data-variance="' + CSS.escape(input.dataset.count) + '"]');
-    try { node.textContent = input.value.trim() === '' ? '—' : signedGrams(countedMilligrams(input.value) - lot.quantity_mg) + ' กรัม'; }
+    try { node.textContent = !viewQuantities() || input.value.trim() === '' ? '—' : signedGrams(countedMilligrams(input.value) - lot.quantity_mg) + ' กรัม'; }
     catch (error) { node.textContent = error.message; }
     const saving=saveCountDraft('count',input.dataset.count,input.value);update();
     await saving; updateIfCurrent();
@@ -833,8 +836,8 @@ function historyDetailHtml() {
   return '<section class="stocktake-detail"><h3>รายละเอียดการนับ ' + h(detail.shift_label) + '</h3><p class="muted">' +
     h(detail.actor_email || detail.actor_user_id) + ' · ' + h(detail.reason) + ' · ' +
     h(new Date(detail.created_at).toLocaleString('th-TH', {timeZone: 'Asia/Bangkok'})) + '</p><table><thead><tr><th>Lot</th><th>ยอดระบบ</th><th>ยอดนับ</th><th>ส่วนต่าง</th><th>รูปหลักฐาน</th></tr></thead><tbody>' +
-    detail.items.map(x => '<tr><td>' + h(x.lot_code) + '</td><td>' + h(milligramsToGrams(x.system_quantity_mg)) +
-      '</td><td>' + h(milligramsToGrams(x.counted_quantity_mg)) + '</td><td>' + h(signedGrams(x.variance_mg)) + ' กรัม</td><td>'+
+    detail.items.map(x => '<tr><td>' + h(x.lot_code) + '</td><td>' + (viewQuantities()?h(milligramsToGrams(x.system_quantity_mg)):'เฉพาะเจ้าของ') +
+      '</td><td>' + h(milligramsToGrams(x.counted_quantity_mg)) + '</td><td>' + (viewQuantities()?h(signedGrams(x.variance_mg))+' กรัม':'—') + '</td><td>'+
       (x.evidence?.evidence_id?(state.historyPhotoUrls[x.evidence.evidence_id]?'<button type="button" class="photo-thumbnail" data-photo-view="'+h(x.evidence.evidence_id)+'" aria-label="ขยายรูปเครื่องชั่ง Lot '+h(x.lot_code)+'"><img class="scale-preview" src="'+h(state.historyPhotoUrls[x.evidence.evidence_id])+'" alt="รูปเครื่องชั่ง Lot '+h(x.lot_code)+'" /><span>แตะเพื่อขยาย</span></button>':'<button type="button" class="ghost" data-history-photo="'+h(x.evidence.evidence_id)+'">ดูรูปหลักฐาน</button>'):'<span class="muted">รายการเดิมไม่มีรูปย้อนหลัง</span>')+'</td></tr>').join('') + '</tbody></table></section>';
 }
 async function loadHistoryDetail(id) {
@@ -843,7 +846,7 @@ async function loadHistoryDetail(id) {
   if (request !== state.historyRequest || state.user?.id !== actor || state.store?.id !== store ||
       generation !== state.inventoryLoad || !canManage()) return;
   state.historyError = error ? 'อ่านรายละเอียดการนับไม่สำเร็จ: ' + error.message : '';
-  if (!error && data?.client_stocktake_id === id && Array.isArray(data.items)) state.historyDetail = viewCosts()?data:withoutPrivateCosts(data);
+  if (!error && data?.client_stocktake_id === id && Array.isArray(data.items)) state.historyDetail = visibleCounts(viewCosts()?data:withoutPrivateCosts(data));
   else if (!error) state.historyError = 'คำตอบรายละเอียดการนับไม่ครบ';
   render();
 }
@@ -1004,7 +1007,7 @@ async function loadProfile(user,{current:sessionCurrent=()=>true,role:expectedRo
   });
   if (canManage()) {
     if(supportsEvidence(state.capabilities)) state.draftStore=createEvidenceDraft({indexedDB:window.indexedDB,
-      identity:{api:api.base,store:state.store.id,actor:user.id},uuid:()=>crypto.randomUUID()});
+      identity:{api:api.base,store:state.store.id,actor:user.id},uuid:()=>crypto.randomUUID(),hideStockBalances:!viewQuantities()});
     const lock = navigator.locks ? (key, task) => navigator.locks.request(key, {ifAvailable: true}, current => {
       if (!current) throw new Error('รายการสต็อกกำลังตรวจสอบในอีกหน้าต่าง กรุณารอสักครู่');
       if(!profileCurrent())throw new Error('การปลดล็อกเปลี่ยนแล้ว เก็บรายการสต็อกเดิมไว้');
@@ -1013,7 +1016,8 @@ async function loadProfile(user,{current:sessionCurrent=()=>true,role:expectedRo
     for (const kind of ['stocktake', 'receive']) state[kind] = createInventoryOperation({
       storage: localStorage, identity: {api: api.base, store: state.store.id, actor: user.id},
       kind, transport: client.inventoryTransport(kind), uuid: () => crypto.randomUUID(), lock,
-      allowRedactedCosts:usesRedactedCosts(state.role,state.capabilities)
+      allowRedactedCosts:usesRedactedCosts(state.role,state.capabilities),
+      allowRedactedStock:usesRedactedStockQuantities(state.role,state.capabilities)
     });
     state.saleVoid=createSaleVoid({storage:localStorage,
       identity:{api:client.base,store:state.store.id,actor:user.id},transport:client.saleVoidTransport,
@@ -1022,7 +1026,7 @@ async function loadProfile(user,{current:sessionCurrent=()=>true,role:expectedRo
         if(!held)throw new Error('อีกหน้าต่างกำลังตรวจสอบคำขอยกเลิก');
         if(!profileCurrent())throw new Error('การปลดล็อกเปลี่ยนแล้ว ต้องเก็บคำขอเดิมไว้');return task();
       }):null});
-    if(usesRedactedCosts(state.role,state.capabilities)){
+    if(usesRedactedCosts(state.role,state.capabilities)||usesRedactedStockQuantities(state.role,state.capabilities)){
       for(const controller of [state.receive,state.stocktake,state.saleVoid]){
         await controller.sanitize();
         if(!profileCurrent())return;
@@ -1071,14 +1075,14 @@ async function refreshLots() {
   if (inventoryResult?.error) state.inventoryError = 'อ่านสต็อกสำหรับตรวจนับ/ต้นทุนไม่สำเร็จ: ' + inventoryResult.error.message;
   else if (inventoryResult) {
     try {
-      const received=viewCosts()?inventoryResult.data:withoutPrivateCosts(inventoryResult.data);
+      const received=visibleInventory(viewCosts()?inventoryResult.data:withoutPrivateCosts(inventoryResult.data));
       validateInventory(received);
       state.inventory = received;
       state.products = received.products;
     } catch (error) { state.inventoryError = error.message; }
   }
   state.stocktakeError = historyResult?.error ? 'อ่านประวัติการนับไม่สำเร็จ: ' + historyResult.error.message : '';
-  state.stocktakes = Array.isArray(historyResult?.data?.stocktakes) ? (viewCosts()?historyResult.data.stocktakes:withoutPrivateCosts(historyResult.data.stocktakes)) : [];
+  state.stocktakes = Array.isArray(historyResult?.data?.stocktakes) ? visibleCounts(viewCosts()?historyResult.data.stocktakes:withoutPrivateCosts(historyResult.data.stocktakes)) : [];
   if (error) return setMessage('โหลดสต็อกไม่สำเร็จ: ' + error.message, true);
   state.lots = (data || []).filter((row) => row.ramagan_products?.active).map((row) => {
     const balance = row.ramagan_lot_balances;
@@ -1087,7 +1091,7 @@ async function refreshLots() {
       id: row.id, product_id:row.product_id, lot_code: row.lot_code, expires_on: row.expires_on,
       sku: row.ramagan_products.sku, name: row.ramagan_products.name,
       price: Number(row.ramagan_products.price_satang_per_gram),
-      quantity_mg: Number(quantity || 0)
+      ...(viewQuantities()?{quantity_mg:Number(quantity||0)}:{has_stock:lotHasStock(Array.isArray(balance)?balance[0]:balance)})
     };
   });
   if (!state.pendingBlocked && !state.inventoryBlocked && !state.voidBlocked) state.message = '';
@@ -1098,8 +1102,8 @@ async function refreshLots() {
 function validateInventory(data) {
   const quantity = x => Number.isSafeInteger(x) && x >= 0;
   const cost = x => x === null || quantity(x);
-  if (!data || !Array.isArray(data.products) || !Array.isArray(data.lots) || !data.summary || !quantity(data.summary.quantity_mg) ||
-      data.lots.some(x => typeof x.id !== 'string' || !quantity(x.quantity_mg) ||
+  if (!data || !Array.isArray(data.products) || !Array.isArray(data.lots) || !data.summary || (viewQuantities() && !quantity(data.summary.quantity_mg)) ||
+      data.lots.some(x => typeof x.id !== 'string' || (viewQuantities()?!quantity(x.quantity_mg):typeof x.has_stock!=='boolean') ||
         (supportsStocktakes(state.capabilities) && !quantity(x.stock_revision)) ||
         (viewCosts() && (!cost(x.cost_satang_per_gram) || !cost(x.inventory_value_satang)))) ||
       (viewCosts() && (data.products.some(x => !cost(x.default_cost_satang_per_gram)) ||

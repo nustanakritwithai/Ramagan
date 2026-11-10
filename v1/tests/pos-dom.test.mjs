@@ -143,6 +143,17 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
       data = f.committed;
       if (!data) { status = 404; data = {detail: 'not found'}; }
     } else assert.fail(`Unexpected request ${options.method} ${path}`);
+    if(f.stockRedacted && data){
+      data=structuredClone(data);
+      if(['/v1/catalog','/v1/inventory'].includes(path)){
+        for(const row of data.lots){row.has_stock=row.quantity_mg>0;delete row.quantity_mg;}
+        if(data.summary)delete data.summary.quantity_mg;
+      }
+      if(path.startsWith('/v1/stocktakes')){
+        const scrub=x=>{if(x&&typeof x==='object'){delete x.system_quantity_mg;delete x.variance_mg;for(const y of Object.values(x))scrub(y);}};
+        scrub(data);
+      }
+    }
     return new Response(JSON.stringify(data), {status, headers: {'Content-Type': 'application/json'}});
   };
   const bindings = {window: w, document: w.document, navigator: w.navigator,
@@ -844,4 +855,53 @@ test('management drafts cannot leak to a new actor after logout while old count 
     assert.equal(f.countPosts.length + f.receipts.length + f.productPosts.length, 0);
     assert.equal(f.uploads.length, 1);
   } finally { app.close(); }
+});
+
+
+test('Manager hidden balances retain selling, receiving and blind stocktaking with confirmed API responses',async()=>{
+  const f=inventoryFixture({role:'manager',stockRedacted:true,
+    capabilities:{...inventoryCaps,stock_privacy_contract_version:1,can_view_stock_quantities:false}});
+  const app=await boot(f);
+  try{
+    assert.match(app.q('[data-add]').textContent,/มีสินค้า/);
+    assert.doesNotMatch(app.q('[data-add]').textContent,/คงเหลือ|10 กรัม/);
+    app.click('[data-add]');app.input('#quantity-input','11');
+    assert.equal(app.q('#quantity-confirm').disabled,false,'Server enforces the private balance');
+    app.click('#quantity-cancel');
+    fillCart(app);app.click('#checkout');await until(()=>app.q('.success')&&!app.q('[data-add]')?.disabled);
+    assert.equal(f.posts.length,1);assert.equal(f.posts[0].items[0].quantity_mg,1000);
+    app.menu('#open-inventory');assert.match(app.q('.inventory-stock-list').textContent,/มีสินค้า/);
+    assert.doesNotMatch(app.q('.inventory-stock-list').textContent,/10 กรัม|1 กรัม/);
+    app.click('#open-stocktake');assert.equal(app.q('.count-system').textContent,'เฉพาะเจ้าของ');
+    await fillCount(app,'9.125');assert.equal(app.q('[data-variance]').textContent,'—');
+    app.submit('#stocktake-form');await until(()=>/เซิร์ฟเวอร์ยืนยันการนับ/.test(app.text()));
+    assert.equal(f.countPosts.length,1);assert.equal(f.countPosts[0].items[0].counted_quantity_mg,9125);
+    assert.equal(app.q('.count-system').textContent,'เฉพาะเจ้าของ');
+  }finally{app.close();}
+});
+
+test('Staff hidden balances keep product selection and disable an empty lot without showing fake zero',async()=>{
+  const f=fixture({role:'staff',stockRedacted:true}),app=await boot(f);
+  try{
+    assert.match(app.q('[data-add]').textContent,/มีสินค้า/);assert.equal(app.q('[data-add]').disabled,false);
+    f.catalogQuantity=0;app.click('#refresh');await until(()=>app.q('[data-add]').disabled);
+    assert.match(app.q('[data-add]').textContent,/สินค้าหมด/);assert.doesNotMatch(app.q('[data-add]').textContent,/0 กรัม/);
+  }finally{app.close();}
+});
+
+
+test('Same actor changing from Owner to Manager clears stock balances and old draft snapshots before rendering',async()=>{
+  const f=inventoryFixture(),app=await boot(f);
+  try{
+    assert.match(app.q('[data-add]').textContent,/คงเหลือ 10 กรัม/);
+    app.menu('#open-stocktake');app.input('[data-count="'+lot+'"]','9.125');
+    await until(()=>!app.q('#reload-count').disabled);
+    app.menu('#logout');await until(()=>app.q('#login-form'));
+    f.role='manager';f.stockRedacted=true;f.capabilities={...inventoryCaps,stock_privacy_contract_version:1,can_view_stock_quantities:false};
+    app.input('[name=email]','fixture@example.test');app.input('[name=password]','fixture-only');app.submit('#login-form');
+    await until(()=>app.q('[data-add]'));assert.doesNotMatch(app.q('[data-add]').textContent,/10 กรัม/);
+    app.menu('#open-stocktake');assert.equal(app.q('.count-system').textContent,'เฉพาะเจ้าของ');
+    assert.equal(app.q('[data-count="'+lot+'"]').value,'9.125','Preserve physical counts already entered');
+    assert.equal(app.q('[data-variance]').textContent,'—');
+  }finally{app.close();}
 });

@@ -105,7 +105,8 @@ def capabilities(role: str | None = None) -> dict:
     # Contract support is independent of permission to view financial details.
     # Managers still receive/count stock using the same integer/idempotent DTOs.
     permissions = ({"can_view_costs": role == "owner", "can_access_dashboard": role == "owner",
-                    "can_manage_settings": role == "owner", "cost_privacy_contract_version": 1}
+                    "can_manage_settings": role == "owner", "cost_privacy_contract_version": 1,
+                    "can_view_stock_quantities": role == "owner", "stock_privacy_contract_version": 1}
                    if role is not None else {})
     return {"inventory_costs": True, "cost_contract_version": COST_CONTRACT_VERSION, **permissions,
             "stocktakes": True, "stocktake_contract_version": STOCKTAKE_CONTRACT_VERSION,
@@ -133,9 +134,28 @@ def cost_response(value, actor):
         return value
     if isinstance(value, dict):
         return {key: cost_response(item, actor) for key, item in value.items()
-                if key not in PRIVATE_COST_FIELDS}
+                if key not in PRIVATE_COST_FIELDS and key not in {"system_quantity_mg", "variance_mg"}}
     if isinstance(value, (list, tuple)):
         return [cost_response(item, actor) for item in value]
+    return value
+
+
+def stock_balance_response(value, actor):
+    """Catalog/inventory balances only; sale/receive amounts remain operational.
+
+    Never alter snapshots used for accounting, revision checks or stored results.
+    A boolean is sufficient for non-Owner product availability.
+    """
+    if actor["role"] == "owner":
+        return value
+    if isinstance(value, dict):
+        projected = {key: stock_balance_response(item, actor) for key, item in value.items()
+                     if key != "quantity_mg"}
+        if "quantity_mg" in value and "id" in value:
+            projected["has_stock"] = value["quantity_mg"] > 0
+        return cost_response(projected, actor)
+    if isinstance(value, list):
+        return [stock_balance_response(item, actor) for item in value]
     return value
 
 
@@ -273,7 +293,7 @@ def register_stock_routes(app, path, connect, current, require_manager, error, n
             try:
                 actor = recheck_actor(db, request.headers.get("authorization"), actor)
                 require_manager(actor)
-                return cost_response(inventory_snapshot(db, actor["store_id"], manage_transaction=False), actor)
+                return stock_balance_response(inventory_snapshot(db, actor["store_id"], manage_transaction=False), actor)
             finally:
                 db.rollback()
 

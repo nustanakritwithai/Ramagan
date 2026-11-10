@@ -65,7 +65,7 @@ class CostPrivacyTests(unittest.TestCase):
             for key, item in value.items():
                 lowered = key.lower()
                 forbidden = ("cost" in lowered or "profit" in lowered or
-                             "inventory_value" in lowered or lowered == "inventory_delta_satang")
+                             "inventory_value" in lowered or lowered == "inventory_delta_satang" or lowered in {"system_quantity_mg", "variance_mg"})
                 self.assertFalse(forbidden, "Sensitive key exposed at " + path + "." + key)
                 self.assert_private(item, path + "." + key)
         elif isinstance(value, list):
@@ -112,6 +112,36 @@ class CostPrivacyTests(unittest.TestCase):
         return {"client_sale_id": uid(), "items": [{"lot_id": lot, "quantity_mg": 1000}],
                 "payment_method": "transfer", "discount_satang": 100}
 
+    def test_stock_balance_privacy_survives_role_change_without_changing_business_data(self):
+        _, lot, _ = self.seed_lot()
+        full = self.good(self.client.get("/v1/catalog", headers=self.headers["owner"]))
+        self.assertEqual(full["lots"][0]["quantity_mg"], 10000)
+        with connect(self.path) as db:
+            db.execute("UPDATE users SET role='manager' WHERE id=?", (self.users["owner"],))
+        before = self.state()
+        for route in ("/v1/catalog", "/v1/inventory"):
+            redacted = self.good(self.client.get(route, headers=self.headers["owner"]), private=True)
+            self.assertNotIn("quantity_mg", json.dumps(redacted))
+            self.assertIs(redacted["lots"][0]["has_stock"], True)
+            self.assertIn(self.client.get(route).status_code, (401, 403))
+        self.assertEqual(before, self.state())
+
+    def test_staff_can_sell_with_hidden_balances_and_empty_lot_is_unavailable(self):
+        _, lot, _ = self.seed_lot()
+        payload = self.sale_payload(lot)
+        payload["items"][0]["quantity_mg"] = 10000
+        sold = self.good(self.client.post("/v1/sales", headers=self.headers["staff"], json=payload))
+        self.assertIn("sale_id", sold)
+        for actor in ("staff", "manager"):
+            catalog = self.good(self.client.get("/v1/catalog", headers=self.headers[actor]), private=True)
+            self.assertNotIn("quantity_mg", catalog["lots"][0])
+            self.assertIs(catalog["lots"][0]["has_stock"], False)
+        before = self.state()
+        denied = self.client.post("/v1/sales", headers=self.headers["staff"], json=self.sale_payload(lot))
+        self.assertEqual(denied.status_code, 409, denied.text)
+        self.assertNotIn("quantity_mg", denied.text)
+        self.assertEqual(before, self.state())
+
     def test_capabilities_are_actor_bound_without_disabling_manager_operations(self):
         for actor in ("owner", "manager", "staff"):
             with self.subTest(actor=actor):
@@ -121,6 +151,8 @@ class CostPrivacyTests(unittest.TestCase):
                 self.assertIs(caps["can_access_dashboard"], actor == "owner")
                 self.assertIs(caps["can_manage_settings"], actor == "owner")
                 self.assertEqual(caps["cost_privacy_contract_version"], 1)
+                self.assertIs(caps["can_view_stock_quantities"], actor == "owner")
+                self.assertEqual(caps["stock_privacy_contract_version"], 1)
                 self.assertTrue(caps["inventory_costs"])
                 self.assertEqual(caps["cost_contract_version"], 1)
                 self.assertTrue(caps["stocktakes"])
@@ -142,12 +174,14 @@ class CostPrivacyTests(unittest.TestCase):
         before = self.state()
         manager = self.good(self.client.get("/v1/inventory", headers=self.headers["manager"]), private=True)
         self.assertEqual(manager["lots"][0]["id"], lot)
-        self.assertEqual(manager["lots"][0]["quantity_mg"], 10000)
-        self.assertEqual(manager["summary"]["quantity_mg"], 10000)
+        self.assertNotIn("quantity_mg", manager["lots"][0])
+        self.assertIs(manager["lots"][0]["has_stock"], True)
+        self.assertNotIn("quantity_mg", manager["summary"])
         for actor in ("manager", "staff"):
             catalog = self.good(self.client.get("/v1/catalog", headers=self.headers[actor]), private=True)
             self.assertEqual(catalog["products"][0]["id"], product)
-            self.assertEqual(catalog["lots"][0]["quantity_mg"], 10000)
+            self.assertNotIn("quantity_mg", catalog["lots"][0])
+            self.assertIs(catalog["lots"][0]["has_stock"], True)
         self.assertEqual(self.client.get("/v1/inventory", headers=self.headers["staff"]).status_code, 403)
         self.assertEqual(before, self.state(), "Read projections changed immutable or business data")
 
@@ -246,7 +280,8 @@ class CostPrivacyTests(unittest.TestCase):
         payload = self.count_payload(lot)
         first = self.good(self.client.post("/v1/stocktakes", headers=self.headers["manager"], json=payload), private=True)
         self.assertFalse(first["duplicate"])
-        self.assertEqual(first["items"][0]["variance_mg"], -1500)
+        self.assertNotIn("variance_mg", first["items"][0])
+        self.assertNotIn("system_quantity_mg", first["items"][0])
         self.assertEqual(first["actor_user_id"], self.users["manager"])
         self.assertEqual(first["items"][0]["evidence"]["evidence_id"], payload["items"][0]["evidence_id"])
         before = self.state()
@@ -255,7 +290,7 @@ class CostPrivacyTests(unittest.TestCase):
         lookup = self.good(self.client.get("/v1/stocktakes/by-client/" + payload["client_stocktake_id"], headers=self.headers["manager"]), private=True)
         self.assertEqual(lookup, replay)
         history = self.good(self.client.get("/v1/stocktakes", headers=self.headers["manager"]), private=True)
-        self.assertEqual(history["stocktakes"][0]["variance_mg"], -1500)
+        self.assertNotIn("variance_mg", history["stocktakes"][0])
         reconciled = self.good(self.client.post("/v1/stocktakes/reconcile", headers=self.headers["manager"], json=payload), private=True)
         self.assertEqual(reconciled, {"status": "completed", "result": replay})
         owner = self.good(self.client.get("/v1/stocktakes/by-client/" + payload["client_stocktake_id"], headers=self.headers["owner"]))

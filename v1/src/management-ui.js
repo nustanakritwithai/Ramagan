@@ -20,7 +20,7 @@ export function countEvidenceSummary({lotId, hasPhoto = false, uploaded = false,
 }
 
 // Quantity is a plain number of grams; cost/value are formatted plain text, never HTML.
-export function inventoryStockRow({name, lotCode, quantity, cost = '', value = '', expired = false, inactive = false}) {
+export function inventoryStockRow({name, lotCode, quantity, availability = '', cost = '', value = '', expired = false, inactive = false}) {
   const flags = [expired ? 'หมดอายุ' : '', inactive ? 'ไม่ใช้งาน' : ''].filter(Boolean);
   return '<article class="inventory-stock-row"><span class="inventory-stock-icon" aria-hidden="true">' +
     managementEscape(Array.from(String(name || '?'))[0].toLocaleUpperCase('th-TH')) + '</span>' +
@@ -28,7 +28,7 @@ export function inventoryStockRow({name, lotCode, quantity, cost = '', value = '
     managementEscape(lotCode) + '</small>' +
     (flags.length ? '<small class="inventory-stock-flags">' + flags.map(flag => '<span>' + managementEscape(flag) + '</span>').join('') + '</small>' : '') +
     (cost !== '' ? '<small class="inventory-stock-cost">ต้นทุน/กรัม ' + managementEscape(cost) + '</small>' : '') +
-    '</div><div class="inventory-stock-quantity"><strong>' + managementEscape(quantity) +
-    '</strong><small>กรัม</small>' + (value !== '' ? '<small>มูลค่า ' + managementEscape(value) + '</small>' : '') +
+    '</div><div class="inventory-stock-quantity"><strong>' + managementEscape(availability || quantity) +
+    '</strong>' + (availability ? '' : '<small>กรัม</small>') + (value !== '' ? '<small>มูลค่า ' + managementEscape(value) + '</small>' : '') +
     '</div></article>';
 }
