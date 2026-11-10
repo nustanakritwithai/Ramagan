@@ -1,6 +1,11 @@
 name: Ramagan mobile unsigned release
 on:
   workflow_dispatch:
+  push:
+    branches: [codex/ramagan-mobile-release-20261110]
+    paths:
+      - '.github/workflows/v1-android-mobile-release.yml'
+      - 'v1/**'
 permissions:
   contents: read
 jobs:
