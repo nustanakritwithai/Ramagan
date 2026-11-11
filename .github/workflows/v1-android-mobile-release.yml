@@ -47,7 +47,7 @@ jobs:
           p=Path('android/app/build.gradle')
           s=p.read_text()
           assert s.count('versionCode 1') == 1 and s.count('versionName "1.0"') == 1
-          s=s.replace('versionCode 1','versionCode 10504').replace('versionName "1.0"','versionName "1.5.4"')
+          s=s.replace('versionCode 1','versionCode 10505').replace('versionName "1.0"','versionName "1.5.5"')
           p.write_text(s)
           PY
       - name: Build unsigned non-debuggable release
@@ -61,18 +61,27 @@ jobs:
           TOOLS="$SDK_ROOT/build-tools/36.0.0"
           APK=v1/android/app/build/outputs/apk/release/app-release-unsigned.apk
           "$TOOLS/aapt2" dump badging "$APK" > ANDROID_MANIFEST.txt
-          grep -q "package: name='online.ramagan.pos.mobile' versionCode='10504' versionName='1.5.4'" ANDROID_MANIFEST.txt
+          grep -q "package: name='online.ramagan.pos.mobile' versionCode='10505' versionName='1.5.5'" ANDROID_MANIFEST.txt
           if grep -q 'application-debuggable\|application-testOnly' ANDROID_MANIFEST.txt; then exit 1; fi
+          "$TOOLS/aapt2" dump xmltree --file AndroidManifest.xml "$APK" > ANDROID_MANIFEST_TREE.txt
+          grep -q 'android.media.action.IMAGE_CAPTURE' ANDROID_MANIFEST_TREE.txt
+          python - <<'PY'
+          import json, zipfile
+          with zipfile.ZipFile('v1/android/app/build/outputs/apk/release/app-release-unsigned.apk') as apk:
+              plugins=json.loads(apk.read('assets/capacitor.plugins.json'))
+              assert any(p['classpath']=='com.capacitorjs.plugins.camera.CameraPlugin' for p in plugins)
+          PY
           "$TOOLS/zipalign" -c -P 16 -v 4 "$APK" > ZIPALIGN.txt
           sha256sum "$APK" > UNSIGNED_SHA256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: ramagan-mobile-1.5.4-unsigned
+          name: ramagan-mobile-1.5.5-unsigned
           path: |
             v1/android/app/build/outputs/apk/release/app-release-unsigned.apk
             v1/dist/
             BUILD_COMMIT.txt
             ANDROID_MANIFEST.txt
+            ANDROID_MANIFEST_TREE.txt
             ZIPALIGN.txt
             UNSIGNED_SHA256.txt
           if-no-files-found: error

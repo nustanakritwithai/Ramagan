@@ -1,7 +1,7 @@
 # Ramagan POS 2
 
 Android application ID: `online.ramagan.pos.mobile`.
-Version name: `1.5.4`; version code: `10504`.
+Version name: `1.5.5`; version code: `10505`.
 This is a separate installation from the legacy `online.ramagan.pos` package,
 as requested by the owner. The old app and its pending local operations remain
 untouched. Sign in/enroll the new app against the same production API:
@@ -10,6 +10,15 @@ untouched. Sign in/enroll the new app against the same production API:
 The manual `v1-android-mobile-release.yml` workflow produces an unsigned release
 APK and verifies its package, version, non-debuggable manifest and ZIP alignment.
 It reruns the POS test suite before building. CI does not receive signing keys.
+
+Stocktake evidence has separate Take photo and Choose from album buttons.
+Android Take photo uses `@capacitor/camera` 8.2.6 `takePhoto`, without an album
+fallback. Cancellation/permission errors retain the previous evidence. A new
+photo follows the existing durable draft and upload path and requires renewed
+count confirmation. Web fallback uses `accept="image/*" capture="environment"`;
+album selection has no capture attribute. Native registration and the camera
+intent query are checked in the built APK. Physical phone testing is separate
+from the simulated camera and DOM regression tests.
 
 Sign locally with the persistent Ramagan Mobile release key stored outside the
 repository. Align before signing, use Android SDK `apksigner`, then verify the

@@ -4,6 +4,7 @@ import {readFile} from 'node:fs/promises';
 import {webcrypto} from 'node:crypto';
 import {JSDOM, VirtualConsole} from 'jsdom';
 import {fakeIndexedDB} from './fake-idb.mjs';
+import {cameraPhotoBlob} from '../src/stocktake-camera.js';
 
 // Offline integration of real main.js, REST bridge, math and checkout modules.
 // Only browser services and HTTP responses are synthetic; this is not layout,
@@ -55,6 +56,7 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
     url: 'https://pos.example.test/Ramagan/v1/', virtualConsole
   });
   const w = dom.window;
+  w.testCamera = {hasNativeCamera:()=>Boolean(f.camera), takeStockPhoto:()=>f.camera()};
   Object.defineProperty(w,'indexedDB',{value:f.idb||fakeIndexedDB()});
   if (snapshot) {
     for (const [k, v] of snapshot.local) w.localStorage.setItem(k, v);
@@ -162,7 +164,9 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
     crypto: webcrypto, fetch: fetchMock};
   const original = new Map(Object.keys(bindings).map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
   for (const [k, value] of Object.entries(bindings)) Object.defineProperty(globalThis, k, {value, configurable: true, writable: true});
-  await import('data:text/javascript;base64,' + Buffer.from(source + `\n// instance ${++instance}`).toString('base64'));
+  const instanceSource=source.replace(/import \{hasNativeCamera,takeStockPhoto\} from '[^']+';/,
+    'const {hasNativeCamera,takeStockPhoto}=window.testCamera;');
+  await import('data:text/javascript;base64,' + Buffer.from(instanceSource + `\n// instance ${++instance}`).toString('base64'));
   const app = {
     q: s => w.document.querySelector(s), text: () => w.document.body.textContent,
     click(s) { const n = this.q(s); assert(n, `Missing ${s}`); n.click(); },
@@ -638,6 +642,60 @@ test('replacing a valid photo immediately blocks confirm before IndexedDB work a
     assert.equal(app.q('#count-confirm').checked,false);assert.equal(app.q('#confirm-count').disabled,true);
   }finally{app.close();}
 });
+test('stocktake camera and album buttons activate different file inputs on the web',async()=>{
+  const f=inventoryFixture(),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');
+    const camera=app.q('[data-photo-source="camera"]'),album=app.q('[data-photo-source="album"]');
+    assert.equal(camera.accept,'image/*');assert.equal(camera.getAttribute('capture'),'environment');
+    assert.equal(album.hasAttribute('capture'),false);
+    let cameraClicks=0,albumClicks=0;
+    camera.addEventListener('click',()=>cameraClicks++);album.addEventListener('click',()=>albumClicks++);
+    app.click('[data-photo-camera]');assert.equal(cameraClicks,1);assert.equal(albumClicks,0);
+    app.click('[data-photo-album]');assert.equal(cameraClicks,1);assert.equal(albumClicks,1);
+    assert.equal(app.q('[data-photo-camera]').textContent,'ถ่ายรูป');
+    assert.equal(app.q('[data-photo-album]').textContent,'เลือกจากอัลบั้ม');
+    app.photo('[data-photo-source="album"]');await until(()=>/อัปโหลดรูปแล้ว/.test(app.text()));
+    assert.equal(f.uploads.length,1);assert.equal(f.countPosts.length,0);
+  }finally{app.close();}
+});
+
+test('native camera captures into the correct lot, locks duplicate taps and requires confirmation for replacement',async()=>{
+  let finish,calls=0;
+  const capture=new Promise(resolve=>{finish=resolve;});
+  const f=inventoryFixture({camera:()=>{calls++;return cameraPhotoBlob({takePhoto:()=>capture},async()=>new Response(new Blob(['new photo'],{type:'image/jpeg'})));}}),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');await fillCount(app,'10');
+    const original=f.uploads[0].id;
+    let fileClicks=0;
+    app.q('[data-photo-source="camera"]').addEventListener('click',()=>fileClicks++);
+    app.click('[data-photo-camera]');assert.equal(calls,1);assert.equal(fileClicks,0);
+    assert.equal(app.q('[data-photo-camera]').disabled,true);assert.equal(app.q('[data-photo-album]').disabled,true);
+    assert.equal(app.q('#confirm-count').disabled,true);assert.equal(app.q('#reload-count').disabled,true);
+    app.eventClick('[data-photo-camera]');app.submit('#stocktake-form');
+    assert.equal(calls,1);assert.equal(f.countPosts.length,0);assert.equal(f.uploads.length,1);
+    finish({webPath:'fixture'});await until(()=>f.uploads.length===2&&!app.q('[data-photo-camera]').disabled);
+    assert.notEqual(f.uploads[1].id,original);assert.equal(new URLSearchParams(f.uploads[1].query).get('lot_id'),lot);
+    assert.equal(app.q('[data-count]').value,'10');assert.equal(app.q('#count-confirm').checked,false);
+    app.check('#count-confirm');assert.equal(app.q('#confirm-count').disabled,false);
+    assert.equal(f.countPosts.length,0);
+  }finally{app.close();}
+});
+
+test('cancelling native camera or denying permission preserves uploaded evidence and confirmation',async()=>{
+  for(const code of ['OS-PLUG-CAMR-0006','OS-PLUG-CAMR-0003']){
+    const f=inventoryFixture({camera:()=>cameraPhotoBlob({takePhoto:async()=>{throw {code};}})}),app=await boot(f);
+    try{
+      app.menu('#open-stocktake');await fillCount(app,'10');
+      app.click('[data-photo-camera]');await until(()=>!app.q('[data-photo-camera]').disabled);
+      assert.equal(f.uploads.length,1);assert.equal(f.countPosts.length,0);
+      assert.equal(app.q('#count-confirm').checked,true);assert.equal(app.q('#confirm-count').disabled,false);
+      assert(app.q('.scale-preview'));assert.equal(app.q('[data-count]').value,'10');
+      if(code==='OS-PLUG-CAMR-0003')assert.match(app.text(),/อนุญาตกล้อง/);
+    }finally{app.close();}
+  }
+});
+
 test('history photos use authenticated private Blob requests and legacy lines are visibly marked',async()=>{
   const f=inventoryFixture({history:[{id:countId,client_stocktake_id:countId,created_at:'2026-10-18T01:00:00Z',shift_label:'Fixture',actor_user_id:user,line_count:2,variance_mg:0,reason:'Count'}],
     historyDetail:{id:countId,client_stocktake_id:countId,created_at:'2026-10-18T01:00:00Z',shift_label:'Fixture',actor_user_id:user,reason:'Count',items:[

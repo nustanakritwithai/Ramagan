@@ -6,6 +6,7 @@ import {createInventoryOperation, supportsCosts, supportsStocktakes, optionalCos
   assertNoPendingMutation, mutationScopeKey} from './inventory.js';
 import {renderPos, paymentPreview} from './pos.js';
 import {createEvidenceDraft, supportsEvidence} from './evidence-draft.js';
+import {hasNativeCamera,takeStockPhoto} from './stocktake-camera.js';
 import {cleanupNavigation, mountNavigation, navigationHeader} from './navigation.js';
 import {createPageState, renderSidePage, loadReceipts, supportsReceipts} from './pages.js';
 import {createDeviceAuth} from './device-auth.js';
@@ -441,7 +442,7 @@ function navigationContext() {
   return {root,state,api,currentApi:()=>api,render,canManage,canDashboard,canSettings,openView,logout,changeServer,
     lockDevice:()=>{if(!state.busy&&!activeIO)void deviceAuth?.lock();},canLockDevice:()=>Boolean(deviceAuth?.snapshot().device),
     voidReceipt:runReceiptVoid,hasPending:hasPendingMutation,
-    adminUrl:canDashboard()?ADMIN_REPORT_URL:null,apiUrl,appVersion:'1.5.4',pinSettingsHtml:()=>canSettings()?pinSettingsHtml(pinFlags()):'',bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
+    adminUrl:canDashboard()?ADMIN_REPORT_URL:null,apiUrl,appVersion:'1.5.5',pinSettingsHtml:()=>canSettings()?pinSettingsHtml(pinFlags()):'',bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
       if(!canManage())return;
       openView('inventory');
       const form=root.querySelector('#'+section);
@@ -652,7 +653,11 @@ function renderStocktake() {
     }
     const photo=state.countDraft?.photos[lot.id]; let photoHtml='';
     if(photo?.blob && URL.createObjectURL) {const url=URL.createObjectURL(photo.blob);state.photoUrls.push(url);photoHtml='<img class="scale-preview" src="'+h(url)+'" alt="รูปเครื่องชั่ง Lot '+h(lot.lot_code)+'" />';}
-    photoHtml+='<label class="photo-control">รูปเครื่องชั่ง (ต้องมี)<input type="file" data-photo="'+h(lot.id)+'" accept="image/jpeg,image/png,image/webp" capture="environment" '+(locked?'disabled':'')+' /></label>'+
+    photoHtml+='<div class="photo-control"><span>รูปเครื่องชั่ง (ต้องมี)</span><div class="photo-source-actions">'+
+      '<button type="button" class="primary" data-photo-camera="'+h(lot.id)+'" aria-label="ถ่ายรูปเครื่องชั่ง Lot '+h(lot.lot_code)+'" '+(locked?'disabled':'')+'>ถ่ายรูป</button>'+
+      '<button type="button" class="ghost" data-photo-album="'+h(lot.id)+'" aria-label="เลือกจากอัลบั้ม Lot '+h(lot.lot_code)+'" '+(locked?'disabled':'')+'>เลือกจากอัลบั้ม</button></div>'+
+      '<input hidden type="file" data-photo="'+h(lot.id)+'" data-photo-source="camera" accept="image/*" capture="environment" '+(locked?'disabled':'')+' />'+
+      '<input hidden type="file" data-photo="'+h(lot.id)+'" data-photo-source="album" accept="image/jpeg,image/png,image/webp" '+(locked?'disabled':'')+' /></div>'+
       '<p class="footnote" data-photo-note="'+h(lot.id)+'"></p><button type="button" class="ghost" data-photo-upload="'+h(lot.id)+'" hidden disabled>อัปโหลดรูปเครื่องชั่ง</button>';
     const evidence='<details class="count-evidence-panel" data-evidence-panel="'+h(lot.id)+'"'+managementPanel('photo:'+lot.id)+'><summary class="count-evidence-summary">'+
       countEvidenceSummary({lotId:lot.id,hasPhoto:Boolean(photo?.blob),uploaded:Boolean(photo?.metadata),counted:value.trim()!==''})+'</summary>'+photoHtml+'</details>';
@@ -760,9 +765,9 @@ function renderStocktake() {
     catch (error) { setMessage(error.message, true); }
   });
   bindInventoryPending(); update();
-  root.querySelectorAll('[data-photo]').forEach(input=>input.addEventListener('change',async()=>{
-    if(locked||!input.files?.[0])return;
-    const lot=input.dataset.photo,file=input.files[0],actor=state.user?.id,shop=state.store?.id,store=state.draftStore,session=authGuard();
+  const selectPhoto=async(lot,file)=>{
+    if(locked||state.photoBusy||!file)return;
+    const actor=state.user?.id,shop=state.store?.id,store=state.draftStore,session=authGuard();
     const current=()=>session()&&actor===state.user?.id&&shop===state.store?.id&&store===state.draftStore;
     // Invalidate the old selection synchronously, before any IndexedDB await.
     activeIO++;state.photoBusy=lot;state.countConfirmed=false;if(state.countDraft)delete state.countDraft.photos[lot];render();
@@ -776,7 +781,31 @@ function renderStocktake() {
       state.countDraft=draft;state.photoBusy=null;await uploadCountPhoto(lot);
     }catch(error){if(current()){state.photoBusy=null;state.message=error.message;state.error=true;}}
     finally{activeIO--;if(current()&&state.view==='stocktake')render();}
-  }));
+  };
+  root.querySelectorAll('[data-photo]').forEach(input=>input.addEventListener('change',()=>selectPhoto(input.dataset.photo,input.files?.[0])));
+  root.querySelectorAll('[data-photo-album]').forEach(button=>button.onclick=()=>{
+    if(locked||state.photoBusy)return;
+    root.querySelector('[data-photo="'+CSS.escape(button.dataset.photoAlbum)+'"][data-photo-source="album"]').click();
+  });
+  root.querySelectorAll('[data-photo-camera]').forEach(button=>button.onclick=async()=>{
+    if(locked||state.photoBusy)return;
+    const lot=button.dataset.photoCamera;
+    if(!hasNativeCamera()){
+      root.querySelector('[data-photo="'+CSS.escape(lot)+'"][data-photo-source="camera"]').click();
+      return;
+    }
+    const session=authGuard(),store=state.draftStore;
+    const current=()=>session()&&store===state.draftStore;
+    // Keep existing evidence until a new photo has actually been returned.
+    activeIO++;state.photoBusy=lot;state.message='';render();
+    try{
+      const file=await takeStockPhoto();
+      if(!current())return;
+      state.photoBusy=null;
+      if(file)await selectPhoto(lot,file);
+    }catch(error){if(current()){state.message=error.message;state.error=true;}}
+    finally{activeIO--;if(current()){state.photoBusy=null;if(state.view==='stocktake')render();}}
+  });
   root.querySelectorAll('[data-photo-upload]').forEach(button=>button.onclick=()=>uploadCountPhoto(button.dataset.photoUpload));
   root.querySelectorAll('[data-history]').forEach(button => button.addEventListener('click', () => loadHistoryDetail(button.dataset.history)));
   root.querySelectorAll('[data-history-photo]').forEach(button=>button.onclick=()=>loadHistoryPhoto(button.dataset.historyPhoto));
