@@ -64,28 +64,28 @@ class AutomaticRolePinTests(unittest.TestCase):
             self.assertNotIn(secret, response.text)
         with connect(self.path) as db:
             counts = list(db.execute("SELECT kind,fail_count FROM device_auth_limits ORDER BY kind"))
-            self.assertEqual([tuple(row) for row in counts], [("device", 1), ("store_role", 1)])
+            self.assertEqual([tuple(row) for row in counts], [])
             self.assertEqual(db.execute("SELECT count(*) FROM device_auth_events WHERE event='PIN_FAILURE'").fetchone()[0], 1)
             self.assertEqual(db.execute("SELECT count(*) FROM device_pin_sessions").fetchone()[0], 0)
 
-    def test_auto_and_explicit_modes_share_budget_in_both_directions(self):
+    def test_auto_and_explicit_pin_mistakes_allow_immediate_retry_in_both_directions(self):
         device = self.enroll()
         for _ in range(4):
             self.assertEqual(self.unlock(device, "owner", "9999").status_code, 401)
         self.assertEqual(self.auto(device, "9999").status_code, 401)
-        self.assertEqual(self.auto(device, fixture.PINS["staff"]).status_code, 429)
-        self.assertEqual(self.unlock(device, "manager").status_code, 429)
+        self.assertEqual(self.auto(device, fixture.PINS["staff"]).status_code, 200)
+        self.assertEqual(self.unlock(device, "manager").status_code, 200)
         status = self.post("status", {"device_credential": device["device_credential"]}).json()
-        self.assertTrue(all(status["role_lockouts"][role]["locked_until"] > self.now for role in fixture.PINS))
+        self.assertTrue(all(status["role_lockouts"][role] == {"locked_until": 0, "recovery_required": False} for role in fixture.PINS))
         self.assertEqual(self.post("pins", {"owner_password": fixture.PASSWORD, "pins": fixture.NEW_PINS}, self.owner).status_code, 200)
         for _ in range(4):
             self.assertEqual(self.auto(device, "9999").status_code, 401)
         self.assertEqual(self.unlock(device, "staff", "9999").status_code, 401)
-        self.assertEqual(self.unlock(device, "owner", fixture.NEW_PINS["owner"]).status_code, 429)
+        self.assertEqual(self.unlock(device, "owner", fixture.NEW_PINS["owner"]).status_code, 200)
 
-    def test_auto_aggregate_survives_device_changes_process_restart_and_cannot_be_cleared_by_success(self):
+    def test_auto_pin_retries_remain_available_across_devices_and_process_restart(self):
         first, second = self.enroll(), self.enroll("Other synthetic device")
-        for index in range(4):
+        for index in range(12):
             self.assertEqual(self.auto(first if index % 2 else second, "9999").status_code, 401)
         third = self.enroll("Enrolled after failed guesses")
         self.assertEqual(self.auto(third, fixture.PINS["staff"]).status_code, 200)
@@ -93,17 +93,24 @@ class AutomaticRolePinTests(unittest.TestCase):
             request = {"device_credential": first["device_credential"], "pin": "9999"}
             self.assertEqual(client.post("/v1/auth/device/unlock", json=request).status_code, 401)
             request["pin"] = fixture.PINS["owner"]
-            self.assertEqual(client.post("/v1/auth/device/unlock", json=request).status_code, 429)
+            self.assertEqual(client.post("/v1/auth/device/unlock", json=request).status_code, 200)
 
-    def test_previous_explicit_role_lockout_cannot_be_bypassed_by_auto_match(self):
+    def test_historical_pin_locks_and_recovery_flags_are_ignored_without_deleting_records(self):
         device = self.enroll()
         with connect(self.path) as db:
-            db.execute("INSERT INTO device_auth_limits VALUES(?,?,?,?,?,?,?)",
-                       (self.store, "store_role", self.store, "owner", 5, self.now + 900, 0))
-        self.assertEqual(self.auto(device, fixture.PINS["owner"]).status_code, 429)
+            for kind, subject, role in (("store_role", self.store, "owner"), ("store_role", self.store, ""),
+                                        ("device_role", device["device_id"], "owner"), ("device", device["device_id"], "")):
+                db.execute("INSERT INTO device_auth_limits VALUES(?,?,?,?,?,?,?)",
+                           (self.store, kind, subject, role, 10, self.now + 900, 1))
+            before = [tuple(row) for row in db.execute("SELECT * FROM device_auth_limits ORDER BY kind,role")]
+        status = self.post("status", {"device_credential": device["device_credential"]}).json()
+        self.assertTrue(all(value == {"locked_until": 0, "recovery_required": False} for value in status["role_lockouts"].values()))
+        self.assertEqual(self.auto(device, "9999").status_code, 401)
+        self.assertEqual(self.auto(device, fixture.PINS["owner"]).status_code, 200)
+        self.assertEqual(self.unlock(device, "owner").status_code, 200)
         self.assertEqual(self.auto(device, fixture.PINS["staff"]).status_code, 200)
         with connect(self.path) as db:
-            self.assertEqual(db.execute("SELECT fail_count FROM device_auth_limits WHERE kind='store_role' AND role='owner'").fetchone()[0], 5)
+            self.assertEqual([tuple(row) for row in db.execute("SELECT * FROM device_auth_limits ORDER BY kind,role")], before)
 
     def test_partial_or_inactive_or_ambiguous_mapping_holds_without_issuing_session(self):
         device = self.enroll()
@@ -139,7 +146,7 @@ class AutomaticRolePinTests(unittest.TestCase):
         with connect(self.path) as db:
             self.assertEqual(db.execute("SELECT count(*) FROM device_pin_sessions").fetchone()[0], 0)
 
-    def test_concurrent_auto_guesses_persist_once_and_stop_at_five(self):
+    def test_concurrent_auto_mistakes_are_rejected_without_locking(self):
         device = self.enroll()
         def attempt(_):
             with TestClient(self.api, raise_server_exceptions=False) as client:
@@ -147,10 +154,12 @@ class AutomaticRolePinTests(unittest.TestCase):
                     "device_credential": device["device_credential"], "pin": "9999"}).status_code
         with ThreadPoolExecutor(max_workers=8) as pool:
             statuses = list(pool.map(attempt, range(8)))
-        self.assertEqual(sorted(statuses), [401] * 5 + [429] * 3)
+        self.assertEqual(sorted(statuses), [401] * 8)
         with connect(self.path) as db:
-            self.assertEqual([row[0] for row in db.execute("SELECT fail_count FROM device_auth_limits")], [5, 5])
-            self.assertEqual(db.execute("SELECT count(*) FROM device_auth_events WHERE event IN ('PIN_FAILURE','LOCKED')").fetchone()[0], 5)
+            self.assertEqual(db.execute("SELECT count(*) FROM device_auth_limits").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM device_pin_sessions").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM device_auth_events WHERE event='PIN_FAILURE'").fetchone()[0], 8)
+        self.assertEqual(self.auto(device, fixture.PINS["owner"]).status_code, 200)
 
     def test_revoked_expired_or_unknown_device_and_missing_pepper_never_auto_unlock(self):
         device = self.enroll()

@@ -165,29 +165,25 @@ class SharedRolePinTests(unittest.TestCase):
         self.assertEqual(self.post("status", {"device_credential": first["device_credential"]}).status_code, 401)
         self.assertEqual(self.client.get("/v1/me", headers=other).status_code, 200)
 
-    def test_global_role_lock_survives_restart_reenrollment_and_alternate_devices(self):
+    def test_repeated_wrong_pin_never_locks_other_devices_or_requires_recovery(self):
         first = self.enroll()
-        for _ in range(5):
+        for _ in range(12):
             self.assertEqual(self.unlock(first, "owner", "9999").status_code, 401)
-        self.assertEqual(self.unlock(first, "owner").status_code, 429)
+        self.assertEqual(self.unlock(first, "owner").status_code, 200)
         second = self.enroll("Reenrolled device")
-        self.assertEqual(self.unlock(second, "owner").status_code, 429)
+        self.assertEqual(self.unlock(second, "owner").status_code, 200)
         restarted = TestClient(create_app(self.path, pin_pepper=PEPPER), raise_server_exceptions=False)
         self.addCleanup(restarted.close)
         self.assertEqual(restarted.post("/v1/auth/device/unlock", json={
-            "device_credential": second["device_credential"], "role": "owner", "pin": PINS["owner"]}).status_code, 429)
-        for _ in range(5):
-            self.now += 901
-            self.assertEqual(self.unlock(second, "owner", "9999").status_code, 401)
-        self.now += 901
-        self.assertEqual(self.unlock(second, "owner").status_code, 429)
+            "device_credential": second["device_credential"], "role": "owner", "pin": PINS["owner"]}).status_code, 200)
         status = self.post("status", {"device_credential": second["device_credential"]}).json()
-        self.assertTrue(status["role_lockouts"]["owner"]["recovery_required"])
-        # Password recovery explicitly rotates PINs and clears persistent limits.
-        self.assertEqual(self.post("pins", {"owner_password": PASSWORD, "pins": NEW_PINS}, self.owner).status_code, 200)
-        self.assertEqual(self.unlock(second, "owner", NEW_PINS["owner"]).status_code, 200)
+        self.assertTrue(all(value == {"locked_until": 0, "recovery_required": False}
+                            for value in status["role_lockouts"].values()))
+        with connect(self.path) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM device_auth_limits").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM device_auth_events WHERE event='PIN_FAILURE'").fetchone()[0], 12)
 
-    def test_concurrent_failures_are_atomic_and_never_exceed_guess_budget(self):
+    def test_concurrent_wrong_pins_are_all_rejected_without_issuing_sessions_or_locking(self):
         device = self.enroll()
         def attempt(_):
             with TestClient(self.api, raise_server_exceptions=False) as client:
@@ -195,17 +191,20 @@ class SharedRolePinTests(unittest.TestCase):
                     "device_credential": device["device_credential"], "role": "staff", "pin": "9999"}).status_code
         with ThreadPoolExecutor(max_workers=8) as pool:
             statuses = list(pool.map(attempt, range(8)))
-        self.assertEqual(sorted(statuses), [401] * 5 + [429] * 3)
+        self.assertEqual(sorted(statuses), [401] * 8)
         with connect(self.path) as db:
-            self.assertEqual([r[0] for r in db.execute("SELECT fail_count FROM device_auth_limits WHERE (kind='store_role' AND role<>'') OR kind IN ('device_role','device')")], [5, 5, 5])
+            self.assertEqual(db.execute("SELECT count(*) FROM device_auth_limits").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM device_pin_sessions").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM device_auth_events WHERE event='PIN_FAILURE'").fetchone()[0], 8)
+        self.assertEqual(self.unlock(device, "staff").status_code, 200)
 
-    def test_success_for_another_role_cannot_reset_owner_guessing_budget(self):
+    def test_pin_mistakes_do_not_block_other_roles(self):
         first, second = self.enroll(), self.enroll("Second")
         for _ in range(4):
             self.assertEqual(self.unlock(first, "owner", "9999").status_code, 401)
         self.assertEqual(self.unlock(second, "staff").status_code, 200)
         self.assertEqual(self.unlock(second, "owner", "9999").status_code, 401)
-        self.assertEqual(self.unlock(second, "owner").status_code, 429)
+        self.assertEqual(self.unlock(second, "owner").status_code, 200)
 
     def test_strict_four_ascii_digits_distinct_pins_and_sanitized_errors(self):
         for value in (1234, True, 12.34, None, "１２３４", "123", "12345", "SECRET_BAD_PIN"):
@@ -303,17 +302,17 @@ class SharedRolePinTests(unittest.TestCase):
             # Immutable authentication events survive session cleanup.
             self.assertGreater(db.execute("SELECT count(*) FROM device_auth_events").fetchone()[0], 0)
 
-    def test_blocked_requests_do_not_grow_audit_or_change_persistent_counters(self):
-        device = self.enroll()
+    def test_blocked_owner_password_requests_do_not_grow_audit_or_change_persistent_counters(self):
+        payload = {"owner_password": "Incorrect synthetic password", "label": "No", "pins": PINS}
         for _ in range(5):
-            self.assertEqual(self.unlock(device, "staff", "9999").status_code, 401)
+            self.assertEqual(self.post("enroll", payload, self.owner).status_code, 401)
         def snapshot():
             with connect(self.path) as db:
                 return {table: sorted(tuple(r) for r in db.execute("SELECT * FROM " + table))
                         for table in ("device_auth_limits", "device_auth_events", "sessions", "device_pin_sessions", "remembered_devices")}
         before = snapshot()
         for _ in range(20):
-            self.assertEqual(self.unlock(device, "staff", "9999").status_code, 429)
+            self.assertEqual(self.post("enroll", payload, self.owner).status_code, 429)
         self.assertTrue(snapshot() == before, "Blocked attempts mutated authentication state")
 
     def test_operator_pepper_file_is_bounded_absolute_and_never_overrides_explicit_value(self):

@@ -41,7 +41,7 @@ from cost_stock import (
     product_rows, register_stock_routes, cost_response, stock_balance_response,
 )
 
-APP_VERSION = "1.5.4-vps-preview"
+APP_VERSION = "1.5.6-vps-preview"
 BKK = ZoneInfo("Asia/Bangkok")
 ROLES = ("owner", "manager", "staff")
 DEFAULT_PATH = str(Path.home() / "Ramagan" / "data" / "ramagan.sqlite3")

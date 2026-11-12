@@ -350,13 +350,10 @@ class DeviceAuth:
                 device = self._device(db, payload.device_credential, now)
                 if not self._roles_valid(db, device["store_id"]):
                     raise HTTPException(401, "Role authentication unavailable")
-                lockouts = {}
-                for role in ROLES:
-                    rows = [self._limit(db, device["store_id"], *scope) for scope in (
-                        ("store_role", device["store_id"], role), ("device_role", device["id"], role),
-                        ("device", device["id"], ""), ("store_role", device["store_id"], ""))]
-                    lockouts[role] = {"locked_until": max((r["locked_until"] for r in rows if r), default=0),
-                                      "recovery_required": any(bool(r["recovery_required"]) for r in rows if r)}
+                # Owner-requested policy: PIN mistakes never impose a wait or
+                # recovery requirement. Retain response fields for older apps;
+                # historical limit rows are preserved but no longer enforced.
+                lockouts = {role: {"locked_until": 0, "recovery_required": False} for role in ROLES}
                 reply = {**self._device_reply(device), "locked": True, "role_lockouts": lockouts}
             return reply
 
@@ -370,16 +367,6 @@ class DeviceAuth:
                 # same damaged configuration as automatic role detection.
                 if not self._configured(db, store):
                     raise HTTPException(409, "Role authentication requires owner recovery")
-                # The aggregate budgets apply to BOTH request modes. Alternating
-                # auto-match and explicit-role requests, devices or roles cannot
-                # obtain an extra guessing budget. Success never clears them.
-                # An empty role is the existing schema's store-wide scope;
-                # named role rows retain their original lockout semantics.
-                aggregate = [("device", device["id"], ""), ("store_role", store, "")]
-                if self._blocked(db, store, aggregate, now):
-                    # A stolen device credential must not grow the immutable
-                    # audit forever by hammering an already-blocked role.
-                    raise HTTPException(429, "PIN temporarily locked or owner recovery required")
                 if role is None:
                     # Always verify all three independently salted hashes. Do
                     # not stop on the first match or reveal candidate roles.
@@ -392,18 +379,11 @@ class DeviceAuth:
                     role = record["role"] if record else None
                 else:
                     record = self._role(db, store, role)
-                role_scopes = [("store_role", store, role), ("device_role", device["id"], role)] if role else []
-                if self._blocked(db, store, role_scopes, now):
-                    raise HTTPException(429, "PIN temporarily locked or owner recovery required")
-                scopes = role_scopes + aggregate
                 if (not record or not record["is_active"] or record["actual_role"] != role
                         or record["actual_store"] != store
                         or (payload.role is not None and not self._pin_matches(payload.pin, store, role, record["pin_hash"]))):
-                    transition = self._fail(db, store, scopes, now)
-                    self._event(db, store, "LOCKED" if transition else "PIN_FAILURE", device=device["id"], role=role)
+                    self._event(db, store, "PIN_FAILURE", device=device["id"], role=role)
                     self._deny(db, 401, "Invalid role or PIN")
-                # Success for one role must not reset another role's guessing budget.
-                self._clear(db, store, role_scopes)
                 db.execute("UPDATE sessions SET revoked=1 WHERE token_hash IN (SELECT token_hash FROM device_pin_sessions WHERE device_id=?)",
                            (device["id"],))
                 token = secrets.token_urlsafe(48)
