@@ -13,7 +13,7 @@ import {createDeviceAuth} from './device-auth.js';
 import {createSaleVoid,voidPendingKey} from './sale-void.js';
 import {supportsSharedPin,pendingDeviceActor} from './device-session.js';
 import {renderPinLock,renderPinSetup,pinSettingsHtml,bindPinSettings} from './pin-ui.js';
-import {countEvidenceSummary,inventoryTaskSummary,inventoryStockRow} from './management-ui.js';
+import {countEvidenceSummary,inventoryTaskSummary,inventoryStockRow,matchesStocktakeSearch} from './management-ui.js';
 import {canViewCosts,canAccessDashboard,canManageSettings,usesRedactedCosts,withoutPrivateCosts,canViewStockQuantities,usesRedactedStockQuantities,withoutStockBalances,withoutStockComparisons,stockLabel,lotHasStock} from './permissions.js';
 import './style.css';
 import './navigation.css';
@@ -42,7 +42,7 @@ const state = {
   pendingId: null, checkout: null, pendingBlocked: false, capabilities: null, discount: '0', lastSale: null, products: [], view: 'sales',
   inventory: null, inventoryError: '', stocktakes: [], stocktakeError: '',
   stocktake: null, receive: null, inventoryPending: {}, inventoryBlocked: false,
-  counts: new Map(), shiftLabel: 'กะเช้า', countReason: '', countConfirmed: false, inventoryLoad: 0,
+  counts: new Map(), countQuery: '', shiftLabel: 'กะเช้า', countReason: '', countConfirmed: false, inventoryLoad: 0,
   historyDetail: null, historyError: '', historyRequest: 0,
   saleVoid:null, voidPending:null, voidBlocked:false,
   posScreen: 'catalog', posMenuOpen: false, quantityLot: null, quantityText: '1', quantityEditing: false,
@@ -329,7 +329,7 @@ function resetInventoryState() {
   state.stocktakeError = ''; state.stocktake = null; state.receive = null;
   state.inventoryPending = {}; state.inventoryBlocked = false;
   state.saleVoid=null;state.voidPending=null;state.voidBlocked=false;
-  state.counts.clear(); state.countConfirmed = false; state.countReason = '';
+  state.counts.clear(); state.countQuery = ''; state.countConfirmed = false; state.countReason = '';
   state.shiftLabel = 'กะเช้า';
   state.historyDetail = null; state.historyError = ''; state.historyRequest++;
   state.pages = createPageState();
@@ -442,7 +442,7 @@ function navigationContext() {
   return {root,state,api,currentApi:()=>api,render,canManage,canDashboard,canSettings,openView,logout,changeServer,
     lockDevice:()=>{if(!state.busy&&!activeIO)void deviceAuth?.lock();},canLockDevice:()=>Boolean(deviceAuth?.snapshot().device),
     voidReceipt:runReceiptVoid,hasPending:hasPendingMutation,
-    adminUrl:canDashboard()?ADMIN_REPORT_URL:null,apiUrl,appVersion:'1.5.5',pinSettingsHtml:()=>canSettings()?pinSettingsHtml(pinFlags()):'',bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
+    adminUrl:canDashboard()?ADMIN_REPORT_URL:null,apiUrl,appVersion:'1.5.6',pinSettingsHtml:()=>canSettings()?pinSettingsHtml(pinFlags()):'',bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
       if(!canManage())return;
       openView('inventory');
       const form=root.querySelector('#'+section);
@@ -644,7 +644,14 @@ function renderStocktake() {
   const supported = supportsEvidence(state.capabilities);
   const locked = state.busy || hasPendingMutation() || !navigator.onLine || !supported || !state.inventory || Boolean(state.photoBusy) || state.draftStale;
   const today = toBangkokDay(new Date());
-  const rows = (state.inventory?.lots || []).map(lot => {
+  const productsById=new Map((state.inventory?.products||[]).map(product=>[product.id,product]));
+  const countLots=(state.inventory?.lots||[]).map(lot=>{
+    const product=productsById.get(lot.product_id);
+    return {...lot,name:lot.name||product?.name||'ไม่ระบุชื่อสินค้า',sku:lot.sku||product?.sku||'',
+      price_satang_per_gram:lot.price_satang_per_gram??product?.price_satang_per_gram};
+  });
+  const searchLots=new Map(countLots.map(lot=>[lot.id,lot]));
+  const rows = countLots.map(lot => {
     const value = state.counts.get(lot.id) || '';
     let variance = '—';
     if (viewQuantities() && value.trim() !== '') {
@@ -661,7 +668,9 @@ function renderStocktake() {
       '<p class="footnote" data-photo-note="'+h(lot.id)+'"></p><button type="button" class="ghost" data-photo-upload="'+h(lot.id)+'" hidden disabled>อัปโหลดรูปเครื่องชั่ง</button>';
     const evidence='<details class="count-evidence-panel" data-evidence-panel="'+h(lot.id)+'"'+managementPanel('photo:'+lot.id)+'><summary class="count-evidence-summary">'+
       countEvidenceSummary({lotId:lot.id,hasPhoto:Boolean(photo?.blob),uploaded:Boolean(photo?.metadata),counted:value.trim()!==''})+'</summary>'+photoHtml+'</details>';
-    return '<tr><td class="count-product" data-label="สินค้า / Lot"><strong>' + h(lot.name) + '</strong><small>' + h(lot.lot_code) +
+    const salePrice=Number.isSafeInteger(lot.price_satang_per_gram)&&lot.price_satang_per_gram>=0?
+      'ขาย '+formatBaht(lot.price_satang_per_gram)+' / กรัม':'ยังไม่ระบุราคาขาย';
+    return '<tr data-count-lot="'+h(lot.id)+'"><td class="count-product" data-label="สินค้า / Lot"><strong>' + h(lot.name) + '</strong><small class="count-sale-price">'+h(salePrice)+'</small><small>Lot ' + h(lot.lot_code) +
       (lot.expires_on && lot.expires_on < today ? ' · หมดอายุ' : '') +
       (!lot.active || !lot.product_active ? ' · ไม่ใช้งาน' : '') + '</small></td><td class="count-system" data-label="ยอดระบบ">' +
       (viewQuantities()?h(milligramsToGrams(lot.quantity_mg))+' กรัม':'เฉพาะเจ้าของ') + '</td><td class="count-input" data-label="ยอดนับจริง (กรัม)"><input data-count="' + h(lot.id) +
@@ -682,6 +691,9 @@ function renderStocktake() {
     state.inventoryError ? '<div class="alert danger">' + h(state.inventoryError) + '</div>' : '',
     state.message ? '<div class="alert ' + (state.error ? 'danger' : '') + '">' + h(state.message) + '</div>' : '',
     inventoryPendingHtml(),
+    '<div class="count-search"><label for="stocktake-query">ค้นหาสินค้า<input id="stocktake-query" type="search" autocomplete="off" maxlength="200" placeholder="ชื่อสินค้า / SKU / Lot" value="',h(state.countQuery),'" /></label><button type="button" id="clear-stocktake-query" class="ghost">ล้างคำค้น</button></div>',
+    '<p id="stocktake-search-result" class="footnote" role="status" aria-live="polite"></p><p id="stocktake-search-empty" class="alert" hidden>ไม่พบสินค้าที่ตรงกับคำค้น ลองชื่อสินค้า, SKU หรือรหัส Lot หรือล้างคำค้น</p>',
+    '<p id="stocktake-hidden-counts" class="footnote" hidden></p>',
     '<form id="stocktake-form"><details class="count-session-details"',managementPanel('count-session'),'><summary><span id="count-session-summary">',h(state.shiftLabel),' · ตั้งค่ารอบ / เหตุผล</span></summary><div class="compact-form-grid"><label>กะ / รอบ <input id="shift-label" maxlength="80" required value="', h(state.shiftLabel), '" ', locked ? 'disabled' : '', ' /></label>',
     '<label>เหตุผล (ถ้ามี) <input id="count-reason" maxlength="300" value="', h(state.countReason), '" ', locked ? 'disabled' : '', ' /></label>',
     '<p class="muted span-all">ผู้ตรวจนับ: ',h(state.user.display_name||({owner:'เจ้าของร้าน',manager:'ผู้จัดการ',staff:'พนักงาน'}[state.role])||state.user.email||state.user.id),'</p>',
@@ -710,8 +722,27 @@ function renderStocktake() {
     state.countDraft=null; state.draftError=''; state.draftStale=false;
     state.counts.clear(); state.countConfirmed = false; await refreshLots();
   });
+  const applySearch=()=>{
+    let shown=0,hiddenCounts=0;
+    root.querySelectorAll('[data-count-lot]').forEach(row=>{
+      const lot=row.dataset.countLot;
+      row.hidden=!matchesStocktakeSearch(searchLots.get(lot),state.countQuery);
+      if(!row.hidden)shown++;
+      else if((state.counts.get(lot)||'').trim()!=='')hiddenCounts++;
+    });
+    root.querySelector('#stocktake-search-result').textContent='แสดง '+shown+' / '+countLots.length+' Lot';
+    root.querySelector('#stocktake-search-empty').hidden=!countLots.length||shown>0;
+    const retained=root.querySelector('#stocktake-hidden-counts');retained.hidden=!hiddenCounts;
+    retained.textContent='มียอดนับที่กรอกไว้ในรายการที่ซ่อน '+hiddenCounts+' Lot การยืนยันจะรวมรายการเหล่านี้ด้วย';
+    root.querySelector('#clear-stocktake-query').disabled=!state.countQuery;
+  };
+  root.querySelector('#stocktake-query').addEventListener('input',event=>{state.countQuery=event.target.value;applySearch();});
+  root.querySelector('#clear-stocktake-query').onclick=()=>{
+    state.countQuery='';const input=root.querySelector('#stocktake-query');input.value='';applySearch();input.focus();
+  };
   const update = () => {
     if(!root.querySelector('#stocktake-form'))return;
+    applySearch();
     let valid = false, reason='';
     try { stocktakePayload(); valid = true; } catch(error) { reason=error.message; }
     if(state.busy) reason='กำลังดำเนินรายการ กรุณารอ';

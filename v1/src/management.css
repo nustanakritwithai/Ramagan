@@ -76,6 +76,12 @@
 .management-shell .photo-source-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .management-shell .photo-source-actions button{min-height:44px;min-width:96px;font-size:.76rem;padding:8px 10px;flex:1 1 auto}
 .management-shell .photo-control input[hidden]{display:none}
+.management-shell .count-search{display:flex;align-items:flex-end;gap:8px;margin:10px 0}
+.management-shell .count-search label{flex:1;min-width:0;margin:0}
+.management-shell .count-search button{flex-shrink:0}
+.management-shell .count-sale-price{display:block;color:#245e3c;font-weight:600}
+.management-shell .count-table tr[hidden]{display:none!important}
+.management-shell #stocktake-search-empty[hidden],.management-shell #stocktake-hidden-counts[hidden]{display:none}
 .management-shell .scale-preview{border-color:#abc9b4;background:#f5f8f5;max-width:160px;max-height:140px;margin:6px 0}
 .management-shell .photo-thumbnail{color:#245e3c;text-decoration:underline;text-underline-offset:3px}
 .management-shell .count-confirm{line-height:1.5;font-size:.78rem;gap:9px;margin-top:12px;margin-bottom:8px;align-items:center;min-height:44px}

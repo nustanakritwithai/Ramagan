@@ -1,7 +1,7 @@
 # Ramagan POS 2
 
 Android application ID: `online.ramagan.pos.mobile`.
-Version name: `1.5.5`; version code: `10505`.
+Version name: `1.5.6`; version code: `10506`.
 This is a separate installation from the legacy `online.ramagan.pos` package,
 as requested by the owner. The old app and its pending local operations remain
 untouched. Sign in/enroll the new app against the same production API:
@@ -10,6 +10,14 @@ untouched. Sign in/enroll the new app against the same production API:
 The manual `v1-android-mobile-release.yml` workflow produces an unsigned release
 APK and verifies its package, version, non-debuggable manifest and ZIP alignment.
 It reruns the POS test suite before building. CI does not receive signing keys.
+
+Stocktaking displays the current sale price per gram alongside each name and
+Lot code. Search matches product names, SKU and Lot without removing entered
+counts or evidence. Submitting includes all entered counts, including filtered
+rows; a visible notice identifies hidden counted rows. Non-Owner users still
+cannot see system stock balances or costs. API 1.5.6 also allows immediate PIN
+retries after mistakes, including old timed/recovery locks; existing clients
+receive that server policy without an APK update.
 
 Stocktake evidence has separate Take photo and Choose from album buttons.
 Android Take photo uses `@capacitor/camera` 8.2.6 `takePhoto`, without an album

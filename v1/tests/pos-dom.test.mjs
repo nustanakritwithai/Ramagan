@@ -948,17 +948,80 @@ test('Staff hidden balances keep product selection and disable an empty lot with
 });
 
 
+test('stocktake search shows sale prices for duplicate names while Manager stock balances stay private',async()=>{
+  for(const role of ['owner','manager']){
+    const f=inventoryFixture({role,stockRedacted:role==='manager',capabilities:{...inventoryCaps,stock_privacy_contract_version:1,can_view_stock_quantities:role==='owner'}});
+    f.inventory.lots[0]={...f.inventory.lots[0],name:'Mac1',sku:'TOP-MAC',price_satang_per_gram:15000};
+    f.inventory.lots[1]={...f.inventory.lots[1],name:'Mac1',sku:'UNDER-MAC',price_satang_per_gram:2500};
+    const app=await boot(f);
+    try{
+      app.menu('#open-stocktake');const input=app.q('#stocktake-query');input.focus();
+      app.input('#stocktake-query','  mAc1  ');
+      assert.equal(app.q('#stocktake-query'),input);assert.equal(input.ownerDocument.activeElement,input);
+      for(const [id,price] of [[lot,'150.00'],[lot2,'25.00']]){
+        const row=app.q('[data-count-lot="'+id+'"]');assert.equal(row.hidden,false);
+        assert.equal(row.querySelector('strong').textContent,'Mac1');
+        assert(row.querySelector('.count-sale-price').textContent.includes(price));
+        if(role==='manager')assert.equal(row.querySelector('.count-system').textContent,'เฉพาะเจ้าของ');
+      }
+      app.input('#stocktake-query','under-mac');assert.equal(app.q('[data-count-lot="'+lot+'"]').hidden,true);
+      assert.equal(app.q('[data-count-lot="'+lot2+'"]').hidden,false);
+      app.input('#stocktake-query','not-a-product');assert.equal(app.q('#stocktake-search-empty').hidden,false);
+      app.click('#clear-stocktake-query');assert.equal(input.value,'');assert.equal(app.q('#stocktake-search-empty').hidden,true);
+      assert.equal(app.q('[data-count-lot="'+lot+'"]').hidden,false);
+      assert.equal(f.countPosts.length+f.uploads.length+f.productPosts.length+f.receipts.length,0);
+    }finally{app.close();}
+  }
+});
+
+test('stocktake filtering preserves focused search, counts, photo bindings and every counted lot on submit',async()=>{
+  const f=inventoryFixture(),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');await fillCount(app,'9.125');
+    const firstInput=app.q('[data-count="'+lot+'"]'),firstUpload=f.uploads[0].id;
+    app.input('#stocktake-query','expired');
+    assert.equal(app.q('[data-count="'+lot+'"]'),firstInput);assert.equal(firstInput.value,'9.125');
+    assert.equal(app.q('#stocktake-hidden-counts').hidden,false);assert.equal(f.uploads.length,1);
+    app.input('[data-count="'+lot2+'"]','0');await until(()=>!app.q('#reload-count').disabled);
+    app.photo('[data-photo="'+lot2+'"][data-photo-source="album"]');
+    await until(()=>f.uploads.length===2&&!app.q('[data-photo-camera]').disabled);
+    assert.equal(app.q('#stocktake-query').value,'expired');assert.equal(app.q('[data-count-lot="'+lot+'"]').hidden,true);
+    app.check('#count-confirm');app.submit('#stocktake-form');
+    await until(()=>/ยืนยันการนับและบันทึกประวัติแล้ว/.test(app.text()));
+    assert.equal(f.countPosts.length,1);assert.equal(f.countPosts[0].items.length,2);
+    assert.equal(f.countPosts[0].items.find(x=>x.lot_id===lot).evidence_id,firstUpload);
+    assert.equal(f.countPosts[0].items.find(x=>x.lot_id===lot).counted_quantity_mg,9125);
+    assert.equal(f.countPosts[0].items.find(x=>x.lot_id===lot2).counted_quantity_mg,0);
+  }finally{app.close();}
+});
+
+test('stocktake name falls back to matching product and missing price is never invented as zero',async()=>{
+  const f=inventoryFixture();f.inventory.lots[0].name='';delete f.inventory.lots[0].price_satang_per_gram;
+  f.inventory.products[0].name='ชื่อทดสอบ <สินค้า>';f.inventory.products[0].price_satang_per_gram=0;
+  f.inventory.lots[1].product_id='missing-product';delete f.inventory.lots[1].price_satang_per_gram;
+  const app=await boot(f);
+  try{
+    app.menu('#open-stocktake');app.input('#stocktake-query','ชื่อทดสอบ');
+    const row=app.q('[data-count-lot="'+lot+'"]');assert.equal(row.hidden,false);
+    assert.equal(row.querySelector('strong').textContent,'ชื่อทดสอบ <สินค้า>');
+    assert.match(row.querySelector('.count-sale-price').textContent,/0\.00/);
+    assert.equal(app.q('[data-count-lot="'+lot2+'"] .count-sale-price').textContent,'ยังไม่ระบุราคาขาย');
+    assert.equal(f.countPosts.length,0);
+  }finally{app.close();}
+});
+
 test('Same actor changing from Owner to Manager clears stock balances and old draft snapshots before rendering',async()=>{
   const f=inventoryFixture(),app=await boot(f);
   try{
     assert.match(app.q('[data-add]').textContent,/คงเหลือ 10 กรัม/);
-    app.menu('#open-stocktake');app.input('[data-count="'+lot+'"]','9.125');
+    app.menu('#open-stocktake');app.input('#stocktake-query','MOCK');app.input('[data-count="'+lot+'"]','9.125');
     await until(()=>!app.q('#reload-count').disabled);
     app.menu('#logout');await until(()=>app.q('#login-form'));
     f.role='manager';f.stockRedacted=true;f.capabilities={...inventoryCaps,stock_privacy_contract_version:1,can_view_stock_quantities:false};
     app.input('[name=email]','fixture@example.test');app.input('[name=password]','fixture-only');app.submit('#login-form');
     await until(()=>app.q('[data-add]'));assert.doesNotMatch(app.q('[data-add]').textContent,/10 กรัม/);
     app.menu('#open-stocktake');assert.equal(app.q('.count-system').textContent,'เฉพาะเจ้าของ');
+    assert.equal(app.q('#stocktake-query').value,'');
     assert.equal(app.q('[data-count="'+lot+'"]').value,'9.125','Preserve physical counts already entered');
     assert.equal(app.q('[data-variance]').textContent,'—');
   }finally{app.close();}

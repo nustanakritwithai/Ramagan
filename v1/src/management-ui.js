@@ -6,6 +6,13 @@ export function managementEscape(value) {
   }[character]));
 }
 
+export function matchesStocktakeSearch(lot, query) {
+  const normalize = value => String(value ?? '').normalize('NFKC').toLocaleLowerCase('th-TH');
+  const terms = normalize(query).trim().split(/\s+/u).filter(Boolean);
+  const text = [lot.name, lot.sku, lot.lot_code].map(normalize).join(' ');
+  return terms.every(term => text.includes(term));
+}
+
 export function inventoryTaskSummary({title, subtitle = '', badge = '+'}) {
   return '<span class="management-task-icon" aria-hidden="true">' + managementEscape(badge) + '</span>' +
     '<span class="management-task-copy"><strong>' + managementEscape(title) + '</strong>' +
