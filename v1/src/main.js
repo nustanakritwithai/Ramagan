@@ -49,13 +49,14 @@ const state = {
   saleVoid:null, voidPending:null, voidBlocked:false,
   posScreen: 'catalog', posMenuOpen: false, quantityLot: null, quantityText: '1', quantityEditing: false,
   cashReceived: '', splitCash: '', splitTransfer: '', catalogQuery: '',
-  draftStore: null, countDraft: null, draftError: '', draftStale: false, photoBusy: null, photoErrors: {}, photoUrls: [], historyPhotoUrls: {}, draftSaving: 0,
+  draftStore: null, countDraft: null, draftError: '', draftStale: false, photoBusy: null, photoStage: '', photoErrors: {}, photoUrls: [], historyPhotoUrls: {}, draftSaving: 0,
   closeEvidenceViewer: null, pages: createPageState(),
   managementForms: {}, managementPanels: new Set()
 };
 
 const photoReturns = createPhotoReturn({storage: localStorage, uuid: () => crypto.randomUUID(),
-  openDraft: identity => createEvidenceDraft({indexedDB: window.indexedDB, identity, uuid: () => crypto.randomUUID()}),
+  openDraft: identity => photoIdentityMatches(identity) && state.draftStore ? state.draftStore :
+    createEvidenceDraft({indexedDB: window.indexedDB, identity, uuid: () => crypto.randomUUID()}),
   prepare: preparePhoto, readNative: readNativePhoto});
 const photoRecoveryReady = listenForRestoredPhoto(async result => {
   try {
@@ -347,7 +348,7 @@ function resetInventoryState() {
   state.posMenuOpen=false;
   for (const url of [...state.photoUrls, ...Object.values(state.historyPhotoUrls)]) URL.revokeObjectURL(url);
   state.photoUrls=[]; state.historyPhotoUrls={}; state.draftStore=null; state.countDraft=null;
-  state.draftError=''; state.draftStale=false; state.photoBusy=null; state.photoErrors={}; state.draftSaving=0;
+  state.draftError=''; state.draftStale=false; state.photoBusy=null; state.photoStage=''; state.photoErrors={}; state.draftSaving=0;
   state.inventoryLoad++;
   state.inventory = null; state.inventoryError = ''; state.stocktakes = [];
   state.stocktakeError = ''; state.stocktake = null; state.receive = null;
@@ -466,7 +467,7 @@ function navigationContext() {
   return {root,state,api,currentApi:()=>api,render,canManage,canDashboard,canSettings,openView,logout,changeServer,
     lockDevice:()=>{if(!state.busy&&!activeIO)void deviceAuth?.lock();},canLockDevice:()=>Boolean(deviceAuth?.snapshot().device),
     voidReceipt:runReceiptVoid,hasPending:hasPendingMutation,
-    adminUrl:canDashboard()?ADMIN_REPORT_URL:null,apiUrl,appVersion:'1.5.7',pinSettingsHtml:()=>canSettings()?pinSettingsHtml(pinFlags()):'',bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
+    adminUrl:canDashboard()?ADMIN_REPORT_URL:null,apiUrl,appVersion:'1.5.8',pinSettingsHtml:()=>canSettings()?pinSettingsHtml(pinFlags()):'',bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
       if(!canManage())return;
       openView('inventory');
       const form=root.querySelector('#'+section);
@@ -792,7 +793,7 @@ function renderStocktake() {
       const photoError=state.photoErrors[lot]||state.countDraft?.photoErrors?.[lot]||
         (!state.photoBusy&&state.countDraft?.photoRequests?.[lot]?'การเลือกรูปถูกขัดจังหวะ กรุณาถ่ายหรือเลือกใหม่ รูปเดิมยังอยู่':'');
       note.classList.toggle('error',Boolean(photoError));
-      note.textContent=photoError||(state.photoBusy===lot?'กำลังรับและบันทึกรูป กรุณารอสักครู่':uploaded?'อัปโหลดรูปแล้ว':photo?.blob?
+      note.textContent=photoError||(state.photoBusy===lot?(state.photoStage||'กำลังรับรูป กรุณารอสักครู่'):uploaded?'อัปโหลดรูปแล้ว':photo?.blob?
         'รูปยังไม่ยืนยันการอัปโหลด ส่งซ้ำได้ด้วยรูปและเลขอ้างอิงเดิม':
         'ถ่ายรูป / เลือกรูปเครื่องชั่งก่อนหรือหลังกรอกยอดนับได้');
       button.hidden=!photo?.blob||uploaded;
@@ -827,7 +828,7 @@ function renderStocktake() {
   // again, PIN expires, or Android destroys/recreates the Activity.
   const beginSelection=(lot,native)=>{
     const identity={api:api.base,store:state.store.id,actor:state.user.id},session=authGuard(),store=state.draftStore;
-    activeIO++;state.photoBusy=lot;delete state.photoErrors[lot];
+    activeIO++;state.photoBusy=lot;state.photoStage='กำลังเปิดกล้อง / อัลบั้ม';delete state.photoErrors[lot];
     const context=(async()=>{
       await countDraftWrites;
       if(native)await photoRecoveryReady;
@@ -840,7 +841,7 @@ function renderStocktake() {
   };
   const finishSelection=async(selection,file,message='')=>{
     const {lot,current}=selection;
-    if(file&&current())state.countConfirmed=false;
+    if(file&&current()){state.countConfirmed=false;state.photoStage='กำลังเตรียมรูปและบันทึกในเครื่อง';}
     if(current())render();
     try{
       const context=await selection.context;
@@ -855,7 +856,7 @@ function renderStocktake() {
         if(current())state.countDraft=acknowledged;
       }
     }catch(error){if(current()){state.photoErrors[lot]=error.message;state.message=error.message;state.error=true;}}
-    finally{activeIO--;if(current()){state.photoBusy=null;if(state.view==='stocktake')render();}}
+    finally{activeIO--;if(current()){state.photoBusy=null;state.photoStage='';if(state.view==='stocktake')render();}}
   };
   const openNative=async(lot,source)=>{
     const selection=beginSelection(lot,true);render();
@@ -893,6 +894,7 @@ function renderStocktake() {
 }
 async function ensureCountDraft() {
   if(!state.draftStore || !state.inventory) throw new Error('ยังเปิดพื้นที่บันทึกแบบร่างไม่ได้');
+  if(state.countDraft)return state.countDraft;
   const store=state.draftStore,actor=state.user?.id,shop=state.store?.id;
   const draft=await store.ensure(state.inventory.lots,{shift_label:state.shiftLabel,reason:state.countReason});
   if(store!==state.draftStore||actor!==state.user?.id||shop!==state.store?.id)throw new Error('บัญชีหรือร้านเปลี่ยนแล้ว กรุณาเปิดแบบร่างของบัญชีปัจจุบัน');
@@ -917,15 +919,16 @@ async function uploadCountPhoto(lot,{keepBusy=false}={}) {
   if(state.photoBusy||state.draftSaving||state.busy||hasPendingMutation()||!navigator.onLine||state.draftStale)return;
   const draftStore=state.draftStore,draftId=state.countDraft?.id,photo=state.countDraft?.photos[lot],client=api,current=authGuard();
   if(!photo)return;
-  activeIO++;state.photoBusy=lot;delete state.photoErrors[lot];render();
+  activeIO++;state.photoBusy=lot;state.photoStage='รูปอยู่ในเครื่องแล้ว · กำลังอัปโหลด';delete state.photoErrors[lot];render();
   try {
     const {data,error}=await client.uploadEvidence(photo,{lot_id:lot,client_stocktake_id:draftId});
     if(error)throw error;
     if(!current()||draftStore!==state.draftStore)return;
-    const draft=await draftStore.uploaded(lot,photo.client_upload_id,data);
+    state.photoStage='ส่งรูปถึงเซิร์ฟเวอร์แล้ว · กำลังบันทึกผล';countFormUpdate?.();
+    const draft=await draftStore.uploaded(lot,photo.client_upload_id,data,{acknowledgeReturn:keepBusy});
     if(current()&&draftStore===state.draftStore){state.countDraft=draft;state.message='อัปโหลดรูปเครื่องชั่งแล้ว';state.error=false;}
   }catch(error){if(current()&&draftStore===state.draftStore){state.message='ยังไม่ยืนยันการอัปโหลดรูป: '+error.message+' · เก็บรูปและเลขอ้างอิงเดิมไว้แล้ว';state.photoErrors[lot]=state.message;state.error=true;}}
-  finally{activeIO--;if(current()&&draftStore===state.draftStore&&!keepBusy){state.photoBusy=null;if(state.view==='stocktake')render();}}
+  finally{activeIO--;if(current()&&draftStore===state.draftStore&&!keepBusy){state.photoBusy=null;state.photoStage='';if(state.view==='stocktake')render();}}
 }
 async function restoreCountDraft() {
   if(!state.draftStore||!state.inventory)return;

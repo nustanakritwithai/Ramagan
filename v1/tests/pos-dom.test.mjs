@@ -1079,3 +1079,17 @@ test('a photo returned after session clearing survives for the original actor an
     assert.equal(await f.uploads[0].body.text(),'after expiry');
   }finally{app.close();}
 });
+
+
+test('slow upload shows its stage beside a durable preview while confirmation stays locked',async()=>{
+  let finish;
+  const f=inventoryFixture({holdUpload:new Promise(resolve=>{finish=resolve;})}),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');app.photo('[data-photo-source="album"]');
+    await until(()=>f.uploads.length===1);assert(app.q('.scale-preview'));
+    assert.match(app.q('[data-photo-note]').textContent,/รูปอยู่ในเครื่องแล้ว.*กำลังอัปโหลด/);
+    assert.equal(app.q('#confirm-count').disabled,true);assert.equal(app.q('[data-photo-camera]').disabled,true);
+    finish();await until(()=>!app.q('[data-photo-camera]').disabled);
+    assert.match(app.q('[data-photo-note]').textContent,/อัปโหลดรูปแล้ว/);assert.equal(f.uploads.length,1);
+  }finally{finish();app.close();}
+});

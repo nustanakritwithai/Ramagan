@@ -75,3 +75,23 @@ test('Manager reopening an old Owner draft removes balances transactionally and 
   await manager.clear(clean.id);
   assert.equal((await manager.ensure(snapshot,meta)).snapshot[0].quantity_mg,undefined);
 });
+
+
+test('existing draft does not rewrite all photo Blobs on ensure or an already-redacted read',async()=>{
+  const config=options(),drafts=createEvidenceDraft(config),first=await drafts.ensure(snapshot,meta);
+  await drafts.select('lot',new Blob(['same bytes'],{type:'image/jpeg'}));const writes=config.indexedDB.stats.puts;
+  assert.equal((await drafts.ensure(snapshot,meta)).id,first.id);assert.equal(config.indexedDB.stats.puts,writes);
+  const hidden=createEvidenceDraft({...config,hideStockBalances:true});await hidden.read();assert.equal(config.indexedDB.stats.puts,writes+1);
+  await hidden.read();await hidden.ensure(snapshot,meta);assert.equal(config.indexedDB.stats.puts,writes+1);
+  assert.equal((await drafts.read()).snapshot[0].quantity_mg,undefined);
+});
+
+test('upload metadata and return acknowledgement commit together without changing image bytes',async()=>{
+  const config=options(),drafts=createEvidenceDraft(config),d=await drafts.ensure(snapshot,meta);
+  await drafts.beginPhoto('lot','upload',d.id);await drafts.finishPhoto('lot',d.id,'upload',new Blob(['exact'],{type:'image/jpeg'}));
+  const writes=config.indexedDB.stats.puts;
+  const result=await drafts.uploaded('lot','upload',{client_upload_id:'upload',client_stocktake_id:d.id,lot_id:'lot',evidence_id:'evidence'},{acknowledgeReturn:true});
+  assert.equal(config.indexedDB.stats.puts,writes+1);assert.equal(result.photoReturn,undefined);
+  assert.equal(await result.photos.lot.blob.text(),'exact');assert.equal(result.photos.lot.client_upload_id,'upload');
+  await assert.rejects(drafts.beginPhoto('lot','late','other-draft'),/เปลี่ยนแล้ว/);
+});

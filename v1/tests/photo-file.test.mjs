@@ -23,10 +23,17 @@ test('bad, empty or excessively large sources never reach the image decoder',asy
   }
 });
 test('decoder/encoder failure is visible and cannot yield a fake upload',async()=>{
-  const blob=new Blob(['test'],{type:'image/jpeg'});
+  const blob=new Blob(['test'],{type:'image/png'});
   await assert.rejects(preparePhoto(blob,{decode:async()=>{throw new Error('unreadable image');}}),/unreadable/);
   let closed=false;
   await assert.rejects(preparePhoto(blob,{decode:async()=>({image:{},width:100,height:100,close(){closed=true;}}),
     canvas:()=>({getContext:()=>({fillRect(){},drawImage(){}}),toBlob(callback){callback(null);}})}),/ย่อรูปไม่สำเร็จ/);
   assert.equal(closed,true);
+});
+
+
+test('a decoded bounded JPEG is reused byte-for-byte without a second canvas encode',async()=>{
+  const blob=new Blob(['native bytes'],{type:'image/jpeg'});let closed=false;
+  const result=await preparePhoto(blob,{decode:async()=>({image:{},width:1600,height:1200,close(){closed=true;}}),canvas:()=>assert.fail('No redundant encoder')});
+  assert.equal(result,blob);assert.equal(closed,true);
 });
