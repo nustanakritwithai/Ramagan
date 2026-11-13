@@ -5,6 +5,7 @@ import {webcrypto} from 'node:crypto';
 import {JSDOM, VirtualConsole} from 'jsdom';
 import {fakeIndexedDB} from './fake-idb.mjs';
 import {cameraPhotoBlob} from '../src/stocktake-camera.js';
+import {validatePhoto} from '../src/evidence-draft.js';
 
 // Offline integration of real main.js, REST bridge, math and checkout modules.
 // Only browser services and HTTP responses are synthetic; this is not layout,
@@ -56,7 +57,12 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
     url: 'https://pos.example.test/Ramagan/v1/', virtualConsole
   });
   const w = dom.window;
-  w.testCamera = {hasNativeCamera:()=>Boolean(f.camera), takeStockPhoto:()=>f.camera()};
+  w.testCamera = {hasNativeCamera:()=>Boolean(f.camera), takeStockPhoto:source=>f.camera(source),
+    readNativePhoto:async data=>data.blob,
+    listenForRestoredPhoto:async callback=>{f.restorePhoto=callback;return null;}};
+  // DOM has no image decoder/canvas. The real bounded conversion has separate
+  // browser and unit coverage; the rest of the acquisition/storage path is real.
+  w.testPreparePhoto=f.preparePhoto|| (async blob=>{validatePhoto(blob);return blob;});
   Object.defineProperty(w,'indexedDB',{value:f.idb||fakeIndexedDB()});
   if (snapshot) {
     for (const [k, v] of snapshot.local) w.localStorage.setItem(k, v);
@@ -164,9 +170,10 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
     crypto: webcrypto, fetch: fetchMock};
   const original = new Map(Object.keys(bindings).map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
   for (const [k, value] of Object.entries(bindings)) Object.defineProperty(globalThis, k, {value, configurable: true, writable: true});
-  const instanceSource=source.replace(/import \{hasNativeCamera,takeStockPhoto\} from '[^']+';/,
-    'const {hasNativeCamera,takeStockPhoto}=window.testCamera;');
-  await import('data:text/javascript;base64,' + Buffer.from(instanceSource + `\n// instance ${++instance}`).toString('base64'));
+  const instanceSource=source.replace(/import \{hasNativeCamera,takeStockPhoto,readNativePhoto,listenForRestoredPhoto\} from '[^']+';/,
+    'const {hasNativeCamera,takeStockPhoto,readNativePhoto,listenForRestoredPhoto}=window.testCamera;')
+    .replace(/import \{preparePhoto\} from '[^']+';/,'const preparePhoto=window.testPreparePhoto;');
+  await import('data:text/javascript;base64,' + Buffer.from(instanceSource + `\nwindow.expirePhotoTestSession=()=>{clearBusinessDisplay();render();};\n// instance ${++instance}`).toString('base64'));
   const app = {
     q: s => w.document.querySelector(s), text: () => w.document.body.textContent,
     click(s) { const n = this.q(s); assert(n, `Missing ${s}`); n.click(); },
@@ -188,6 +195,7 @@ async function boot(f, snapshot, {configured = true, signedIn = true} = {}) {
     photo(s,blob=new Blob(['jpeg'],{type:'image/jpeg'})){const n=this.q(s);Object.defineProperty(n,'files',{value:[blob],configurable:true});n.dispatchEvent(new w.Event('change',{bubbles:true}));},
     snapshot: () => ({local: Object.entries(w.localStorage), session: Object.entries(w.sessionStorage)}),
     setLocal: (key, value) => w.localStorage.setItem(key, value),
+    expire: () => w.expirePhotoTestSession(),
     close() {
       w.close();
       for (const [k, descriptor] of original) {
@@ -652,6 +660,8 @@ test('stocktake camera and album buttons activate different file inputs on the w
     let cameraClicks=0,albumClicks=0;
     camera.addEventListener('click',()=>cameraClicks++);album.addEventListener('click',()=>albumClicks++);
     app.click('[data-photo-camera]');assert.equal(cameraClicks,1);assert.equal(albumClicks,0);
+    camera.dispatchEvent(new camera.ownerDocument.defaultView.Event('cancel'));await until(()=>!app.q('[data-photo-camera]').disabled);
+    const newAlbum=app.q('[data-photo-source="album"]');newAlbum.addEventListener('click',()=>albumClicks++);
     app.click('[data-photo-album]');assert.equal(cameraClicks,1);assert.equal(albumClicks,1);
     assert.equal(app.q('[data-photo-camera]').textContent,'ถ่ายรูป');
     assert.equal(app.q('[data-photo-album]').textContent,'เลือกจากอัลบั้ม');
@@ -663,13 +673,13 @@ test('stocktake camera and album buttons activate different file inputs on the w
 test('native camera captures into the correct lot, locks duplicate taps and requires confirmation for replacement',async()=>{
   let finish,calls=0;
   const capture=new Promise(resolve=>{finish=resolve;});
-  const f=inventoryFixture({camera:()=>{calls++;return cameraPhotoBlob({takePhoto:()=>capture},async()=>new Response(new Blob(['new photo'],{type:'image/jpeg'})));}}),app=await boot(f);
+  const f=inventoryFixture({camera:()=>{calls++;return cameraPhotoBlob({getPhoto:()=>capture},async()=>new Response(new Blob(['new photo'],{type:'image/jpeg'})));}}),app=await boot(f);
   try{
     app.menu('#open-stocktake');await fillCount(app,'10');
     const original=f.uploads[0].id;
     let fileClicks=0;
     app.q('[data-photo-source="camera"]').addEventListener('click',()=>fileClicks++);
-    app.click('[data-photo-camera]');assert.equal(calls,1);assert.equal(fileClicks,0);
+    app.click('[data-photo-camera]');await until(()=>calls===1);assert.equal(fileClicks,0);
     assert.equal(app.q('[data-photo-camera]').disabled,true);assert.equal(app.q('[data-photo-album]').disabled,true);
     assert.equal(app.q('#confirm-count').disabled,true);assert.equal(app.q('#reload-count').disabled,true);
     app.eventClick('[data-photo-camera]');app.submit('#stocktake-form');
@@ -684,7 +694,7 @@ test('native camera captures into the correct lot, locks duplicate taps and requ
 
 test('cancelling native camera or denying permission preserves uploaded evidence and confirmation',async()=>{
   for(const code of ['OS-PLUG-CAMR-0006','OS-PLUG-CAMR-0003']){
-    const f=inventoryFixture({camera:()=>cameraPhotoBlob({takePhoto:async()=>{throw {code};}})}),app=await boot(f);
+    const f=inventoryFixture({camera:()=>cameraPhotoBlob({getPhoto:async()=>{throw {code};}})}),app=await boot(f);
     try{
       app.menu('#open-stocktake');await fillCount(app,'10');
       app.click('[data-photo-camera]');await until(()=>!app.q('[data-photo-camera]').disabled);
@@ -1024,5 +1034,48 @@ test('Same actor changing from Owner to Manager clears stock balances and old dr
     assert.equal(app.q('#stocktake-query').value,'');
     assert.equal(app.q('[data-count="'+lot+'"]').value,'9.125','Preserve physical counts already entered');
     assert.equal(app.q('[data-variance]').textContent,'—');
+  }finally{app.close();}
+});
+
+
+test('failed photo preparation keeps old evidence and displays the error beside the row',async()=>{
+  let invalid=false;
+  const f=inventoryFixture({preparePhoto:async file=>{if(invalid)throw new Error('fixture unreadable image');return file;}}),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');await fillCount(app,'10');const original=f.uploads[0].id;
+    invalid=true;app.photo('[data-photo-source="album"]');
+    await until(()=>app.q('[data-photo-note]').textContent.includes('fixture unreadable image'));
+    assert(app.q('.scale-preview'));assert.equal(f.uploads.length,1);assert.equal(f.uploads[0].id,original);
+    assert.equal(app.q('[data-count]').value,'10');assert.equal(app.q('#count-confirm').checked,false);
+  }finally{app.close();}
+});
+
+test('native album returns through the same durable path; upload failure is visible beside the preview',async()=>{
+  let selected;
+  const f=inventoryFixture({failUpload:true,camera:async source=>{selected=source;return new Blob(['album'],{type:'image/jpeg'});}}),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');app.click('[data-photo-album]');
+    await until(()=>app.q('[data-photo-upload]')&&!app.q('[data-photo-upload]').disabled);
+    assert.equal(selected,'album');assert(app.q('.scale-preview'));
+    assert.match(app.q('[data-photo-note]').textContent,/mock lost upload response/);
+    const original=f.uploads[0];f.failUpload=false;app.click('[data-photo-upload]');
+    await until(()=>/อัปโหลดรูปแล้ว/.test(app.q('[data-photo-note]').textContent));
+    assert.equal(f.uploads[1].id,original.id);assert.equal(await f.uploads[1].body.text(),'album');
+  }finally{app.close();}
+});
+
+test('a photo returned after session clearing survives for the original actor and is not uploaded while locked',async()=>{
+  let finish,called=false;
+  const f=inventoryFixture({camera:()=>{called=true;return new Promise(resolve=>{finish=resolve;});}}),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');app.input('[data-count]','10');await until(()=>!app.q('#reload-count').disabled);
+    app.click('[data-photo-camera]');await until(()=>called);app.expire();assert(app.q('#login-form'));
+    finish(new Blob(['after expiry'],{type:'image/jpeg'}));
+    await new Promise(resolve=>setTimeout(resolve,100));assert.equal(f.uploads.length,0);
+    app.input('[name=email]','fixture@example.test');app.input('[name=password]','synthetic-test-password');app.submit('#login-form');
+    await until(()=>app.q('#stocktake-form')&&app.q('.scale-preview'));
+    assert.equal(app.q('[data-count]').value,'10');assert.equal(f.uploads.length,0);
+    app.click('[data-photo-upload]');await until(()=>f.uploads.length===1&&!app.q('[data-photo-camera]').disabled);
+    assert.equal(await f.uploads[0].body.text(),'after expiry');
   }finally{app.close();}
 });

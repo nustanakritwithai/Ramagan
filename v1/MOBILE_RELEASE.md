@@ -1,7 +1,7 @@
 # Ramagan POS 2
 
 Android application ID: `online.ramagan.pos.mobile`.
-Version name: `1.5.6`; version code: `10506`.
+Version name: `1.5.7`; version code: `10507`.
 This is a separate installation from the legacy `online.ramagan.pos` package,
 as requested by the owner. The old app and its pending local operations remain
 untouched. Sign in/enroll the new app against the same production API:
@@ -20,13 +20,24 @@ retries after mistakes, including old timed/recovery locks; existing clients
 receive that server policy without an APK update.
 
 Stocktake evidence has separate Take photo and Choose from album buttons.
-Android Take photo uses `@capacitor/camera` 8.2.6 `takePhoto`, without an album
-fallback. Cancellation/permission errors retain the previous evidence. A new
-photo follows the existing durable draft and upload path and requires renewed
-count confirmation. Web fallback uses `accept="image/*" capture="environment"`;
-album selection has no capture attribute. Native registration and the camera
-intent query are checked in the built APK. Physical phone testing is separate
-from the simulated camera and DOM regression tests.
+Android uses the pinned camera 8.2.6 `getPhoto` path with explicit CAMERA/PHOTOS
+source, URI results and a 1600-pixel bound. The camera path preserves its callback
+and file path for `@capacitor/app` 8.1.2 restored-Activity results, unlike the
+plugin's newer Ion takePhoto path. This is a deliberate compatibility choice;
+revisit when upgrading the pinned plugin.
+
+Both sources are decoded and converted to a JPEG bounded to 1600 pixels and
+1 MiB before durable storage/upload. Failed replacement keeps the prior photo.
+Inline per-row progress/errors remain visible below the preview. Returned photos
+retain their original actor, store, draft and row through PIN expiry/recreation;
+recovery saves locally and requires renewed authentication before upload. Lost
+network responses retry the same stored bytes/UUID. If the OS/picker supplies no
+restored result, the draft shows an interrupted-selection message and keeps the
+previous evidence. No claim of recovery is made when the native OS discards data.
+
+Native App/Camera registration is checked in the built APK. DOM/unit and headless
+browser tests are separate from physical phone acceptance, which is NOT RUN on
+the reporting device. No API or business-database change is needed for 1.5.7.
 
 Sign locally with the persistent Ramagan Mobile release key stored outside the
 repository. Align before signing, use Android SDK `apksigner`, then verify the

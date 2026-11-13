@@ -53,6 +53,25 @@ export function createEvidenceDraft({indexedDB, identity, uuid, hideStockBalance
     }),
     setMeta: (field, value) => transact(current => {const d = requireDraft(current); d[field] = value; return d;}),
     invalidate: lot => transact(current => {const d=requireDraft(current);delete d.photos[lot];return d;}),
+    beginPhoto: (lot, request) => transact(current => {
+      const d = requireDraft(current);
+      if (!d.snapshot.some(row => row.id === lot)) throw new Error('ไม่พบรายการสำหรับแนบรูป');
+      d.photoRequests ||= {}; d.photoErrors ||= {};
+      d.photoRequests[lot] = request; delete d.photoErrors[lot]; return d;
+    }),
+    finishPhoto: (lot, draftId, request, blob, message = '') => {
+      if (blob) validatePhoto(blob);
+      return transact(current => {
+        const d = requireDraft(current);
+        if (d.id !== draftId || d.photoRequests?.[lot] !== request) throw new Error('แบบร่างหรือรูปเปลี่ยนแล้ว กรุณาเลือกใหม่');
+        if (blob) d.photos[lot] = {client_upload_id: request, blob, metadata: null};
+        delete d.photoRequests[lot]; d.photoErrors ||= {};
+        if (message) d.photoErrors[lot] = message; else delete d.photoErrors[lot];
+        if (blob || message) d.photoReturn = true;
+        return d;
+      });
+    },
+    acknowledgePhotoReturn: () => transact(current => {const d=requireDraft(current);delete d.photoReturn;return d;}),
     select: (lot, blob) => {
       validatePhoto(blob);
       return transact(current => {const draft = requireDraft(current);

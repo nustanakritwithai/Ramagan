@@ -6,7 +6,9 @@ import {createInventoryOperation, supportsCosts, supportsStocktakes, optionalCos
   assertNoPendingMutation, mutationScopeKey} from './inventory.js';
 import {renderPos, paymentPreview} from './pos.js';
 import {createEvidenceDraft, supportsEvidence} from './evidence-draft.js';
-import {hasNativeCamera,takeStockPhoto} from './stocktake-camera.js';
+import {hasNativeCamera,takeStockPhoto,readNativePhoto,listenForRestoredPhoto} from './stocktake-camera.js';
+import {preparePhoto} from './photo-file.js';
+import {createPhotoReturn} from './photo-return.js';
 import {cleanupNavigation, mountNavigation, navigationHeader} from './navigation.js';
 import {createPageState, renderSidePage, loadReceipts, supportsReceipts} from './pages.js';
 import {createDeviceAuth} from './device-auth.js';
@@ -47,10 +49,32 @@ const state = {
   saleVoid:null, voidPending:null, voidBlocked:false,
   posScreen: 'catalog', posMenuOpen: false, quantityLot: null, quantityText: '1', quantityEditing: false,
   cashReceived: '', splitCash: '', splitTransfer: '', catalogQuery: '',
-  draftStore: null, countDraft: null, draftError: '', draftStale: false, photoBusy: null, photoUrls: [], historyPhotoUrls: {}, draftSaving: 0,
+  draftStore: null, countDraft: null, draftError: '', draftStale: false, photoBusy: null, photoErrors: {}, photoUrls: [], historyPhotoUrls: {}, draftSaving: 0,
   closeEvidenceViewer: null, pages: createPageState(),
   managementForms: {}, managementPanels: new Set()
 };
+
+const photoReturns = createPhotoReturn({storage: localStorage, uuid: () => crypto.randomUUID(),
+  openDraft: identity => createEvidenceDraft({indexedDB: window.indexedDB, identity, uuid: () => crypto.randomUUID()}),
+  prepare: preparePhoto, readNative: readNativePhoto});
+const photoRecoveryReady = listenForRestoredPhoto(async result => {
+  try {
+    const recovered = await photoReturns.restore(result);
+    if (recovered && photoIdentityMatches(recovered.context.identity)) {
+      await restoreCountDraft(); if (state.view === 'stocktake') render();
+    }
+  } catch {
+    // The durable return address remains for investigation/retry. Never attach a
+    // result to whichever user or row happens to be on screen after a restart.
+    if (state.view === 'stocktake') setMessage('กู้รูปที่กลับเข้าแอปไม่สำเร็จ กรุณาถ่ายหรือเลือกรูปอีกครั้ง แบบร่างเดิมยังอยู่', true);
+  }
+});
+// Avoid an unhandled rejection at startup; acquisition still awaits the original
+// promise and displays a registration failure before opening an external app.
+photoRecoveryReady.catch(() => {});
+function photoIdentityMatches(identity) {
+  return api?.base === identity.api && state.store?.id === identity.store && state.user?.id === identity.actor;
+}
 
 function h(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -323,7 +347,7 @@ function resetInventoryState() {
   state.posMenuOpen=false;
   for (const url of [...state.photoUrls, ...Object.values(state.historyPhotoUrls)]) URL.revokeObjectURL(url);
   state.photoUrls=[]; state.historyPhotoUrls={}; state.draftStore=null; state.countDraft=null;
-  state.draftError=''; state.draftStale=false; state.photoBusy=null; state.draftSaving=0;
+  state.draftError=''; state.draftStale=false; state.photoBusy=null; state.photoErrors={}; state.draftSaving=0;
   state.inventoryLoad++;
   state.inventory = null; state.inventoryError = ''; state.stocktakes = [];
   state.stocktakeError = ''; state.stocktake = null; state.receive = null;
@@ -442,7 +466,7 @@ function navigationContext() {
   return {root,state,api,currentApi:()=>api,render,canManage,canDashboard,canSettings,openView,logout,changeServer,
     lockDevice:()=>{if(!state.busy&&!activeIO)void deviceAuth?.lock();},canLockDevice:()=>Boolean(deviceAuth?.snapshot().device),
     voidReceipt:runReceiptVoid,hasPending:hasPendingMutation,
-    adminUrl:canDashboard()?ADMIN_REPORT_URL:null,apiUrl,appVersion:'1.5.6',pinSettingsHtml:()=>canSettings()?pinSettingsHtml(pinFlags()):'',bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
+    adminUrl:canDashboard()?ADMIN_REPORT_URL:null,apiUrl,appVersion:'1.5.7',pinSettingsHtml:()=>canSettings()?pinSettingsHtml(pinFlags()):'',bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
       if(!canManage())return;
       openView('inventory');
       const form=root.querySelector('#'+section);
@@ -659,13 +683,13 @@ function renderStocktake() {
       catch { variance = 'ยอดนับไม่ถูกต้อง'; }
     }
     const photo=state.countDraft?.photos[lot.id]; let photoHtml='';
-    if(photo?.blob && URL.createObjectURL) {const url=URL.createObjectURL(photo.blob);state.photoUrls.push(url);photoHtml='<img class="scale-preview" src="'+h(url)+'" alt="รูปเครื่องชั่ง Lot '+h(lot.lot_code)+'" />';}
+    if(photo?.blob && URL.createObjectURL) {const url=URL.createObjectURL(photo.blob);state.photoUrls.push(url);photoHtml='<img loading="lazy" decoding="async" class="scale-preview" src="'+h(url)+'" alt="รูปเครื่องชั่ง Lot '+h(lot.lot_code)+'" />';}
     photoHtml+='<div class="photo-control"><span>รูปเครื่องชั่ง (ต้องมี)</span><div class="photo-source-actions">'+
       '<button type="button" class="primary" data-photo-camera="'+h(lot.id)+'" aria-label="ถ่ายรูปเครื่องชั่ง Lot '+h(lot.lot_code)+'" '+(locked?'disabled':'')+'>ถ่ายรูป</button>'+
       '<button type="button" class="ghost" data-photo-album="'+h(lot.id)+'" aria-label="เลือกจากอัลบั้ม Lot '+h(lot.lot_code)+'" '+(locked?'disabled':'')+'>เลือกจากอัลบั้ม</button></div>'+
       '<input hidden type="file" data-photo="'+h(lot.id)+'" data-photo-source="camera" accept="image/*" capture="environment" '+(locked?'disabled':'')+' />'+
       '<input hidden type="file" data-photo="'+h(lot.id)+'" data-photo-source="album" accept="image/jpeg,image/png,image/webp" '+(locked?'disabled':'')+' /></div>'+
-      '<p class="footnote" data-photo-note="'+h(lot.id)+'"></p><button type="button" class="ghost" data-photo-upload="'+h(lot.id)+'" hidden disabled>อัปโหลดรูปเครื่องชั่ง</button>';
+      '<p class="footnote" role="status" aria-live="polite" data-photo-note="'+h(lot.id)+'"></p><button type="button" class="ghost" data-photo-upload="'+h(lot.id)+'" hidden disabled>อัปโหลดรูปเครื่องชั่ง</button>';
     const evidence='<details class="count-evidence-panel" data-evidence-panel="'+h(lot.id)+'"'+managementPanel('photo:'+lot.id)+'><summary class="count-evidence-summary">'+
       countEvidenceSummary({lotId:lot.id,hasPhoto:Boolean(photo?.blob),uploaded:Boolean(photo?.metadata),counted:value.trim()!==''})+'</summary>'+photoHtml+'</details>';
     const salePrice=Number.isSafeInteger(lot.price_satang_per_gram)&&lot.price_satang_per_gram>=0?
@@ -765,9 +789,12 @@ function renderStocktake() {
       status.textContent=uploaded?'พร้อมส่ง':photo?.blob?'มีรูป · รออัปโหลด':(state.counts.get(lot)||'').trim()!==''?'ต้องแนบรูป':'ยังไม่แนบรูป';
       status.classList.toggle('ready',uploaded);
       const note=root.querySelector('[data-photo-note="'+CSS.escape(lot)+'"]');
-      note.textContent=uploaded?'อัปโหลดรูปแล้ว':photo?.blob?
+      const photoError=state.photoErrors[lot]||state.countDraft?.photoErrors?.[lot]||
+        (!state.photoBusy&&state.countDraft?.photoRequests?.[lot]?'การเลือกรูปถูกขัดจังหวะ กรุณาถ่ายหรือเลือกใหม่ รูปเดิมยังอยู่':'');
+      note.classList.toggle('error',Boolean(photoError));
+      note.textContent=photoError||(state.photoBusy===lot?'กำลังรับและบันทึกรูป กรุณารอสักครู่':uploaded?'อัปโหลดรูปแล้ว':photo?.blob?
         'รูปยังไม่ยืนยันการอัปโหลด ส่งซ้ำได้ด้วยรูปและเลขอ้างอิงเดิม':
-        'ถ่ายรูป / เลือกรูปเครื่องชั่งก่อนหรือหลังกรอกยอดนับได้';
+        'ถ่ายรูป / เลือกรูปเครื่องชั่งก่อนหรือหลังกรอกยอดนับได้');
       button.hidden=!photo?.blob||uploaded;
       button.disabled=locked||Boolean(state.draftSaving)||!photo?.blob||uploaded;
     });
@@ -796,46 +823,68 @@ function renderStocktake() {
     catch (error) { setMessage(error.message, true); }
   });
   bindInventoryPending(); update();
-  const selectPhoto=async(lot,file)=>{
-    if(locked||state.photoBusy||!file)return;
-    const actor=state.user?.id,shop=state.store?.id,store=state.draftStore,session=authGuard();
-    const current=()=>session()&&actor===state.user?.id&&shop===state.store?.id&&store===state.draftStore;
-    // Invalidate the old selection synchronously, before any IndexedDB await.
-    activeIO++;state.photoBusy=lot;state.countConfirmed=false;if(state.countDraft)delete state.countDraft.photos[lot];render();
-    try{
+  // Each picker owns its original identity and draft even if the screen renders
+  // again, PIN expires, or Android destroys/recreates the Activity.
+  const beginSelection=(lot,native)=>{
+    const identity={api:api.base,store:state.store.id,actor:state.user.id},session=authGuard(),store=state.draftStore;
+    activeIO++;state.photoBusy=lot;delete state.photoErrors[lot];
+    const context=(async()=>{
       await countDraftWrites;
-      if(!current())return;
-      await ensureCountDraft();const cleared=await store.invalidate(lot);
-      if(!current())return;
-      state.countDraft=cleared;const draft=await store.select(lot,file);
-      if(!current())return;
-      state.countDraft=draft;state.photoBusy=null;await uploadCountPhoto(lot);
-    }catch(error){if(current()){state.photoBusy=null;state.message=error.message;state.error=true;}}
-    finally{activeIO--;if(current()&&state.view==='stocktake')render();}
+      if(native)await photoRecoveryReady;
+      if(!session()||store!==state.draftStore)throw new Error('กรุณาปลดล็อกก่อนเลือกรูปใหม่');
+      const draft=await ensureCountDraft();
+      return photoReturns.begin({identity,draftId:draft.id,lot,native});
+    })();
+    context.catch(()=>{});
+    return {lot,identity,context,current:()=>session()&&store===state.draftStore};
   };
-  root.querySelectorAll('[data-photo]').forEach(input=>input.addEventListener('change',()=>selectPhoto(input.dataset.photo,input.files?.[0])));
+  const finishSelection=async(selection,file,message='')=>{
+    const {lot,current}=selection;
+    if(file&&current())state.countConfirmed=false;
+    if(current())render();
+    try{
+      const context=await selection.context;
+      const result=await photoReturns.complete(context,file,message);
+      if(!current())return; // bytes are safely saved for the original actor
+      state.countDraft=result.draft;
+      state.photoBusy=null;
+      if(result.problem){state.photoErrors[lot]=result.problem;state.message=result.problem;state.error=true;}
+      else if(result.selected)await uploadCountPhoto(lot,{keepBusy:true});
+      if(current()&&state.countDraft?.photoReturn){
+        const acknowledged=await state.draftStore.acknowledgePhotoReturn();
+        if(current())state.countDraft=acknowledged;
+      }
+    }catch(error){if(current()){state.photoErrors[lot]=error.message;state.message=error.message;state.error=true;}}
+    finally{activeIO--;if(current()){state.photoBusy=null;if(state.view==='stocktake')render();}}
+  };
+  const openNative=async(lot,source)=>{
+    const selection=beginSelection(lot,true);render();
+    let file=null,message='';
+    try{await selection.context;if(selection.current())file=await takeStockPhoto(source);}
+    catch(error){message=error.message;}
+    await finishSelection(selection,file,message);
+  };
+  const openFile=(lot,source)=>{
+    const input=root.querySelector('[data-photo="'+CSS.escape(lot)+'"][data-photo-source="'+source+'"]');
+    input.photoSelection=beginSelection(lot,false);
+    input.value=''; input.click(); // keep the browser's synchronous user gesture
+  };
+  root.querySelectorAll('[data-photo]').forEach(input=>{
+    input.addEventListener('change',()=>{
+      if(!input.photoSelection&&(locked||state.photoBusy))return;
+      const selection=input.photoSelection||beginSelection(input.dataset.photo,false);input.photoSelection=null;
+      void finishSelection(selection,input.files?.[0]||null);
+    });
+    input.addEventListener('cancel',()=>{const selection=input.photoSelection;input.photoSelection=null;if(selection)void finishSelection(selection,null);});
+  });
   root.querySelectorAll('[data-photo-album]').forEach(button=>button.onclick=()=>{
     if(locked||state.photoBusy)return;
-    root.querySelector('[data-photo="'+CSS.escape(button.dataset.photoAlbum)+'"][data-photo-source="album"]').click();
+    if(hasNativeCamera())void openNative(button.dataset.photoAlbum,'album');else openFile(button.dataset.photoAlbum,'album');
   });
   root.querySelectorAll('[data-photo-camera]').forEach(button=>button.onclick=async()=>{
     if(locked||state.photoBusy)return;
     const lot=button.dataset.photoCamera;
-    if(!hasNativeCamera()){
-      root.querySelector('[data-photo="'+CSS.escape(lot)+'"][data-photo-source="camera"]').click();
-      return;
-    }
-    const session=authGuard(),store=state.draftStore;
-    const current=()=>session()&&store===state.draftStore;
-    // Keep existing evidence until a new photo has actually been returned.
-    activeIO++;state.photoBusy=lot;state.message='';render();
-    try{
-      const file=await takeStockPhoto();
-      if(!current())return;
-      state.photoBusy=null;
-      if(file)await selectPhoto(lot,file);
-    }catch(error){if(current()){state.message=error.message;state.error=true;}}
-    finally{activeIO--;if(current()){state.photoBusy=null;if(state.view==='stocktake')render();}}
+    if(hasNativeCamera())await openNative(lot,'camera');else openFile(lot,'camera');
   });
   root.querySelectorAll('[data-photo-upload]').forEach(button=>button.onclick=()=>uploadCountPhoto(button.dataset.photoUpload));
   root.querySelectorAll('[data-history]').forEach(button => button.addEventListener('click', () => loadHistoryDetail(button.dataset.history)));
@@ -863,20 +912,20 @@ async function saveCountDraft(field, lot, value) {
   try{await operation;}catch(error){if(current())state.draftError=error.message;}
   finally{if(current()){state.draftSaving=Math.max(0,state.draftSaving-1);countFormUpdate?.();}activeIO--;}
 }
-async function uploadCountPhoto(lot) {
+async function uploadCountPhoto(lot,{keepBusy=false}={}) {
   if(pinSetupRequired())return setMessage('ต้องปลดล็อก PIN ก่อนอัปโหลดหลักฐานใหม่',true);
   if(state.photoBusy||state.draftSaving||state.busy||hasPendingMutation()||!navigator.onLine||state.draftStale)return;
   const draftStore=state.draftStore,draftId=state.countDraft?.id,photo=state.countDraft?.photos[lot],client=api,current=authGuard();
   if(!photo)return;
-  activeIO++;state.photoBusy=lot;render();
+  activeIO++;state.photoBusy=lot;delete state.photoErrors[lot];render();
   try {
     const {data,error}=await client.uploadEvidence(photo,{lot_id:lot,client_stocktake_id:draftId});
     if(error)throw error;
     if(!current()||draftStore!==state.draftStore)return;
     const draft=await draftStore.uploaded(lot,photo.client_upload_id,data);
     if(current()&&draftStore===state.draftStore){state.countDraft=draft;state.message='อัปโหลดรูปเครื่องชั่งแล้ว';state.error=false;}
-  }catch(error){if(current()&&draftStore===state.draftStore){state.message='ยังไม่ยืนยันการอัปโหลดรูป: '+error.message+' · เก็บรูปและเลขอ้างอิงเดิมไว้แล้ว';state.error=true;}}
-  finally{activeIO--;if(current()&&draftStore===state.draftStore){state.photoBusy=null;if(state.view==='stocktake')render();}}
+  }catch(error){if(current()&&draftStore===state.draftStore){state.message='ยังไม่ยืนยันการอัปโหลดรูป: '+error.message+' · เก็บรูปและเลขอ้างอิงเดิมไว้แล้ว';state.photoErrors[lot]=state.message;state.error=true;}}
+  finally{activeIO--;if(current()&&draftStore===state.draftStore&&!keepBusy){state.photoBusy=null;if(state.view==='stocktake')render();}}
 }
 async function restoreCountDraft() {
   if(!state.draftStore||!state.inventory)return;
@@ -886,6 +935,15 @@ async function restoreCountDraft() {
     state.countDraft=draft;state.draftError='';state.draftStale=false;
     if(!draft)return;
     state.counts=new Map(Object.entries(draft.counts));state.shiftLabel=draft.shift_label;state.countReason=draft.reason;
+    if(!state.photoBusy&&Object.keys(draft.photoRequests||{}).length&&!hasPendingMutation()){
+      state.view='stocktake';state.message='พบแบบร่างที่กำลังเลือกรูปก่อนออกจากแอป กรุณาตรวจช่องรูปแล้วเลือกใหม่หากรูปยังไม่กลับมา';state.error=false;
+    }
+    if(draft.photoReturn&&!hasPendingMutation()){
+      const acknowledged=await store.acknowledgePhotoReturn();
+      if(store!==state.draftStore||actor!==state.user?.id||shop!==state.store?.id)return;
+      state.countDraft=acknowledged;
+      state.view='stocktake';state.message='กลับมาที่แบบร่างเดิมแล้ว กรุณาตรวจรูปและกดอัปโหลดรูปที่ยังรอส่ง';state.error=false;
+    }
     state.draftStale=Object.entries(draft.counts).some(([id,value])=>value.trim()&&
       state.inventory.lots.find(x=>x.id===id)?.stock_revision!==draft.snapshot.find(x=>x.id===id)?.stock_revision);
   }catch(error){if(store===state.draftStore)state.draftError=error.message;}
