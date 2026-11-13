@@ -292,6 +292,7 @@ async function startSession() {
   const client=api;
   deviceAuth?.invalidate();authSubscription?.unsubscribe();
   deviceAuth=createDeviceAuth({api:client,storage:localStorage,render,clearDisplay:clearBusinessDisplay,loadProfile,
+    isActive:()=>document.visibilityState!=='hidden'||Boolean(state.photoBusy),
     isBusy:()=>Boolean(state.busy||activeIO),currentStore:()=>state.store?.id,cartEmpty:()=>state.cart.size===0,
     canConfigure:()=>state.role==='owner'&&!client.auth.isPinSession()&&supportsSharedPin(state.capabilities),
     exclusive:task=>{
@@ -467,7 +468,7 @@ function navigationContext() {
   return {root,state,api,currentApi:()=>api,render,canManage,canDashboard,canSettings,openView,logout,changeServer,
     lockDevice:()=>{if(!state.busy&&!activeIO)void deviceAuth?.lock();},canLockDevice:()=>Boolean(deviceAuth?.snapshot().device),
     voidReceipt:runReceiptVoid,hasPending:hasPendingMutation,
-    adminUrl:canDashboard()?ADMIN_REPORT_URL:null,apiUrl,appVersion:'1.5.9',pinSettingsHtml:()=>canSettings()?pinSettingsHtml(pinFlags()):'',bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
+    adminUrl:canDashboard()?ADMIN_REPORT_URL:null,apiUrl,appVersion:'1.5.10',pinSettingsHtml:()=>canSettings()?pinSettingsHtml(pinFlags()):'',bindPinSettings:()=>bindPinSettings({root,...pinFlags()}),openInventory:(product,section)=>{
       if(!canManage())return;
       openView('inventory');
       const form=root.querySelector('#'+section);

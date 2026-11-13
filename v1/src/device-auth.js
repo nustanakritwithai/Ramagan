@@ -3,15 +3,23 @@
 import {createDeviceStore,pendingDeviceActor} from './device-session.js';
 
 const ROLES=['owner','manager','staff'];
+const ACTIVE_LEASE_MS=12*60*60*1000,REFRESH_INTERVAL_MS=5*60*1000;
 export const roleDisplay=role=>({owner:'เจ้าของร้าน (PIN ร่วม)',manager:'ผู้จัดการ (PIN ร่วม)',staff:'พนักงาน (PIN ร่วม)'}[role]||role);
 export function createDeviceAuth({api,storage,isBusy=()=>false,clearDisplay=()=>{},render=()=>{},
   loadProfile=async()=>{},canConfigure=()=>false,currentStore=()=>null,cartEmpty=()=>true,
-  exclusive=async task=>task(),now=()=>Date.now(),setTimer=setTimeout,clearTimer=clearTimeout}) {
+  exclusive=async task=>task(),isActive=()=>true,now=()=>Date.now(),setTimer=setTimeout,clearTimer=clearTimeout}) {
   const store=createDeviceStore(storage,api.base);
   let device=null,locked=false,passwordOverride=false,busy=false,error='',epoch=0,timer=null,expires=0,disposed=false,activeActor=null,configuration=null,autoRolePin=false;
+  let canRefresh=false,refreshing=null,refreshAt=0,activeRole=null;
   const supportsAuto=data=>data?.auto_role_pin===true&&data?.auto_role_pin_contract_version===1;
+  const supportsRefresh=data=>data?.pin_session_refresh===true&&data?.pin_session_refresh_contract_version===1;
   const alive=n=>!disposed&&epoch===n;
-  const stopTimer=()=>{if(timer!==null)clearTimer(timer);timer=null;expires=0;};
+  const stopTimer=()=>{if(timer!==null)clearTimer(timer);timer=null;expires=0;canRefresh=false;refreshing=null;activeRole=null;};
+  const schedule=()=>{
+    if(timer!==null)clearTimer(timer);
+    if(!expires||disposed||!api.auth.isPinSession()){timer=null;return;}
+    timer=setTimer(()=>{timer=null;checkExpiry();},Math.max(1,Math.min(expires-now(),canRefresh?REFRESH_INTERVAL_MS:Infinity)));
+  };
   const guard=()=>{const n=epoch;return()=>alive(n);};
   const pending=()=>pendingDeviceActor(storage,api.base,device?.store.id||currentStore());
   function restriction(){
@@ -70,8 +78,8 @@ export function createDeviceAuth({api,storage,isBusy=()=>false,clearDisplay=()=>
       // written an intent while the PIN request was in flight.
       const actor=pending();if(actor&&actor!==data.user.id)throw new Error('มีรายการค้างของบัญชีอื่น กรุณากลับเข้าบัญชีเดิม');
       device=store.save(device,{...device.actors,[role]:data.user.id});
-      activeActor=data.user.id;locked=false;passwordOverride=false;expires=Math.min(data.expires_at*1000,now()+300000);
-      timer=setTimer(()=>{void lock('ครบเวลาปลดล็อก กรุณาใส่ PIN อีกครั้ง');},Math.max(0,expires-now()));
+      activeActor=data.user.id;activeRole=role;locked=false;passwordOverride=false;canRefresh=supportsRefresh(data);
+      expires=Math.min(data.expires_at*1000,now()+(canRefresh?ACTIVE_LEASE_MS:300000));refreshAt=now()+REFRESH_INTERVAL_MS;schedule();
       await loadProfile({...data.user,display_name:roleDisplay(role)},{current:()=>alive(n),role,store:device.store.id});
       return alive(n);
     }catch(problem){
@@ -140,7 +148,31 @@ export function createDeviceAuth({api,storage,isBusy=()=>false,clearDisplay=()=>
       locked=false;passwordOverride=true;error='';render();return true;
     }catch(problem){return fail(problem.message||'ลืมเครื่องไม่สำเร็จ');}
   }
-  function checkExpiry(){if(api.auth.isPinSession()&&expires&&now()>=expires)void lock('ครบเวลาปลดล็อก กรุณาใส่ PIN อีกครั้ง');}
+  async function refreshSession(){
+    if(refreshing||disposed||!canRefresh||!api.auth.isPinSession())return;
+    const n=epoch,request=api.auth.refreshDeviceSession();refreshing=request;
+    try{
+      const {data,error:problem}=await request;
+      if(!alive(n)||!api.auth.isPinSession())return;
+      if(problem){refreshAt=now()+15000;return;}
+      if(!supportsRefresh(data)||data.auth_method!=='shared_role_pin'||data.device_id!==device.device_id||
+          data.role!==activeRole||data.user?.id!==activeActor||!Number.isSafeInteger(data.expires_at)||data.expires_at*1000<=now()){
+        await lock('คำตอบต่ออายุไม่ตรงกับบัญชี กรุณาปลดล็อกใหม่');return;
+      }
+      expires=Math.min(data.expires_at*1000,now()+ACTIVE_LEASE_MS);refreshAt=now()+REFRESH_INTERVAL_MS;
+      // No render/profile reload/token rotation: caret, photos and in-flight
+      // business requests must remain attached to the same actor and screen.
+    }catch{if(alive(n))refreshAt=now()+15000;}finally{
+      if(refreshing===request)refreshing=null;
+      if(alive(n)){if(now()>=expires)void lock('สิทธิ์ PIN หมดอายุ กรุณาปลดล็อกใหม่');else schedule();}
+    }
+  }
+  function checkExpiry(){
+    if(disposed||!api.auth.isPinSession()||!expires)return;
+    if(now()>=expires){void lock('สิทธิ์ PIN หมดอายุ กรุณาปลดล็อกใหม่');return;}
+    if(canRefresh&&isActive()&&now()>=refreshAt){void refreshSession();return;}
+    schedule();
+  }
   function storageChanged(){
     if(!device)return;
     try{

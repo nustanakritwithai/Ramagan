@@ -222,6 +222,7 @@ export function createClient(serverUrl) {
       enrollDevice: payload => result(()=>request('POST','/v1/auth/device/enroll',payload)),
       revokeDevice: payload => result(()=>request('POST','/v1/auth/device/revoke',payload)),
       changePins: payload => result(()=>request('POST','/v1/auth/device/pins',payload)),
+      refreshDeviceSession: () => result(()=>request('POST','/v1/auth/device/refresh',{})),
       async unlockDevice(payload){
         return result(async()=>{
           if(!clearSession())throw new Error('ลบ session เดิมไม่ได้ จึงยังไม่ปลดล็อก PIN');const generation=authGeneration;

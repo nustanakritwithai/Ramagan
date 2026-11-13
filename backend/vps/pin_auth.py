@@ -1,4 +1,4 @@
-"""Remember a restricted device credential; unlock a shared role for five minutes.
+"""Remember a restricted device credential; grant renewable twelve-hour PIN leases.
 
 No password, PIN, raw bearer, or raw device credential is stored in SQLite.
 Shared role actors identify a role in existing audit records, not a person.
@@ -24,7 +24,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr
 CONTRACT_VERSION = 1
 ENROLLMENT_CONTRACT_VERSION = 2
 AUTO_ROLE_CONTRACT_VERSION = 1
-SESSION_SECONDS = 300
+SESSION_REFRESH_CONTRACT_VERSION = 1
+SESSION_SECONDS = 12 * 3600
 DEVICE_SECONDS = 90 * 24 * 3600
 LOCK_SECONDS = 15 * 60
 ROLES = ("owner", "manager", "staff")
@@ -393,7 +394,33 @@ class DeviceAuth:
                            (digest, device["id"], store, role, record["pin_version"], now))
                 self._event(db, store, "UNLOCK", device=device["id"], actor=record["actor_user_id"], role=role)
                 reply = {"token": token, "expires_at": expires, "user": {"id": record["actor_user_id"], "email": record["email"]},
-                         "device_id": device["id"], "role": role, "auth_method": "shared_role_pin"}
+                         "device_id": device["id"], "role": role, "auth_method": "shared_role_pin",
+                         "pin_session_refresh": True, "pin_session_refresh_contract_version": SESSION_REFRESH_CONTRACT_VERSION}
+            return reply
+
+        @router.post("/refresh")
+        def refresh(payload: PrivateInput, actor: dict = Depends(current), authorization: str | None = Header(default=None)):
+            # Renew only an already-valid PIN lease. Never accept PINs, device
+            # credentials, target actors or client-provided expiry values here.
+            digest = _digest(authorization[7:].strip())
+            with self.transaction() as db:
+                actor = recheck_actor(db, authorization, actor)
+                now = int(time.time())
+                binding = db.execute("""SELECT p.*,d.expires_at AS device_expires_at
+                    FROM device_pin_sessions p JOIN remembered_devices d ON d.id=p.device_id
+                    WHERE p.token_hash=?""", (digest,)).fetchone()
+                if not binding:
+                    raise HTTPException(403, "A PIN-unlocked session is required")
+                expires = min(now + SESSION_SECONDS, binding["device_expires_at"])
+                # The legacy created_at field anchors the current lease. The
+                # immutable UNLOCK audit retains the original authentication time.
+                # Keep the bearer stable so in-flight uploads/writes retain the
+                # same authorization context while this lease is extended.
+                db.execute("UPDATE device_pin_sessions SET created_at=? WHERE token_hash=?", (now, digest))
+                db.execute("UPDATE sessions SET expires_at=? WHERE token_hash=?", (expires, digest))
+                reply = {"expires_at": expires, "device_id": binding["device_id"], "role": binding["role"],
+                         "user": {"id": actor["id"]}, "auth_method": "shared_role_pin",
+                         "pin_session_refresh": True, "pin_session_refresh_contract_version": SESSION_REFRESH_CONTRACT_VERSION}
             return reply
 
         @router.post("/lock")

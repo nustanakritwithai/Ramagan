@@ -19,7 +19,7 @@ const settle=async()=>{await new Promise(setImmediate);await new Promise(setImme
 const reply=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json'}});
 function saleIntent(actor=ACTORS.staff){return JSON.stringify({version:2,status:'pending',identity:{api:BASE,store:STORE,cashier:actor},payload:{client_sale_id:SALE}});}
 
-function fixture({remember=true,legacy=false,fetchHandler,actors=ACTORS,autoRole=false,configuration={configured:false,roles:[],device_enrollment_contract_version:2}}={}) {
+function fixture({remember=true,legacy=false,fetchHandler,actors=ACTORS,autoRole=false,renewal=false,configuration={configured:false,roles:[],device_enrollment_contract_version:2}}={}) {
   const oldFetch=globalThis.fetch,oldSession=globalThis.sessionStorage;
   const local=new Storage(),session=new Storage(),calls=[],timers=new Map();let clock=Date.UTC(2026,9,18),nextTimer=0,nextToken=0;
   const metadata={device_id:DEVICE,store:{id:STORE,name:'Synthetic PIN store'},roles:['owner','manager','staff'],expires_at:Math.floor(clock/1000)+86400,
@@ -39,7 +39,7 @@ function fixture({remember=true,legacy=false,fetchHandler,actors=ACTORS,autoRole
       if(!role)return reply({detail:'Invalid role or PIN'},401);
       const issued='memory-pin-'+(++nextToken)+'-'.repeat(50);tokens.set(issued,{id:ACTORS[role],role});
       return reply({token:issued,auth_method:'shared_role_pin',device_id:DEVICE,role,
-        expires_at:Math.floor(clock/1000)+300,user:{id:ACTORS[role],email:'shared-'+role+'@role.invalid'}});
+        pin_session_refresh:renewal,pin_session_refresh_contract_version:1,expires_at:Math.floor(clock/1000)+(renewal?43200:300),user:{id:ACTORS[role],email:'shared-'+role+'@role.invalid'}});
     }
     if(path==='/v1/auth/login'){
       const issued='memory-password-'+(++nextToken)+'-'.repeat(40);tokens.set(issued,{id:ORIGINAL,role:'owner'});
@@ -49,14 +49,15 @@ function fixture({remember=true,legacy=false,fetchHandler,actors=ACTORS,autoRole
     if(path==='/v1/auth/device/lock'||path==='/v1/auth/logout'){tokens.delete(token);return reply({ok:true});}
     if(path==='/v1/auth/device/revoke'||path==='/v1/auth/device/pins')return reply({ok:true});
     const actor=tokens.get(token);if(!actor)return reply({detail:'Login required'},401);
+    if(path==='/v1/auth/device/refresh')return reply({expires_at:Math.floor(clock/1000)+43200,device_id:DEVICE,role:actor.role,user:{id:actor.id},auth_method:'shared_role_pin',pin_session_refresh:true,pin_session_refresh_contract_version:1});
     if(path==='/v1/auth/device/configuration')return actor.id===ORIGINAL?reply(configuration):reply({detail:'Owner password required'},403);
     if(path==='/v1/me')return reply({user:{id:actor.id,email:'fixture@role.invalid'},store_id:STORE,role:actor.role,
       store:metadata.store,capabilities:{discounts:true,discount_contract_version:1,shared_role_pin:true,shared_role_pin_contract_version:1}});
     return reply({});
   };
-  const api=createClient(BASE),state={busy:false,user:null,role:null,store:null,cart:new Map(),profileLoads:0,clears:0,renders:0,viewerClosed:0,urlsRevoked:0};
+  const api=createClient(BASE),state={busy:false,foreground:true,user:null,role:null,store:null,cart:new Map(),profileLoads:0,clears:0,renders:0,viewerClosed:0,urlsRevoked:0};
   const privateDrafts=new Map([['unchanged-idb-draft',{client_stocktake_id:'original-count',photo:new Uint8Array([1,2,3])}]]);
-  const controller=createDeviceAuth({api,storage:local,isBusy:()=>state.busy,currentStore:()=>state.store?.id||STORE,cartEmpty:()=>!state.cart.size,
+  const controller=createDeviceAuth({api,storage:local,isActive:()=>state.foreground,isBusy:()=>state.busy,currentStore:()=>state.store?.id||STORE,cartEmpty:()=>!state.cart.size,
     canConfigure:()=>state.role==='owner'&&state.user?.id===ORIGINAL,
     clearDisplay:()=>{state.user=null;state.role=null;state.store=null;state.cart.clear();state.clears++;state.viewerClosed++;state.urlsRevoked++;},
     render:()=>{state.renders++;},loadProfile:async(user,{current,role})=>{if(current()){state.user=user;state.role=role;state.store=metadata.store;state.profileLoads++;}},
@@ -309,4 +310,62 @@ test('another window forgetting or corrupting its device record locks and remove
       assert.equal(f.local.getItem(pendingKey({api:BASE,store:STORE})),saleIntent());assert.equal(f.privateDrafts.size,1);
     }finally{f.close();}
   }
+});
+
+
+test('foreground PIN session renews for sixteen hours without clearing the screen, profile, token or pending intent',async()=>{
+  const f=fixture({renewal:true});try{
+    await f.controller.boot();await f.controller.unlock('manager','2846');
+    const clears=f.state.clears,renders=f.state.renders,loads=f.state.profileLoads;
+    const frozen=saleIntent(ACTORS.manager),key=pendingKey({api:BASE,store:STORE});f.local.setItem(key,frozen);
+    f.state.busy=true; // ongoing stocktake/photo work must not prevent renewal
+    for(let i=0;i<960;i++){f.advance(60000);await settle();assert.equal(f.controller.snapshot().locked,false);}
+    const refreshes=f.calls.filter(x=>x.path==='/v1/auth/device/refresh');assert.equal(refreshes.length,192);
+    assert(refreshes.every(x=>x.authorization===refreshes[0].authorization));assert(refreshes.every(x=>JSON.stringify(x.body)==='{}'));
+    assert.equal(f.state.clears,clears);assert.equal(f.state.renders,renders);assert.equal(f.state.profileLoads,loads);
+    assert.equal(f.local.getItem(key),frozen);assert.equal(f.privateDrafts.size,1);assert.equal(f.session.length,0);
+    assert.equal(f.calls.filter(x=>x.path==='/v1/auth/device/unlock').length,1);
+  }finally{f.close();}
+});
+
+test('background sessions do not renew; resume before expiry renews without a PIN, expiry still locks',async()=>{
+  const f=fixture({renewal:true});try{
+    await f.controller.boot();await f.controller.unlock('staff','1729');f.state.foreground=false;
+    for(let i=0;i<4;i++){f.advance(300000);await settle();}
+    assert.equal(f.calls.filter(x=>x.path==='/v1/auth/device/refresh').length,0);
+    f.state.foreground=true;f.controller.checkExpiry();await settle();assert.equal(f.controller.snapshot().locked,false);
+    assert.equal(f.calls.filter(x=>x.path==='/v1/auth/device/refresh').length,1);
+    f.state.foreground=false;f.advance(43200001);await settle();assert.equal(f.controller.snapshot().locked,true);
+  }finally{f.close();}
+});
+
+test('temporary renewal network failure does not clear active work and a retry extends the lease',async()=>{
+  let failed=true;
+  const f=fixture({renewal:true,fetchHandler:call=>{if(call.path==='/v1/auth/device/refresh'&&failed)throw new TypeError('Synthetic offline');}});try{
+    await f.controller.boot();await f.controller.unlock('manager','2846');const clears=f.state.clears;
+    f.advance(300000);await settle();assert.equal(f.controller.snapshot().locked,false);assert.equal(f.state.clears,clears);
+    failed=false;f.advance(300000);await settle();f.advance(190000,false);f.controller.checkExpiry();await settle();
+    assert.equal(f.controller.snapshot().locked,false);assert.equal(f.state.clears,clears);
+  }finally{f.close();}
+});
+
+test('renewal is single flight; a late reply cannot revive a manual lock or replace a newer role',async()=>{
+  const late=deferred();let held=true;
+  const f=fixture({renewal:true,fetchHandler:call=>call.path==='/v1/auth/device/refresh'&&held?late.promise:undefined});try{
+    await f.controller.boot();await f.controller.unlock('staff','1729');f.advance(300000);await settle();
+    f.controller.checkExpiry();f.controller.checkExpiry();assert.equal(f.calls.filter(x=>x.path==='/v1/auth/device/refresh').length,1);
+    await f.controller.lock();await f.controller.unlock('manager','2846');held=false;
+    late.resolve(reply({expires_at:9999999999,device_id:DEVICE,role:'staff',user:{id:ACTORS.staff},auth_method:'shared_role_pin',pin_session_refresh:true,pin_session_refresh_contract_version:1}));
+    await settle();assert.equal(f.state.role,'manager');assert.equal(f.controller.snapshot().locked,false);
+    f.advance(300000);await settle();assert.equal(f.state.role,'manager');
+    await f.controller.lock();assert.equal(f.controller.snapshot().locked,true);
+  }finally{f.close();}
+});
+
+test('renewal rejection still locks a revoked session and never sends stored PIN or device credential',async()=>{
+  const f=fixture({renewal:true,fetchHandler:call=>call.path==='/v1/auth/device/refresh'?reply({detail:'Revoked'},401):undefined});try{
+    await f.controller.boot();await f.controller.unlock('staff','1729');f.advance(300000);await settle();
+    assert.equal(f.controller.snapshot().locked,true);assert.equal(f.api.auth.isPinSession(),false);
+    const refresh=f.calls.find(x=>x.path==='/v1/auth/device/refresh');assert.deepEqual(refresh.body,{});assert.equal(f.privateDrafts.size,1);
+  }finally{f.close();}
 });

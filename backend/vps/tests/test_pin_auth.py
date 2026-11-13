@@ -133,11 +133,58 @@ class SharedRolePinTests(unittest.TestCase):
         headers = self.bearer(unlocked)
         with connect(self.path) as db:
             db.execute("UPDATE sessions SET expires_at=? WHERE user_id=?", (self.now + 86400, unlocked.json()["user"]["id"]))
-        self.now += 299
+        self.now += SESSION_SECONDS - 1
         self.assertEqual(self.client.get("/v1/me", headers=headers).status_code, 200)
         self.now += 1
         self.assertEqual(self.client.get("/v1/me", headers=headers).status_code, 401)
-        self.assertEqual(self.client.get("/v1/me", headers=self.owner).status_code, 200)
+        self.assertEqual(self.client.get("/v1/me", headers=self.owner).status_code, 401)  # Password sessions still expire after 8h.
+
+    def test_active_session_renews_without_new_bearer_role_change_or_business_writes(self):
+        device = self.enroll()
+        unlocked = self.unlock(device, "manager")
+        headers = self.bearer(unlocked)
+        self.assertTrue(unlocked.json()["pin_session_refresh"])
+        with connect(self.path) as db:
+            initial_events = [tuple(row) for row in db.execute("SELECT * FROM device_auth_events")]
+        for _ in range(60):
+            self.now += 60
+            response = self.post("refresh", {}, headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["expires_at"], self.now + SESSION_SECONDS)
+            self.assertEqual(response.json()["user"]["id"], unlocked.json()["user"]["id"])
+            self.assertEqual(response.json()["role"], "manager")
+            self.assertNotIn("token", response.json())
+            self.assertEqual(self.client.get("/v1/me", headers=headers).status_code, 200)
+        with connect(self.path) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM device_pin_sessions").fetchone()[0], 1)
+            self.assertEqual([tuple(row) for row in db.execute("SELECT * FROM device_auth_events")], initial_events)
+            self.assertEqual(db.execute("SELECT count(*) FROM stocktakes").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM sales").fetchone()[0], 0)
+        self.now += SESSION_SECONDS
+        self.assertEqual(self.post("refresh", {}, headers).status_code, 401)
+        self.assertEqual(self.client.get("/v1/me", headers=headers).status_code, 401)
+
+    def test_refresh_requires_current_pin_and_rejects_payload_expiry_role_or_device_overrides(self):
+        device = self.enroll()
+        headers = self.bearer(self.unlock(device, "staff"))
+        self.assertEqual(self.post("refresh", {}, self.owner).status_code, 403)
+        self.assertEqual(self.post("refresh", {}, {}).status_code, 401)
+        for body in ({"expires_at": self.now + 999999}, {"role": "owner"}, {"pin": PINS["owner"]},
+                     {"device_credential": device["device_credential"]}):
+            self.assertEqual(self.post("refresh", body, headers).status_code, 422)
+        self.assertEqual(self.post("lock", {}, headers).status_code, 200)
+        self.assertEqual(self.post("refresh", {}, headers).status_code, 401)
+
+    def test_pin_change_and_device_revocation_remain_authoritative_during_renewal(self):
+        device = self.enroll()
+        headers = self.bearer(self.unlock(device))
+        self.now += 60
+        self.assertEqual(self.post("refresh", {}, headers).status_code, 200)
+        self.assertEqual(self.post("pins", {"owner_password": PASSWORD, "pins": NEW_PINS}, self.owner).status_code, 200)
+        self.assertEqual(self.post("refresh", {}, headers).status_code, 401)
+        headers = self.bearer(self.unlock(device, pin=NEW_PINS["staff"]))
+        self.assertEqual(self.post("revoke", {"owner_password": PASSWORD, "device_id": device["device_id"]}, self.owner).status_code, 200)
+        self.assertEqual(self.post("refresh", {}, headers).status_code, 401)
 
     def test_switching_role_and_lock_revokes_only_same_device_pin_sessions(self):
         first, second = self.enroll(), self.enroll("Second device")
@@ -231,7 +278,7 @@ class SharedRolePinTests(unittest.TestCase):
         with TestClient(create_app(self.path, pin_pepper=b"a-different-synthetic-pepper-123456789")) as client:
             self.assertEqual(client.post("/v1/auth/device/unlock", json={"device_credential": device["device_credential"], "role": "staff", "pin": PINS["staff"]}).status_code, 401)
             # Key rotation is not revocation: operators must revoke sessions and
-            # reset PINs explicitly. An existing token remains bounded to 300s.
+            # reset PINs explicitly. An existing token remains bounded to the server lease.
             self.assertEqual(client.get("/v1/me", headers=headers).status_code, 200)
 
     def test_role_mapping_tamper_and_unbound_synthetic_session_never_gain_access(self):

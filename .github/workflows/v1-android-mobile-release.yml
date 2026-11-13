@@ -47,7 +47,7 @@ jobs:
           p=Path('android/app/build.gradle')
           s=p.read_text()
           assert s.count('versionCode 1') == 1 and s.count('versionName "1.0"') == 1
-          s=s.replace('versionCode 1','versionCode 10509').replace('versionName "1.0"','versionName "1.5.9"')
+          s=s.replace('versionCode 1','versionCode 10510').replace('versionName "1.0"','versionName "1.5.10"')
           p.write_text(s)
           PY
       - name: Build unsigned non-debuggable release
@@ -61,7 +61,7 @@ jobs:
           TOOLS="$SDK_ROOT/build-tools/36.0.0"
           APK=v1/android/app/build/outputs/apk/release/app-release-unsigned.apk
           "$TOOLS/aapt2" dump badging "$APK" > ANDROID_MANIFEST.txt
-          grep -q "package: name='online.ramagan.pos.mobile' versionCode='10509' versionName='1.5.9'" ANDROID_MANIFEST.txt
+          grep -q "package: name='online.ramagan.pos.mobile' versionCode='10510' versionName='1.5.10'" ANDROID_MANIFEST.txt
           if grep -q 'application-debuggable\|application-testOnly' ANDROID_MANIFEST.txt; then exit 1; fi
           "$TOOLS/aapt2" dump xmltree --file AndroidManifest.xml "$APK" > ANDROID_MANIFEST_TREE.txt
           grep -q 'android.media.action.IMAGE_CAPTURE' ANDROID_MANIFEST_TREE.txt
@@ -76,7 +76,7 @@ jobs:
           sha256sum "$APK" > UNSIGNED_SHA256.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: ramagan-mobile-1.5.9-unsigned
+          name: ramagan-mobile-1.5.10-unsigned
           path: |
             v1/android/app/build/outputs/apk/release/app-release-unsigned.apk
             v1/dist/

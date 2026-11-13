@@ -1,7 +1,7 @@
 # Ramagan POS 2
 
 Android application ID: `online.ramagan.pos.mobile`.
-Version name: `1.5.9`; version code: `10509`.
+Version name: `1.5.10`; version code: `10510`.
 This is a separate installation from the legacy `online.ramagan.pos` package,
 as requested by the owner. The old app and its pending local operations remain
 untouched. Sign in/enroll the new app against the same production API:
@@ -37,7 +37,7 @@ previous evidence. No claim of recovery is made when the native OS discards data
 
 Native App/Camera registration is checked in the built APK. DOM/unit and headless
 browser tests are separate from physical phone acceptance, which is NOT RUN on
-the reporting device. No API or business-database change is needed for 1.5.9.
+the reporting device. API 1.5.10 adds authenticated PIN lease renewal; no schema or business data change.
 
 Stocktake confirmation sends only ready rows (saved valid count, uploaded photo,
 unchanged stock revision). Blank, invalid, missing-photo and stale rows remain in
@@ -64,3 +64,12 @@ References:
 - https://developer.android.com/tools/apksigner
 - https://developer.android.com/tools/zipalign
 - https://developer.android.com/studio/publish/app-signing
+
+PIN sessions last 12 hours and renew every five minutes while the page is visible or the photo
+picker/upload is active. Renewal preserves the existing memory-only bearer,
+actor, form focus and in-flight operations. No PIN is retained or replayed.
+Expired/revoked sessions cannot be renewed; temporary network errors retry only
+within the existing lease. Background pages stop renewing. Legacy servers still
+use their advertised original expiration. The backend rechecks authentication
+inside the renewal transaction. The original UNLOCK audit remains immutable;
+the existing device_pin_sessions.created_at field now anchors the current lease.
