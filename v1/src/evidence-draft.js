@@ -21,7 +21,7 @@ export function createEvidenceDraft({indexedDB, identity, uuid, hideStockBalance
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(new Error('เปิดพื้นที่เก็บรูปไม่ได้ กรุณาตรวจสอบพื้นที่ว่างและสิทธิ์เบราว์เซอร์'));
   });
-  async function transact(change, {ensureOnly = false} = {}) {
+  async function transact(change) {
     const database = await db();
     return new Promise((resolve, reject) => {
       const tx = database.transaction(STORE, change || hideStockBalances ? 'readwrite' : 'readonly'), store = tx.objectStore(STORE);
@@ -30,11 +30,10 @@ export function createEvidenceDraft({indexedDB, identity, uuid, hideStockBalance
         try {
           const current = request.result || null;
           if (current && (current.version !== 1 || draftScope(current.identity) !== key)) throw new Error('ข้อมูลแบบร่างไม่ถูกต้อง ให้ผู้จัดการตรวจสอบ');
-          const needsSanitize = current && hideStockBalances && current.snapshot.some(row => Object.hasOwn(row, 'quantity_mg'));
-          if (needsSanitize) current.snapshot = withoutStockBalances(current.snapshot);
+          if (current && hideStockBalances) current.snapshot = withoutStockBalances(current.snapshot);
           result = change ? change(current) : current;
           if (result && hideStockBalances) result.snapshot = withoutStockBalances(result.snapshot);
-          if ((change && !(ensureOnly && current)) || needsSanitize) {if (result === null) store.delete(key); else store.put(result, key);}
+          if (change || (hideStockBalances && current)) {if (result === null) store.delete(key); else store.put(result, key);}
         } catch (error) {failure = error; tx.abort();}
       };
       tx.oncomplete = () => resolve(result);
@@ -45,7 +44,7 @@ export function createEvidenceDraft({indexedDB, identity, uuid, hideStockBalance
   return {key, read: () => transact(),
     ensure: (snapshot, meta) => transact(current => current || {version: 1, identity: {...identity}, id: uuid(),
       snapshot: snapshot.map(x => ({id: x.id, lot_code: x.lot_code, name: x.name, ...(hideStockBalances?{}:{quantity_mg: x.quantity_mg}),
-        stock_revision: x.stock_revision})), counts: {}, photos: {}, shift_label: meta.shift_label, reason: meta.reason}, {ensureOnly: true}),
+        stock_revision: x.stock_revision})), counts: {}, photos: {}, shift_label: meta.shift_label, reason: meta.reason}),
     setCount: (lot, value) => transact(current => {
       const draft = requireDraft(current);
       // Evidence belongs to this draft and Lot, independently of input order.
@@ -54,9 +53,8 @@ export function createEvidenceDraft({indexedDB, identity, uuid, hideStockBalance
     }),
     setMeta: (field, value) => transact(current => {const d = requireDraft(current); d[field] = value; return d;}),
     invalidate: lot => transact(current => {const d=requireDraft(current);delete d.photos[lot];return d;}),
-    beginPhoto: (lot, request, expectedDraftId) => transact(current => {
+    beginPhoto: (lot, request) => transact(current => {
       const d = requireDraft(current);
-      if (expectedDraftId && d.id !== expectedDraftId) throw new Error('แบบร่างเปลี่ยนแล้ว กรุณาเปิดแบบร่างใหม่');
       if (!d.snapshot.some(row => row.id === lot)) throw new Error('ไม่พบรายการสำหรับแนบรูป');
       d.photoRequests ||= {}; d.photoErrors ||= {};
       d.photoRequests[lot] = request; delete d.photoErrors[lot]; return d;
@@ -81,14 +79,35 @@ export function createEvidenceDraft({indexedDB, identity, uuid, hideStockBalance
         return draft;
       });
     },
-    uploaded: (lot, upload, metadata, {acknowledgeReturn = false} = {}) => transact(current => {
+    uploaded: (lot, upload, metadata) => transact(current => {
       const draft = requireDraft(current), photo = draft.photos[lot];
       if (!photo || photo.client_upload_id !== upload ||
           metadata.client_upload_id !== upload || metadata.client_stocktake_id !== draft.id || metadata.lot_id !== lot ||
           typeof metadata.evidence_id !== 'string') throw new Error('รูปหรือยอดนับเปลี่ยนไป กรุณาตรวจสอบรูปของ Lot นี้ใหม่');
-      photo.metadata = metadata;
-      if (acknowledgeReturn) delete draft.photoReturn;
-      return draft;
+      photo.metadata = metadata; return draft;
+    }),
+    complete: (id, submitted, results) => transact(current => {
+      // Save the remainder before acknowledging the durable mutation intent.
+      // Replaying cleanup after a crash must not rotate or remove it twice.
+      if (!current || current.completedStocktakeId === id) return current;
+      if (current.id !== id) throw new Error('แบบร่างเปลี่ยนไป ห้ามล้างรูปจากอีกรายการ');
+      const done = new Set(submitted.map(row => row.lot_id));
+      for (const lot of done) {delete current.counts[lot]; delete current.photos[lot];}
+      if (!Object.values(current.counts).some(value => String(value).trim()) && !Object.keys(current.photos).length) return null;
+      const confirmed = new Map(results.map(row => [row.lot_id, row]));
+      for (const row of current.snapshot) {
+        const result = confirmed.get(row.id);
+        if (done.has(row.id) && result) {
+          row.stock_revision = result.stock_revision_after;
+          if (!hideStockBalances && Object.hasOwn(row, 'quantity_mg')) row.quantity_mg = result.counted_quantity_mg;
+        }
+      }
+      current.id = uuid(); current.completedStocktakeId = id;
+      // Server evidence is tied to the old stocktake ID. Preserve image bytes
+      // but allocate new upload IDs before reusing those images for the remainder.
+      for (const photo of Object.values(current.photos)) {photo.client_upload_id = uuid(); photo.metadata = null;}
+      current.photoRequests = {}; current.photoErrors = {}; delete current.photoReturn;
+      return current;
     }),
     clear: id => transact(current => {if (current && current.id !== id) throw new Error('แบบร่างเปลี่ยนไป ห้ามล้างรูปจากอีกรายการ'); return null;})
   };

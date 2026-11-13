@@ -25,7 +25,7 @@ export function createPhotoReturn({storage, openDraft, prepare, readNative, uuid
   return {
     async begin({identity, draftId, lot, native = false}) {
       const context = {version: 1, identity: {...identity}, draftId, lot, request: uuid(), runtime};
-      await openDraft(identity).beginPhoto(lot, context.request, draftId);
+      await openDraft(identity).beginPhoto(lot, context.request);
       if (native) {
         const value = JSON.stringify(context); storage.setItem(PHOTO_RETURN_KEY, value);
         if (storage.getItem(PHOTO_RETURN_KEY) !== value) throw new Error('บันทึกจุดกลับจากกล้องไม่ได้ กรุณาตรวจพื้นที่ว่าง');

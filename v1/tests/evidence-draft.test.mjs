@@ -77,21 +77,23 @@ test('Manager reopening an old Owner draft removes balances transactionally and 
 });
 
 
-test('existing draft does not rewrite all photo Blobs on ensure or an already-redacted read',async()=>{
-  const config=options(),drafts=createEvidenceDraft(config),first=await drafts.ensure(snapshot,meta);
-  await drafts.select('lot',new Blob(['same bytes'],{type:'image/jpeg'}));const writes=config.indexedDB.stats.puts;
-  assert.equal((await drafts.ensure(snapshot,meta)).id,first.id);assert.equal(config.indexedDB.stats.puts,writes);
-  const hidden=createEvidenceDraft({...config,hideStockBalances:true});await hidden.read();assert.equal(config.indexedDB.stats.puts,writes+1);
-  await hidden.read();await hidden.ensure(snapshot,meta);assert.equal(config.indexedDB.stats.puts,writes+1);
-  assert.equal((await drafts.read()).snapshot[0].quantity_mg,undefined);
-});
-
-test('upload metadata and return acknowledgement commit together without changing image bytes',async()=>{
-  const config=options(),drafts=createEvidenceDraft(config),d=await drafts.ensure(snapshot,meta);
-  await drafts.beginPhoto('lot','upload',d.id);await drafts.finishPhoto('lot',d.id,'upload',new Blob(['exact'],{type:'image/jpeg'}));
-  const writes=config.indexedDB.stats.puts;
-  const result=await drafts.uploaded('lot','upload',{client_upload_id:'upload',client_stocktake_id:d.id,lot_id:'lot',evidence_id:'evidence'},{acknowledgeReturn:true});
-  assert.equal(config.indexedDB.stats.puts,writes+1);assert.equal(result.photoReturn,undefined);
-  assert.equal(await result.photos.lot.blob.text(),'exact');assert.equal(result.photos.lot.client_upload_id,'upload');
-  await assert.rejects(drafts.beginPhoto('lot','late','other-draft'),/เปลี่ยนแล้ว/);
+test('partial completion preserves unfinished counts and exact image bytes across reload and repeated cleanup',async()=>{
+  const config=options(),drafts=createEvidenceDraft(config);
+  const initial=await drafts.ensure([...snapshot,{...snapshot[0],id:'remaining'}],meta);
+  await drafts.setCount('lot','10');await drafts.setCount('remaining','1,23');
+  const selected=await drafts.select('remaining',new Blob(['retained-original'],{type:'image/jpeg'}));
+  const upload=selected.photos.remaining.client_upload_id;
+  await drafts.uploaded('remaining',upload,{client_upload_id:upload,client_stocktake_id:initial.id,lot_id:'remaining',evidence_id:'old-evidence'});
+  const payload=[{lot_id:'lot'}],result=[{lot_id:'lot',stock_revision_after:4,counted_quantity_mg:10000}];
+  const next=await drafts.complete(initial.id,payload,result);
+  assert.notEqual(next.id,initial.id);assert.equal(next.counts.lot,undefined);assert.equal(next.counts.remaining,'1,23');
+  assert.equal(next.snapshot[0].stock_revision,4);assert.equal(next.snapshot[1].stock_revision,3);
+  assert.notEqual(next.photos.remaining.client_upload_id,upload);assert.equal(next.photos.remaining.metadata,null);
+  assert.equal(await next.photos.remaining.blob.text(),'retained-original');
+  const reloaded=createEvidenceDraft(config),replayed=await reloaded.complete(initial.id,payload,result);
+  assert.equal(replayed.id,next.id);assert.equal(replayed.photos.remaining.client_upload_id,next.photos.remaining.client_upload_id);
+  await assert.rejects(reloaded.complete('unrelated',payload,result));
+  await assert.rejects(reloaded.uploaded('remaining',upload,{client_upload_id:upload,client_stocktake_id:initial.id,lot_id:'remaining',evidence_id:'old-evidence'}));
+  await reloaded.complete(next.id,[{lot_id:'remaining'}],[]);assert.equal(await reloaded.read(),null);
+  assert.equal(await reloaded.complete(next.id,[{lot_id:'remaining'}],[]),null);
 });

@@ -418,7 +418,8 @@ test('lost stocktake response blocks all new mutations and authoritative stale r
     app.menu('#open-stocktake'); assert.equal(app.q('#confirm-count').disabled, true);
     f.rejectCount = true; app.click('[data-inventory-verify="stocktake"]');
     await until(() => /Stock changed; reload and recount/.test(app.text()) && !app.q('[data-inventory-verify]'));
-    assert.equal(f.countPosts.length, 1); assert.equal(app.q('[data-count="' + lot + '"]').value, '');
+    assert.equal(f.countPosts.length, 1); assert.equal(app.q('[data-count="' + lot + '"]').value, '9');
+    assert(app.q('.scale-preview'));assert.equal(app.q('[data-photo-upload]').hidden,false);
     assert.equal(app.q('[data-count="' + lot + '"]').disabled, false);
   } finally { app.close(); }
 });
@@ -1081,15 +1082,87 @@ test('a photo returned after session clearing survives for the original actor an
 });
 
 
-test('slow upload shows its stage beside a durable preview while confirmation stays locked',async()=>{
-  let finish;
-  const f=inventoryFixture({holdUpload:new Promise(resolve=>{finish=resolve;})}),app=await boot(f);
+test('Manager can locate a hidden invalid count, correct it and confirm using the already-uploaded photo',async()=>{
+  const f=inventoryFixture({role:'manager',stockRedacted:true,capabilities:{...inventoryCaps,stock_privacy_contract_version:1,can_view_stock_quantities:false}}),app=await boot(f);
   try{
-    app.menu('#open-stocktake');app.photo('[data-photo-source="album"]');
-    await until(()=>f.uploads.length===1);assert(app.q('.scale-preview'));
-    assert.match(app.q('[data-photo-note]').textContent,/รูปอยู่ในเครื่องแล้ว.*กำลังอัปโหลด/);
-    assert.equal(app.q('#confirm-count').disabled,true);assert.equal(app.q('[data-photo-camera]').disabled,true);
-    finish();await until(()=>!app.q('[data-photo-camera]').disabled);
-    assert.match(app.q('[data-photo-note]').textContent,/อัปโหลดรูปแล้ว/);assert.equal(f.uploads.length,1);
-  }finally{finish();app.close();}
+    app.menu('#open-stocktake');app.input('[data-count="'+lot+'"]','1,234');
+    await until(()=>!app.q('#reload-count').disabled);app.photo('[data-photo="'+lot+'"]');
+    await until(()=>/อัปโหลดรูปแล้ว/.test(app.q('[data-photo-note="'+lot+'"]').textContent));
+    const evidence=f.uploads[0].id;
+    app.input('#stocktake-query','EXPIRED');app.check('#count-confirm');
+    assert.equal(app.q('[data-count-lot="'+lot+'"]').hidden,true);
+    assert.equal(app.q('[data-count="'+lot+'"]').getAttribute('aria-invalid'),'true');
+    assert.match(app.q('#count-input-problems').textContent,/Mock stock.*MOCK-1.*1,234/s);
+    assert.equal(app.q('#confirm-count').disabled,false);assert.match(app.q('#confirm-count').textContent,/ไปแก้ยอด/);
+    app.click('#confirm-count');assert.equal(f.countPosts.length,0);
+    const input=app.q('[data-count="'+lot+'"]');assert.equal(input.ownerDocument.activeElement,input);
+    assert.equal(app.q('#stocktake-query').value,'');assert.equal(app.q('[data-count-lot="'+lot+'"]').hidden,false);
+    assert.equal(f.uploads.length,1);assert(app.q('.scale-preview'));
+    app.input('[data-count="'+lot+'"]','1.234');await until(()=>!app.q('#reload-count').disabled);
+    assert.equal(app.q('#count-input-problems').hidden,true);assert.equal(input.getAttribute('aria-invalid'),'false');
+    app.check('#count-confirm');assert.equal(app.q('#confirm-count').disabled,false);app.submit('#stocktake-form');
+    await until(()=>f.countPosts.length===1&&/เซิร์ฟเวอร์ยืนยันการนับ/.test(app.text()));
+    assert.equal(f.countPosts[0].items[0].counted_quantity_mg,1234);assert.equal(f.countPosts[0].items[0].evidence_id,evidence);
+    assert.equal(f.uploads.length,1,'Correcting the number must not require another photo');
+  }finally{app.close();}
+});
+
+test('exact decimal keyboard variants permit confirmation but excess nonzero precision stays visible and unsubmitted',async()=>{
+  const f=inventoryFixture(),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');await fillCount(app,'1');
+    for(const value of ['.5','๕.๑๒๓','12.','1.2300']){
+      app.input('[data-count]',value);await until(()=>!app.q('#reload-count').disabled);app.check('#count-confirm');
+      assert.equal(app.q('#count-input-problems').hidden,true);assert.equal(app.q('#confirm-count').disabled,false);
+    }
+    app.input('[data-count]','1.2345');await until(()=>!app.q('#reload-count').disabled);app.check('#count-confirm');
+    app.click('#confirm-count');assert.equal(f.countPosts.length,0);assert.match(app.q('#count-input-problems').textContent,/1.2345/);
+    assert.equal(app.q('[data-count]').value,'1.2345');assert.equal(f.uploads.length,1);
+  }finally{app.close();}
+});
+
+
+test('partial count submits ready rows and keeps invalid rows and their photos after reload for a separate confirmed round',async()=>{
+  const f=inventoryFixture({role:'manager',stockRedacted:true,capabilities:{...inventoryCaps,stock_privacy_contract_version:1,can_view_stock_quantities:false}});
+  let app=await boot(f);
+  try{
+    app.menu('#open-stocktake');await fillCount(app,'9');
+    app.input('[data-count="'+lot2+'"]','1,23');await until(()=>!app.q('#reload-count').disabled);
+    app.photo('[data-photo="'+lot2+'"]',new Blob(['unfinished-photo'],{type:'image/jpeg'}));
+    await until(()=>f.uploads.length===2&&!app.q('[data-photo-camera]').disabled);
+    const oldSecond=f.uploads[1];app.check('#count-confirm');
+    assert.equal(app.q('#confirm-count').disabled,false);assert.match(app.q('#confirm-count').textContent,/1 รายการพร้อมส่ง/);
+    assert.match(app.q('#count-remaining').textContent,/Unknown old lot.*ยอดนับยังไม่ถูกต้อง/s);
+    assert.equal(app.q('.count-system').textContent,'เฉพาะเจ้าของ');
+    app.submit('#stocktake-form');await until(()=>/เซิร์ฟเวอร์ยืนยันการนับ/.test(app.text()));
+    assert.equal(f.countPosts.length,1);assert.equal(f.countPosts[0].items.length,1);assert.equal(f.countPosts[0].items[0].lot_id,lot);
+    assert.equal(app.q('[data-count="'+lot+'"]').value,'');assert.equal(app.q('[data-count="'+lot2+'"]').value,'1,23');
+    assert(app.q('[data-count-lot="'+lot2+'"] .scale-preview'));
+    f.inventory.lots[0].stock_revision=3;
+    const saved=app.snapshot();app.close();app=null;app=await boot(f,saved);app.menu('#open-stocktake');
+    assert.equal(app.q('[data-count="'+lot2+'"]').value,'1,23');assert(app.q('[data-count-lot="'+lot2+'"] .scale-preview'));
+    app.input('[data-count="'+lot2+'"]','1.23');await until(()=>!app.q('#reload-count').disabled);
+    app.click('[data-photo-upload="'+lot2+'"]');await until(()=>f.uploads.length===3&&!app.q('[data-photo-camera]').disabled);
+    const next=f.uploads[2];assert.notEqual(next.id,oldSecond.id);assert.notEqual(next.query,oldSecond.query);
+    assert.equal(await next.body.text(),'unfinished-photo');
+    f.savedCount=null;app.check('#count-confirm');app.submit('#stocktake-form');await until(()=>f.countPosts.length===2&&/เซิร์ฟเวอร์ยืนยันการนับ/.test(app.text()));
+    assert.notEqual(f.countPosts[0].client_stocktake_id,f.countPosts[1].client_stocktake_id);
+    assert.equal(f.countPosts[1].items.length,1);assert.equal(f.countPosts[1].items[0].lot_id,lot2);
+    assert.equal(f.countPosts[1].items[0].counted_quantity_mg,1230);
+    assert.equal(app.q('[data-count="'+lot2+'"]').value,'');
+  }finally{app?.close();}
+});
+
+test('an entered row missing its photo does not lock another ready row; a lost reply retries the original subset',async()=>{
+  const f=inventoryFixture({failCount:true}),app=await boot(f);
+  try{
+    app.menu('#open-stocktake');await fillCount(app,'0');app.input('[data-count="'+lot2+'"]','2');
+    await until(()=>!app.q('#reload-count').disabled);app.check('#count-confirm');
+    assert.equal(app.q('#confirm-count').disabled,false);app.submit('#stocktake-form');
+    await until(()=>app.q('[data-inventory-retry="stocktake"]')&&!app.q('[data-inventory-retry="stocktake"]').disabled);
+    assert.equal(f.countPosts[0].items.length,1);assert.equal(f.countPosts[0].items[0].counted_quantity_mg,0);
+    f.failCount=false;app.click('[data-inventory-retry="stocktake"]');await until(()=>/เซิร์ฟเวอร์ยืนยันการนับ/.test(app.text()));
+    assert.deepEqual(f.countPosts[1],f.countPosts[0]);assert.equal(app.q('[data-count="'+lot2+'"]').value,'2');
+    assert.equal(app.q('[data-count="'+lot+'"]').value,'');
+  }finally{app.close();}
 });

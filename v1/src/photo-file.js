@@ -31,13 +31,6 @@ export async function preparePhoto(blob, {decode = decodePhoto, canvas = () => d
   let surface;
   try {
     const size = photoDimensions(decoded.width, decoded.height);
-    // Native capture already returns a bounded JPEG. Decoding still validates
-    // the image/dimensions; avoid another lossy canvas encode when it fits.
-    // The API independently normalizes orientation and strips EXIF on upload.
-    if (blob.type === 'image/jpeg' && blob.size <= 1024 * 1024 &&
-        size.width === decoded.width && size.height === decoded.height) {
-      validatePhoto(blob); return blob;
-    }
     surface = canvas(); surface.width = size.width; surface.height = size.height;
     const context = surface.getContext('2d');
     if (!context) throw new Error('เครื่องนี้เตรียมรูปไม่ได้ กรุณาปิดแล้วเปิดแอปอีกครั้ง');

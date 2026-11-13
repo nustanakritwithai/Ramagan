@@ -80,6 +80,13 @@
 .management-shell .count-search label{flex:1;min-width:0;margin:0}
 .management-shell .count-search button{flex-shrink:0}
 .management-shell .count-sale-price{display:block;color:#245e3c;font-weight:600}
+.management-shell [data-count][aria-invalid="true"]{border:2px solid #ad3425;background:#fff7f4;scroll-margin-top:140px}
+.management-shell .count-input-error{display:block;color:#9b291b;font-weight:600;max-width:250px;overflow-wrap:anywhere}
+.management-shell .count-input-error[hidden],.management-shell .count-input-problems[hidden]{display:none}
+.management-shell .count-input-problems>div{padding:12px;margin:8px 0;border:1px solid #ce8e83;border-radius:8px;background:#fff7f4;color:#7b251a;overflow-wrap:anywhere}
+.management-shell .count-input-problems small{display:block;margin:5px 0}
+.management-shell .count-input-problems p{font-size:.85rem;margin:6px 0}
+.management-shell .count-input-problems button{min-height:44px;width:100%}
 .management-shell .count-table tr[hidden]{display:none!important}
 .management-shell #stocktake-search-empty[hidden],.management-shell #stocktake-hidden-counts[hidden]{display:none}
 .management-shell .scale-preview{border-color:#abc9b4;background:#f5f8f5;max-width:160px;max-height:140px;margin:6px 0}
